@@ -42,15 +42,41 @@ apify call <your-account>/eval-workflow-runner-poc --memory 4096 --timeout 900 -
 }'
 ```
 
-Then open the `datasetRunUrl` from the run OUTPUT in Langfuse: the dataset run,
-one trace per item with the full agent conversation, and a deterministic
-`contains-expected` score per item. `createDemoDataset` seeds a 3-item dataset
-(plain question, Bash tool use, real MCP store search) on first run; point
-`datasetName` at a real dataset afterwards.
+Then find the results: open the run's **Storage → Key-value store → OUTPUT**
+record and click `datasetRunUrl`. That page is the Langfuse dataset run: one
+row per item with input, output, expected output, and a deterministic
+`contains-expected` score; each row links to its trace, whose `agent` span
+carries the full conversation (every tool call and result) plus metrics.
+
+Do not confuse the ids: the "Dataset ID" the Apify CLI prints is the Actor's
+own output storage on the Apify platform; the Langfuse run id only lives in
+the OUTPUT record. In the Langfuse UI, runs are listed by name
+(`<experiment> - <timestamp>`), not by id.
+
+`createDemoDataset` seeds a 3-item dataset (plain question, Bash tool use,
+real MCP store search) on first run; point `datasetName` at a real dataset
+afterwards.
 
 Local runs work too (`apify run` in this directory): set
 `useOpenRouterProxy: false` to use your own Claude login, since the proxy only
 accepts tokens presented from inside Actor runs.
+
+### Already verified against langfuse.apify.dev (19 Aug)
+
+- Demo dataset run, 3/3 passed, 14.4s suite:
+  [runner-poc run](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/datasets/cmszvaq8k001ito07e3anyb54/runs/368efaae35ad9c69)
+- First real store-team scenario (`store-actors-poc` dataset): "get the 3 most
+  recent posts from @nasa". The agent behaved correctly (searched, read the
+  input schema, called the actor with `{username:["nasa"], resultsLimit:3}`)
+  and still scored 0, surfacing two product findings: store search ranks
+  `apify/instagram-post-scraper` above the flagship `apify/instagram-scraper`
+  for the query "Instagram posts", and the actor returned 2 items on a
+  successful run despite `resultsLimit: 3`.
+  [Evidence trace](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/traces/907710f7e2dcaf47624bd02119c4b932?observation=abd667a09e7e5258)
+
+Note for the Judge Actor: this Langfuse deployment runs v4 in events-only
+mode, so the legacy dataset-run read APIs are disabled; fetch traces and run
+items through the v4 experiments APIs.
 
 ## Measured on the platform (18-19 Aug)
 
