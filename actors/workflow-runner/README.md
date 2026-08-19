@@ -65,14 +65,23 @@ accepts tokens presented from inside Actor runs.
 
 - Demo dataset run, 3/3 passed, 14.4s suite:
   [runner-poc run](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/datasets/cmszvaq8k001ito07e3anyb54/runs/368efaae35ad9c69)
-- First real store-team scenario (`store-actors-poc` dataset): "get the 3 most
-  recent posts from @nasa". The agent behaved correctly (searched, read the
-  input schema, called the actor with `{username:["nasa"], resultsLimit:3}`)
-  and still scored 0, surfacing two product findings: store search ranks
-  `apify/instagram-post-scraper` above the flagship `apify/instagram-scraper`
-  for the query "Instagram posts", and the actor returned 2 items on a
-  successful run despite `resultsLimit: 3`.
-  [Evidence trace](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/traces/907710f7e2dcaf47624bd02119c4b932?observation=abd667a09e7e5258)
+- Real store-team scenarios (`store-actors-poc` dataset,
+  [run with both](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/datasets/cmszvukvv0022qm074ma5va54/runs/20961e44007b7497)):
+    - **Usage test, score 1**: "how engaged is @nasa's audience vs their
+      follower count", actor pinned to `apify/instagram-scraper`, no search
+      tool. The agent read the input schema, fired profile and posts runs in
+      parallel with correct inputs, waited on the in-progress run, fetched
+      items with field projection, and computed the 0.39% engagement rate.
+      [Trace](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/traces/0817a42c5cad144c7267784dba479f29?observation=c2d5e015f88c2900)
+    - **Discovery test, score 0 twice**: "get the 3 most recent posts from
+      @nasa", agent chooses the actor. It behaved correctly (searched, read
+      the schema, sensible input) but both runs picked
+      `apify/instagram-post-scraper` over the flagship, because store search
+      ranks it first for "Instagram posts". Also: that actor returned 2 of 3
+      requested posts on one run and 3 of 3 on the other, so result-shorting
+      is flaky. Whether the flagship _should_ win this query is an open
+      store-team decision the scenario deliberately forces.
+      [Trace](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/traces/907710f7e2dcaf47624bd02119c4b932?observation=abd667a09e7e5258)
 
 Note for the Judge Actor: this Langfuse deployment runs v4 in events-only
 mode, so the legacy dataset-run read APIs are disabled; fetch traces and run
