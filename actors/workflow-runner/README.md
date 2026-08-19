@@ -44,9 +44,17 @@ apify call <your-account>/eval-workflow-runner-poc --memory 4096 --timeout 900 -
 
 Then find the results: open the run's **Storage → Key-value store → OUTPUT**
 record and click `datasetRunUrl`. That page is the Langfuse dataset run: one
-row per item with input, output, expected output, and a deterministic
-`contains-expected` score; each row links to its trace, whose `agent` span
-carries the full conversation (every tool call and result) plus metrics.
+row per item with input, output, expected output, and deterministic scores;
+each row links to its trace, whose `agent` span carries the full conversation
+(every tool call and result) plus metrics.
+
+Dataset item anatomy: `metadata.title` says what the item tests in one line;
+`expectedOutput` is judge-facing prose describing what a correct run looks
+like (the future Judge Actor's reference, never grepped); deterministic
+health-gate checks are declared explicitly as `metadata.checks`, e.g.
+`[{ "type": "contains", "value": "apify/instagram-scraper" }]` or
+`[{ "type": "regex", "value": "\\d[\\d,]{5,}" }]`. Items with no checks get
+no deterministic score and wait for the judge.
 
 Do not confuse the ids: the "Dataset ID" the Apify CLI prints is the Actor's
 own output storage on the Apify platform; the Langfuse run id only lives in

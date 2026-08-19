@@ -9,20 +9,36 @@ const OUTPUT_PREVIEW_CAP = 500;
 const DEMO_ITEMS = [
     {
         input: { prompt: 'What is 2+2? Reply with just the number.' },
-        expectedOutput: '4',
-        metadata: { category: 'basic' },
+        expectedOutput: 'The answer is 4, stated plainly.',
+        metadata: {
+            title: 'Sanity: plain LLM answer with no tools',
+            category: 'basic',
+            checks: [{ type: 'contains', value: '4' }],
+        },
     },
     {
         input: { prompt: 'Use the Bash tool to compute 17*23 and report just the number.' },
-        expectedOutput: '391',
-        metadata: { category: 'tools', allowBash: true },
+        expectedOutput: 'The agent computes 391 with the Bash tool instead of answering from memory.',
+        metadata: {
+            title: 'Tool use: runs Bash and reports its result',
+            category: 'tools',
+            allowBash: true,
+            checks: [{ type: 'contains', value: '391' }],
+        },
     },
     {
         input: {
             prompt: 'Using the Apify tools, search the Apify store for an Instagram scraper and reply with the full name (username/name) of the most popular one.',
         },
-        expectedOutput: 'apify/instagram-scraper',
-        metadata: { category: 'mcp', tools: ['search-actors'], maxTurns: 8 },
+        expectedOutput:
+            'The agent searches the store and names the most popular Instagram scraper, apify/instagram-scraper.',
+        metadata: {
+            title: 'MCP: store search finds the flagship Instagram scraper',
+            category: 'mcp',
+            tools: ['search-actors'],
+            maxTurns: 8,
+            checks: [{ type: 'contains', value: 'apify/instagram-scraper' }],
+        },
     },
 ];
 
@@ -137,16 +153,34 @@ try {
             const r = await runSession({ item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs });
             return r.output;
         },
-        // Deterministic health-gate evaluator; real scoring belongs to the Judge Actor (#244)
+        // Deterministic health-gate checks, declared per item as metadata.checks:
+        // [{type:'contains'|'regex', value:'...'}]. expectedOutput stays judge-facing
+        // prose; real scoring belongs to the Judge Actor (#244).
         evaluators: [
-            async ({ output, expectedOutput }) => {
-                if (expectedOutput == null || expectedOutput === '') return []; // no ground truth, no score
-                return [
-                    {
-                        name: 'contains-expected',
-                        value: String(output).toLowerCase().includes(String(expectedOutput).toLowerCase()) ? 1 : 0,
-                    },
-                ];
+            async ({ output, metadata }) => {
+                const checks = Array.isArray(metadata?.checks) ? metadata.checks : [];
+                const text = String(output);
+                return checks.flatMap((check) => {
+                    if (check.type === 'contains') {
+                        return [
+                            {
+                                name: 'contains-expected',
+                                value: text.toLowerCase().includes(String(check.value).toLowerCase()) ? 1 : 0,
+                                comment: `contains: ${check.value}`,
+                            },
+                        ];
+                    }
+                    if (check.type === 'regex') {
+                        return [
+                            {
+                                name: 'matches-pattern',
+                                value: new RegExp(check.value, 'i').test(text) ? 1 : 0,
+                                comment: `regex: ${check.value}`,
+                            },
+                        ];
+                    }
+                    return [];
+                });
             },
         ],
     });
