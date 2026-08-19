@@ -1,0 +1,13 @@
+{
+    "actorSpecification": 1,
+    "name": "eval-workflow-runner-poc",
+    "title": "Eval Workflow Runner (PoC)",
+    "description": "PoC for ai-team#238: consumes a Langfuse dataset, runs one isolated agent session per item in parallel inside one Actor run, emits traces to Langfuse, returns the dataset-run id for the Judge Actor.",
+    "version": "0.0",
+    "buildTag": "latest",
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile",
+    "meta": {
+        "generatedBy": "Claude Code with Claude Fable 5"
+    }
+}

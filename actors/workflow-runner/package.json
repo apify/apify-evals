@@ -1,0 +1,20 @@
+{
+    "name": "@apify-evals/workflow-runner",
+    "version": "0.1.0",
+    "type": "module",
+    "private": true,
+    "description": "PoC Runner Actor for ai-team#238: Langfuse dataset in, parallel in-process agent sessions, traces + dataset-run out",
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "apify": "^3.7.0",
+        "@langfuse/client": "^5.10.1",
+        "@langfuse/otel": "^5.10.1",
+        "@langfuse/tracing": "^5.10.1",
+        "@opentelemetry/sdk-node": "^0.205.0"
+    },
+    "scripts": {
+        "start": "node src/main.js"
+    }
+}

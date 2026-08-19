@@ -1,0 +1,104 @@
+{
+    "title": "Eval Workflow Runner (PoC) input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "datasetName": {
+            "title": "Langfuse dataset name",
+            "type": "string",
+            "description": "Dataset holding the eval scenarios.",
+            "default": "runner-poc",
+            "editor": "textfield"
+        },
+        "experimentName": {
+            "title": "Experiment name",
+            "type": "string",
+            "description": "Name shown in Langfuse experiments; dataset run name derives from it unless runName is set.",
+            "default": "runner-poc",
+            "editor": "textfield"
+        },
+        "runName": {
+            "title": "Exact dataset run name (optional)",
+            "type": "string",
+            "description": "Exact Langfuse dataset-run name. Defaults to experimentName + timestamp.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "harness": {
+            "title": "Harness configuration",
+            "type": "object",
+            "description": "kind picks the adapter (claude-code for now); model is an OpenRouter id.",
+            "editor": "json",
+            "default": { "kind": "claude-code", "model": "anthropic/claude-haiku-4.5", "maxTurns": 6 }
+        },
+        "concurrency": {
+            "title": "Concurrency",
+            "type": "integer",
+            "description": "Parallel sessions inside this run (rule of thumb: 4-8 per CPU core, 1 core per 4GB).",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 50
+        },
+        "perItemTimeoutSecs": {
+            "title": "Per-item timeout (seconds)",
+            "type": "integer",
+            "description": "Hard kill for one session; dataset item metadata.maxTurns can vary turns per case.",
+            "default": 300
+        },
+        "itemLimit": {
+            "title": "Item limit (0 = all)",
+            "type": "integer",
+            "description": "Run only the first N items after filtering.",
+            "default": 0
+        },
+        "categories": {
+            "title": "Category filter",
+            "type": "array",
+            "description": "Only run items whose metadata.category is listed. Empty = all.",
+            "editor": "stringList",
+            "default": []
+        },
+        "mcpUrl": {
+            "title": "MCP server URL",
+            "type": "string",
+            "description": "Hosted MCP endpoint; per-item metadata.tools maps to ?tools=.",
+            "default": "https://mcp.apify.com",
+            "editor": "textfield"
+        },
+        "useOpenRouterProxy": {
+            "title": "LLM via Apify OpenRouter proxy",
+            "type": "boolean",
+            "description": "On the platform, sessions authenticate to the OpenRouter proxy with the run's APIFY_TOKEN (no external keys). Disable for local runs to use your own Claude auth.",
+            "default": true
+        },
+        "createDemoDataset": {
+            "title": "Create demo dataset if missing",
+            "type": "boolean",
+            "description": "Seed a 3-item demo dataset when datasetName does not exist.",
+            "default": false
+        },
+        "langfuseBaseUrl": {
+            "title": "Langfuse base URL",
+            "type": "string",
+            "description": "Falls back to LANGFUSE_BASE_URL env var.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "langfusePublicKey": {
+            "title": "Langfuse public key",
+            "type": "string",
+            "description": "Falls back to LANGFUSE_PUBLIC_KEY env var.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        },
+        "langfuseSecretKey": {
+            "title": "Langfuse secret key",
+            "type": "string",
+            "description": "Falls back to LANGFUSE_SECRET_KEY env var.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        }
+    }
+}
