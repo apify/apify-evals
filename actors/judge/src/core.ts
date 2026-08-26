@@ -132,14 +132,14 @@ export async function loadJudgedTraceIds(
             cursor,
         } as never)) as unknown as {
             data?: { metadata?: Partial<ScoreMetadata>; subject?: { traceId?: string }; traceId?: string }[];
-            meta?: { nextCursor?: string };
+            meta?: { cursor?: string; nextCursor?: string };
         };
         for (const s of page.data ?? []) {
             const traceId = s.subject?.traceId ?? s.traceId;
             const m = (s.metadata ?? {}) as Partial<ScoreMetadata>;
             if (traceId && m.datasetRunId === datasetRunId && tuplesMatch(m, version)) judged.add(traceId);
         }
-        cursor = page.meta?.nextCursor;
+        cursor = page.meta?.cursor ?? page.meta?.nextCursor;
     } while (cursor);
     return judged;
 }
