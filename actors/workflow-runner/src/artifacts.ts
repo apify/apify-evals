@@ -38,7 +38,9 @@ export class ArtifactStore {
      * (limited-permission runs cannot open other stores); locally the default
      * name works because the developer token has full access. */
     static async open(storeIdOrName?: string): Promise<ArtifactStore> {
-        return new ArtifactStore(await Actor.openKeyValueStore(storeIdOrName ?? ARTIFACT_STORE_NAME, { forceCloud: true }));
+        return new ArtifactStore(
+            await Actor.openKeyValueStore(storeIdOrName ?? ARTIFACT_STORE_NAME, { forceCloud: true }),
+        );
     }
 
     private recordUrl(key: string): string {

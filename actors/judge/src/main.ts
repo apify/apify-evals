@@ -38,9 +38,12 @@ const {
     JUDGE_IMPL_VERSION,
     JUDGE_PROMPT_NAME,
     RUBRIC_VERSION,
+    buildScoreboard,
     judgeOne,
+    loadDeterministicResults,
     loadJudgedTraceIds,
     loadRunItems,
+    renderScoreboard,
 } = await import('./core.js');
 
 const apifyToken = process.env.APIFY_TOKEN;
@@ -78,7 +81,12 @@ const version = {
 };
 
 const items = await loadRunItems(langfuse, datasetRunId);
-const judgedTraceIds = await loadJudgedTraceIds(langfuse, datasetRunId, version);
+const judgedTraceIds = await loadJudgedTraceIds(
+    langfuse,
+    datasetRunId,
+    version,
+    items.map((i) => i.traceId),
+);
 log.info(
     `Judging dataset run ${datasetRunId}: ${items.length} items, model ${judgeModel}, prompt v${promptClient.version}`,
 );
@@ -117,6 +125,15 @@ await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, wo
 await langfuse.flush();
 
 const judged = results.filter((r) => r.status === 'judged');
+const deterministic = await loadDeterministicResults(
+    langfuse,
+    items.map((i) => i.traceId),
+);
+const scoreboard = buildScoreboard(results, deterministic);
+const skippedCount = results.filter((r) => r.status === 'skipped-already-judged').length;
+await Actor.setValue('SCOREBOARD', renderScoreboard(scoreboard, datasetRunId, skippedCount), {
+    contentType: 'text/markdown',
+});
 const summary = {
     datasetRunId,
     items: items.length,
@@ -127,6 +144,7 @@ const summary = {
     errors: results.filter((r) => r.status === 'error').length,
     degraded: judged.filter((r) => r.degraded).length,
     version,
+    scoreboard,
 };
 log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
 

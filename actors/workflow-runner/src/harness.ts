@@ -37,7 +37,7 @@ export interface HarnessConfig {
 }
 
 export interface SessionContext {
-    item: { input?: unknown; metadata?: DatasetItemMetadata | null };
+    item: { id?: string; input?: unknown; metadata?: DatasetItemMetadata | null };
     harness: HarnessConfig;
     mcpUrl: string;
     apifyToken: string;
@@ -405,6 +405,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 conversation: r.conversation,
                 finalResult: r.output,
             };
+            const meta = item.metadata ?? {};
             const metadata: AgentSpanMetadata = {
                 ...(r.metrics as object),
                 harness: harness.kind,
@@ -413,6 +414,11 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 fullLogUrl: logRef.url,
                 fullLogHash: logRef.hash,
                 ...(snapshotRef ? { toolSchemaSnapshotUrl: snapshotRef.url, toolSchemaHash: snapshotRef.hash } : {}),
+                // Item identity for the judge's per-actor scoreboard.
+                ...(item.id ? { itemId: String(item.id) } : {}),
+                ...(meta.actor ? { itemActor: String(meta.actor) } : {}),
+                ...(meta.team ? { itemTeam: String(meta.team) } : {}),
+                ...(meta.skill ? { itemSkill: String(meta.skill) } : {}),
             };
 
             // Emit-side contract enforcement: an invalid span is a runner bug.

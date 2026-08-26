@@ -77,6 +77,12 @@ export const agentSpanMetadataSchema = {
         fullLogHash: { type: 'string' },
         toolSchemaSnapshotUrl: { type: 'string' },
         toolSchemaHash: { type: 'string' },
+        // Item identity, stamped by the runner so the judge can aggregate
+        // per-actor scoreboards without extra dataset lookups.
+        itemId: { type: 'string' },
+        itemActor: { type: 'string' },
+        itemTeam: { type: 'string' },
+        itemSkill: { type: 'string' },
     },
     required: ['harness', 'model', 'harnessBroke', 'fullLogUrl', 'fullLogHash'],
     additionalProperties: true,
