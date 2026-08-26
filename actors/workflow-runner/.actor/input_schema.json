@@ -29,7 +29,11 @@
             "type": "object",
             "description": "kind picks the adapter (claude-code for now); model is an OpenRouter id.",
             "editor": "json",
-            "default": { "kind": "claude-code", "model": "anthropic/claude-haiku-4.5", "maxTurns": 6 }
+            "default": {
+                "kind": "claude-code",
+                "model": "anthropic/claude-haiku-4.5",
+                "maxTurns": 6
+            }
         },
         "concurrency": {
             "title": "Concurrency",
@@ -98,6 +102,18 @@
             "description": "Falls back to LANGFUSE_SECRET_KEY env var.",
             "editor": "textfield",
             "isSecret": true,
+            "nullable": true
+        },
+        "artifactStore": {
+            "title": "Eval artifacts store",
+            "type": "string",
+            "description": "Named key-value store for durable full logs and tool-schema snapshots (survives run-storage retention; the Judge reads it). Required on the platform: limited-permission runs can only access stores granted via this picker.",
+            "editor": "resourcePicker",
+            "resourceType": "keyValueStore",
+            "resourcePermissions": [
+                "READ",
+                "WRITE"
+            ],
             "nullable": true
         }
     }

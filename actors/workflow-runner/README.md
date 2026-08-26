@@ -1,8 +1,10 @@
-# Workflow Runner (PoC)
+# Workflow Runner
 
-PoC for [ai-team#238](https://github.com/apify/ai-team/issues/238), built for the
-19 Aug evals meeting. It implements the Runner Actor from the "Workflow evals on
-Apify actors" spec, with one deliberate difference (D7, see below).
+Runner Actor for [ai-team#238](https://github.com/apify/ai-team/issues/238). It
+implements the Runner from the "Workflow evals on Apify actors" spec, with one
+deliberate difference (D7, see below). TypeScript, built against the shared
+trace contract in `contract/` (ai-team#245). Its counterpart is the
+[Eval Judge](../judge/README.md), which grades the traces this Actor emits.
 
 ## What it does
 
@@ -11,8 +13,11 @@ Apify actors" spec, with one deliberate difference (D7, see below).
    this one Actor run (concurrency-limited pool, per-item timeout).
 3. Each session gets only the tools its scenario allows: hosted `mcp.apify.com`
    with a per-case `?tools=` list (spec D1), plus Bash when the item asks.
-4. Each agent span carries the judge-ready conversation as JSON (spec D10), so
-   the Judge Actor can grade or re-grade any trace later.
+4. Each agent span carries the judge-ready conversation as JSON (spec D10) with
+   a `contractVersion`, validated against the shared schemas on emit. Full
+   untruncated session logs and the tool-schema snapshots each session actually
+   saw go to a durable named key-value store (`eval-artifacts`), with URL +
+   sha256 pointers on the span, so the Judge can verify and re-grade history.
 5. Flushes OpenTelemetry, then returns the **dataset-run id and URL** in the
    Actor OUTPUT (the judge handoff from #238).
 
@@ -31,9 +36,10 @@ real secrets are the Langfuse keys.
 ## How to demo (cloud)
 
 ```sh
-apify push --dir actors/workflow-runner
+scripts/deploy.sh workflow-runner   # from the repo root (monorepo build)
 apify call <your-account>/eval-workflow-runner-poc --memory 4096 --timeout 900 -i '{
     "createDemoDataset": true,
+    "artifactStore": "<your eval-artifacts store id>",
     "langfuseBaseUrl": "https://langfuse.apify.dev",
     "langfusePublicKey": "pk-lf-...",
     "langfuseSecretKey": "sk-lf-...",
@@ -119,12 +125,14 @@ items through the v4 experiments APIs.
 | D13/D14 health vs results               | yes                                                                                                         |
 | Judge (D9, D11)                         | out of scope; this Actor never scores beyond a deterministic health-gate check                              |
 
-## PoC scope notes
+## Scope notes
 
-- Plain JavaScript; a TypeScript port to match repo conventions belongs to the
-  real integration, not the PoC.
-- The Dockerfile is self-contained (build context = this directory), so
-  `apify push --dir actors/workflow-runner` works without the monorepo
-  `dockerContextDir` setup the existing runner uses.
+- The `artifactStore` input is a resource picker: the Actor runs with limited
+  permissions, and the picker grant is what authorizes writes to the shared
+  `eval-artifacts` store. Without it, artifact writes fail on the platform.
+- Deploy with `scripts/deploy.sh workflow-runner` from the repo root; the
+  Docker build context is the monorepo root (shared `contract/` package).
+- Deterministic health-gate scores use the `check.*` family (`check.contains`,
+  `check.regex`, `check.error`); real grading is the Judge's `judge.*` family.
 - Only the `claude-code` adapter exists. Codex/OpenCode adapters are expected
   to work through the proxy (OpenAI-compatible) but are untested.

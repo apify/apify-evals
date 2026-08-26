@@ -1,17 +1,28 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+
+import {
+    CONTRACT_VERSION,
+    type AgentSpanMetadata,
+    type AgentSpanOutput,
+    type ConversationEntry,
+    type DatasetItemMetadata,
+    validateAgentSpanMetadata,
+    validateAgentSpanOutput,
+} from '@apify-evals/contract';
 import { startActiveObservation } from '@langfuse/tracing';
+import { log } from 'apify';
+
+import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
  * Each adapter runs ONE isolated agent session as a child process of this
- * container and returns { output, conversation, metrics, harnessBroke, stderr }.
- *
- * The session's Langfuse span carries the judge-ready conversation as JSON
- * (spec D10), so the Judge Actor can re-grade any historical trace.
+ * container. The session's Langfuse span carries the judge-ready conversation
+ * as JSON (spec D10) and pointers to durable full-fidelity artifacts.
  *
  * Failure semantics (spec D13/D14): a broken harness (spawn failure, crash
  * with no result) is a health problem and drops the item with an error; an
@@ -19,16 +30,42 @@ import { startActiveObservation } from '@langfuse/tracing';
  * scored, not dropped.
  */
 
+export interface HarnessConfig {
+    kind: string;
+    model: string;
+    maxTurns: number;
+}
+
+export interface SessionContext {
+    item: { input?: unknown; metadata?: DatasetItemMetadata | null };
+    harness: HarnessConfig;
+    mcpUrl: string;
+    apifyToken: string;
+    useOpenRouterProxy: boolean;
+    perItemTimeoutSecs: number;
+    artifactStore: ArtifactStore;
+    snapshots: SnapshotCache;
+}
+
+interface AdapterResult {
+    output: string;
+    conversation: ConversationEntry[];
+    rawStdout: string;
+    metrics: Record<string, unknown>;
+    harnessBroke: boolean;
+    stderr: string;
+}
+
 export const DEFAULT_MAX_TURNS = 6;
 const OPENROUTER_PROXY_URL = 'https://openrouter.apify.actor/api';
 const MAX_STDOUT_BYTES = 10 * 1024 * 1024;
 const TEXT_BLOCK_CAP = 4000;
 const TOOL_INPUT_CAP = 2000;
-const TOOL_RESULT_CAP = 500;
+const TOOL_RESULT_CAP = 2000;
 const STDERR_CAP = 2000;
 const EXIT_GRACE_MS = 1000;
 
-function readFileSafe(path) {
+function readFileSafe(path: string): string | null {
     try {
         return readFileSync(path, 'utf8').trim();
     } catch {
@@ -38,21 +75,31 @@ function readFileSafe(path) {
 
 /** Keep tool inputs small on the span (spec D10): objects pass through when
  * compact, oversized ones become a truncated JSON string preview. */
-function capToolInput(input) {
+function capToolInput(input: unknown): unknown {
     const json = JSON.stringify(input ?? null);
     return json.length <= TOOL_INPUT_CAP ? input : json.slice(0, TOOL_INPUT_CAP);
 }
 
+interface ParsedSession {
+    conversation: ConversationEntry[];
+    finalResult: string | null;
+    subtype: string | null;
+    isError: boolean;
+    usage: unknown;
+    costUsd: number | null;
+    numTurns: number | null;
+}
+
 /** Parse the claude --output-format stream-json session output into a
  * judge-ready conversation plus the final result summary. */
-function parseSessionOutput(ndjson) {
-    const conversation = [];
-    let finalResult = null;
-    let subtype = null;
+function parseSessionOutput(ndjson: string): ParsedSession {
+    const conversation: ConversationEntry[] = [];
+    let finalResult: string | null = null;
+    let subtype: string | null = null;
     let isError = false;
-    let usage = null;
-    let costUsd = null;
-    let numTurns = null;
+    let usage: unknown = null;
+    let costUsd: number | null = null;
+    let numTurns: number | null = null;
     for (const line of ndjson.split('\n')) {
         if (!line.trim()) continue;
         let ev;
@@ -94,25 +141,18 @@ function parseSessionOutput(ndjson) {
     return { conversation, finalResult, subtype, isError, usage, costUsd, numTurns };
 }
 
-function lastAssistantText(conversation) {
+function lastAssistantText(conversation: ConversationEntry[]): string {
     return conversation.findLast((c) => c.role === 'assistant' && c.type === 'text')?.text ?? '';
 }
 
-/** MCP config object for items restricted to hosted Apify tools, or null. */
-function buildMcpConfig({ meta, mcpUrl, apifyToken }) {
-    if (!Array.isArray(meta.tools) || meta.tools.length === 0) return null;
-    // Surface restriction (spec D1): hosted MCP, per-case ?tools= mapping.
-    const url = new URL(mcpUrl);
-    url.searchParams.set('tools', meta.tools.join(','));
-    return {
-        mcpServers: {
-            apify: { type: 'http', url: url.toString(), headers: { Authorization: `Bearer ${apifyToken}` } },
-        },
-    };
-}
-
-function buildClaudeArgs({ prompt, meta, harness, mcpConfigPath }) {
-    const allowedTools = [];
+function buildClaudeArgs(opts: {
+    prompt: string;
+    meta: DatasetItemMetadata;
+    harness: HarnessConfig;
+    mcpConfigPath: string | null;
+}): string[] {
+    const { prompt, meta, harness, mcpConfigPath } = opts;
+    const allowedTools: string[] = [];
     if (meta.allowBash) allowedTools.push('Bash');
 
     const args = [
@@ -134,7 +174,13 @@ function buildClaudeArgs({ prompt, meta, harness, mcpConfigPath }) {
     return args;
 }
 
-function buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy }) {
+function buildClaudeEnv(opts: {
+    home: string;
+    harness: HarnessConfig;
+    apifyToken: string;
+    useOpenRouterProxy: boolean;
+}): Record<string, string | undefined> {
+    const { home, harness, apifyToken, useOpenRouterProxy } = opts;
     return {
         PATH: process.env.PATH,
         // USER/LOGNAME/TMPDIR: required for macOS Keychain auth lookup in local
@@ -147,19 +193,23 @@ function buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy }) {
         DISABLE_ERROR_REPORTING: '1',
         ...(useOpenRouterProxy
             ? {
-                  // Platform path: LLM access via the run's own APIFY_TOKEN, no external keys
+                  // Platform path: LLM access via the run's own APIFY_TOKEN, no
+                  // external keys. HOME is the throwaway session dir so each
+                  // session gets isolated claude state.
                   HOME: home,
                   ANTHROPIC_BASE_URL: OPENROUTER_PROXY_URL,
                   ANTHROPIC_AUTH_TOKEN: apifyToken,
                   ANTHROPIC_MODEL: harness.model,
                   ANTHROPIC_SMALL_FAST_MODEL: harness.model,
               }
-            : // Local dev path: inherit the developer's own Claude auth
+            : // Local dev path: the real HOME, because the developer's own
+              // Claude credentials live there.
               { HOME: process.env.HOME }),
     };
 }
 
-function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs }) {
+function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<AdapterResult> {
+    const { prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
         const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
@@ -167,16 +217,35 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
 
         // All filesystem effects live here: session dir, then the token-bearing
         // MCP config when the item restricts tools.
-        const mcpConfig = buildMcpConfig({ meta, mcpUrl, apifyToken });
-        const mcpConfigPath = mcpConfig ? join(home, 'mcp.json') : null;
-        if (mcpConfig) writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig));
+        let mcpConfigPath: string | null = null;
+        if (Array.isArray(meta.tools) && meta.tools.length > 0) {
+            mcpConfigPath = join(home, 'mcp.json');
+            writeFileSync(
+                mcpConfigPath,
+                JSON.stringify({
+                    mcpServers: {
+                        apify: {
+                            type: 'http',
+                            // Same URL builder as the schema snapshot, by construction.
+                            url: toolsUrl(mcpUrl, meta.tools),
+                            headers: { Authorization: `Bearer ${apifyToken}` },
+                        },
+                    },
+                }),
+            );
+        }
 
         const args = buildClaudeArgs({ prompt, meta, harness, mcpConfigPath });
         const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy });
 
         // detached: the child leads its own process group, so the timeout kill
         // reaches grandchildren (Bash tool shells) that share the stdio pipes.
-        const child = spawn('claude', args, { cwd: home, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+        const child = spawn('claude', args, {
+            cwd: home,
+            env: env as NodeJS.ProcessEnv,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true,
+        });
 
         // StringDecoder keeps multi-byte UTF-8 intact across chunk boundaries.
         const outDecoder = new StringDecoder('utf8');
@@ -188,7 +257,7 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
         let settled = false;
         let timedOut = false;
         let peakRssMb = 0;
-        let graceTimer = null;
+        let graceTimer: NodeJS.Timeout | null = null;
 
         // Linux/container only; /proc does not exist on macOS.
         const rssTimer =
@@ -201,7 +270,7 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
 
         const killTree = () => {
             try {
-                process.kill(-child.pid, 'SIGKILL');
+                process.kill(-(child.pid as number), 'SIGKILL');
             } catch {
                 try {
                     child.kill('SIGKILL');
@@ -215,11 +284,17 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
             killTree();
         }, perItemTimeoutSecs * 1000);
 
-        const settle = ({ exitCode = null, spawnError = null }) => {
+        const settle = ({
+            exitCode = null,
+            spawnError = null,
+        }: {
+            exitCode?: number | null;
+            spawnError?: string | null;
+        }) => {
             if (settled) return;
             settled = true;
             clearTimeout(killer);
-            clearTimeout(graceTimer);
+            if (graceTimer) clearTimeout(graceTimer);
             if (rssTimer) clearInterval(rssTimer);
             try {
                 rmSync(home, { recursive: true, force: true });
@@ -237,6 +312,7 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
             resolve({
                 output: finalResult ?? lastAssistantText(conversation),
                 conversation,
+                rawStdout: out,
                 metrics: {
                     harness: harness.kind,
                     model: harness.model,
@@ -260,7 +336,7 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
         // Cap is approximate: checked pre-append, so the final chunk may
         // overshoot. The dropped tail is tolerated because parseSessionOutput
         // skips unparseable lines.
-        child.stdout.on('data', (d) => {
+        child.stdout.on('data', (d: Buffer) => {
             if (outBytes < MAX_STDOUT_BYTES) {
                 out += outDecoder.write(d);
                 outBytes += d.length;
@@ -268,7 +344,7 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
                 stdoutTruncated = true;
             }
         });
-        child.stderr.on('data', (d) => {
+        child.stderr.on('data', (d: Buffer) => {
             if (errOut.length < STDERR_CAP) errOut += errDecoder.write(d);
         });
         child.on('error', (err) => settle({ spawnError: String(err.message ?? err) }));
@@ -281,11 +357,13 @@ function runClaudeCode({ prompt, item, harness, mcpUrl, apifyToken, useOpenRoute
     });
 }
 
-const ADAPTERS = { 'claude-code': runClaudeCode };
+const ADAPTERS: Record<string, (ctx: SessionContext & { prompt: string }) => Promise<AdapterResult>> = {
+    'claude-code': runClaudeCode,
+};
 
 /** Validate harness config up front so a bad input fails fast, before any
  * Langfuse work starts. Single source of truth for supported kinds. */
-export function validateHarness(harness) {
+export function validateHarness(harness: HarnessConfig): void {
     if (!ADAPTERS[harness.kind]) {
         throw new Error(`Unknown harness.kind "${harness.kind}" (supported: ${Object.keys(ADAPTERS).join(', ')})`);
     }
@@ -294,23 +372,60 @@ export function validateHarness(harness) {
     }
 }
 
-/** Run one session inside a Langfuse "agent" span attached to the experiment trace. */
-export async function runSession(ctx) {
+/**
+ * Run one session inside a Langfuse "agent" span attached to the experiment
+ * trace. Emits the v1 contract: validated output + metadata, full log and
+ * tool-schema snapshot in the named artifact store, pointers on the span.
+ */
+export async function runSession(ctx: SessionContext): Promise<{ output: string }> {
     const { item, harness } = ctx;
-    const prompt = typeof item.input === 'string' ? item.input : (item.input?.prompt ?? JSON.stringify(item.input));
+    const input = item.input as { prompt?: string } | string | undefined;
+    const prompt = typeof input === 'string' ? input : (input?.prompt ?? JSON.stringify(input));
     const adapter = ADAPTERS[harness.kind];
 
     return startActiveObservation(
         'agent',
         async (span) => {
             const r = await adapter({ ...ctx, prompt });
-            span.update({
-                input: prompt,
-                output: { conversation: r.conversation, finalResult: r.output },
-                metadata: { ...r.metrics, harnessBroke: r.harnessBroke },
-            });
+
+            const traceId = span.otelSpan.spanContext().traceId;
+            const logRef = await ctx.artifactStore.putLog(traceId, r.rawStdout);
+
+            const tools = item.metadata?.tools;
+            let snapshotRef = null;
+            if (Array.isArray(tools) && tools.length > 0) {
+                snapshotRef = await ctx.snapshots.get(tools).catch((err) => {
+                    log.warning(`tool-schema snapshot failed (judge will mark schema-validity n/a): ${err}`);
+                    return null;
+                });
+            }
+
+            const output: AgentSpanOutput = {
+                contractVersion: CONTRACT_VERSION,
+                conversation: r.conversation,
+                finalResult: r.output,
+            };
+            const metadata: AgentSpanMetadata = {
+                ...(r.metrics as object),
+                harness: harness.kind,
+                model: harness.model,
+                harnessBroke: r.harnessBroke,
+                fullLogUrl: logRef.url,
+                fullLogHash: logRef.hash,
+                ...(snapshotRef ? { toolSchemaSnapshotUrl: snapshotRef.url, toolSchemaHash: snapshotRef.hash } : {}),
+            };
+
+            // Emit-side contract enforcement: an invalid span is a runner bug.
+            if (!validateAgentSpanOutput(output)) {
+                throw new Error(`contract violation (output): ${JSON.stringify(validateAgentSpanOutput.errors)}`);
+            }
+            if (!validateAgentSpanMetadata(metadata)) {
+                throw new Error(`contract violation (metadata): ${JSON.stringify(validateAgentSpanMetadata.errors)}`);
+            }
+
+            span.update({ input: prompt, output, metadata });
             if (r.harnessBroke) throw new Error(`Harness broke: ${r.stderr || 'no output'}`);
-            return r;
+            return { output: r.output };
         },
         { asType: 'agent' },
     );
