@@ -6,6 +6,11 @@ interface Input {
     promptLabel?: string;
     force?: boolean;
     concurrency?: number;
+    /** Run-level scores feed the OKR trend; the runner passes false for filtered (partial) runs. */
+    writeRunScores?: boolean;
+    /** Langfuse annotation queue that receives every non-pass plus a sample of passes for human review ('' disables). */
+    auditQueue?: string;
+    auditPassSample?: number | string;
     langfuseBaseUrl?: string;
     langfusePublicKey?: string;
     langfuseSecretKey?: string;
@@ -19,8 +24,12 @@ const {
     promptLabel = 'production',
     force = false,
     concurrency = 4,
+    writeRunScores = true,
+    auditQueue = 'judge-audit',
+    auditPassSample: auditPassSampleInput = 0.1,
 } = input;
 if (!datasetRunId) throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
+const auditPassSample = Math.min(1, Math.max(0, Number(auditPassSampleInput) || 0));
 
 // Env must be set before the Langfuse SDK loads (it captures env at module load).
 for (const [inputKey, envKey] of [
@@ -243,11 +252,32 @@ const fixAreas: Record<string, number> = {};
 for (const r of conclusive) {
     if (r.fixArea && r.fixArea !== 'none') fixAreas[r.fixArea] = (fixAreas[r.fixArea] ?? 0) + 1;
 }
+const actorRunsCostUsd = Number(judged.reduce((a, r) => a + (r.actorRunsCostUsd ?? 0), 0).toFixed(4));
+
+// Repeats: the same scenario judged N times in this run. passAtN = any repeat
+// passed; consistency = share of repeats agreeing with the majority. Written on
+// every repeat's item so the compare view shows x/N without arithmetic.
+const byScenario = new Map<string, typeof conclusive>();
+for (const r of conclusive) byScenario.set(r.experimentItemId, [...(byScenario.get(r.experimentItemId) ?? []), r]);
+const flaky: { scenario: string; passed: number; repeats: number }[] = [];
+for (const [scenario, group] of byScenario) {
+    if (group.length < 2) continue;
+    const passes = group.filter((r) => r.verdict === 'pass').length;
+    const majority = Math.max(passes, group.length - passes) / group.length;
+    if (passes > 0 && passes < group.length) flaky.push({ scenario, passed: passes, repeats: group.length });
+    for (const r of group) {
+        const obs = items.find((i) => i.traceId === r.traceId);
+        if (!obs) continue;
+        await langfuse.api.scores.create({ traceId: r.traceId, observationId: obs.observationId, name: 'eval.passAtN', value: passes > 0 ? 1 : 0, comment: `${passes}/${group.length} repeats passed`, metadata: version as Record<string, unknown> });
+        await langfuse.api.scores.create({ traceId: r.traceId, observationId: obs.observationId, name: 'eval.consistency', value: Number(majority.toFixed(3)), comment: `${passes}/${group.length} passed; majority agreement ${Math.round(majority * 100)}%`, metadata: version as Record<string, unknown> });
+    }
+}
 
 // Run-level scores attach to the dataset run itself (subject kind
 // "experiment"), which is what the experiments list and compare-view header
-// show. Only written when this batch judged something new.
-if (judged.length > 0) {
+// show. Only written when this batch judged something new, and only for
+// full-scope runs (a team's filtered run must not move the OKR trend).
+if (judged.length > 0 && writeRunScores) {
     const runScore = (name: string, value: number, comment: string) =>
         langfuse.api.scores.create({
             datasetRunId,
@@ -262,7 +292,37 @@ if (judged.length > 0) {
     await runScore('inconclusive_rate', judged.length ? inconclusive / judged.length : 0, `${inconclusive}/${judged.length} scenarios inconclusive (infrastructure)`);
     if (checksTotal > 0) await runScore('checks_pass_rate', checksPassed / checksTotal, `${checksPassed}/${checksTotal} deterministic checks passed`);
     if (conclusive.length > 0) await runScore('judge_disagreement_rate', disagreements / conclusive.length, `${disagreements}/${conclusive.length} model vs checks disagreements`);
+    await runScore('actor_runs_cost_usd', actorRunsCostUsd, `USD spent by the Actors the agents triggered in this run`);
+} else if (judged.length > 0) {
+    log.info('run-level scores skipped (partial scope run)');
 }
+// Human calibration: every non-pass and a sample of passes go to an annotation
+// queue where a reviewer marks human.verdict agree/disagree; the calibrate tool
+// turns that into calibration.agreement. Failures here never fail the run.
+if (auditQueue && judged.length > 0) {
+    try {
+        const queues = (await langfuse.api.annotationQueues.listQueues({ limit: 100 })) as unknown as { data?: { id: string; name: string }[] };
+        let queue = queues.data?.find((q) => q.name === auditQueue);
+        if (!queue) {
+            queue = (await langfuse.api.annotationQueues.createQueue({
+                name: auditQueue,
+                description: 'Judge audit: review judge.verdict / judge.fixArea and score human.verdict (agree / disagree / unsure).',
+                scoreConfigIds: [],
+            })) as { id: string; name: string };
+        }
+        let queued = 0;
+        for (const r of judged) {
+            const sample = r.verdict === 'pass' ? Math.random() < auditPassSample : true;
+            if (!sample) continue;
+            await langfuse.api.annotationQueues.createQueueItem(queue.id, { objectId: r.traceId, objectType: 'TRACE' });
+            queued++;
+        }
+        log.info(`audit queue "${auditQueue}": ${queued} trace(s) queued for human review`);
+    } catch (err) {
+        log.warning(`audit queue failed: ${err}`);
+    }
+}
+
 await langfuse.flush();
 try {
     await otel.shutdown();
@@ -286,6 +346,8 @@ const summary = {
     checksPassed,
     checksTotal,
     disagreements,
+    actorRunsCostUsd,
+    flaky,
     fixAreas,
     skippedAlreadyJudged: skippedCount,
     skippedNoTrace: results.filter((r) => r.status === 'skipped-no-trace').length,

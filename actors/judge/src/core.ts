@@ -87,6 +87,7 @@ export interface JudgeItemResult {
     works?: 0 | 1 | null;
     checksPassed?: number;
     checksTotal?: number;
+    actorRunsCostUsd?: number;
     title?: string;
     itemActor?: string;
     itemTeam?: string;
@@ -646,6 +647,7 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
         works: merged.works,
         checksPassed: checks.filter((c) => c.applicable && c.passed).length,
         checksTotal: checks.filter((c) => c.applicable).length,
+        actorRunsCostUsd: typeof (obs.metadata as { actorRunsCostUsd?: number }).actorRunsCostUsd === 'number' ? (obs.metadata as { actorRunsCostUsd: number }).actorRunsCostUsd : undefined,
         title: obs.metadata.itemTitle,
         itemActor: obs.metadata.itemActor,
         itemTeam: obs.metadata.itemTeam,

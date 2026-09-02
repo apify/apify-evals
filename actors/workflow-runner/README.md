@@ -18,16 +18,20 @@ whether a change they made actually helped.
 
 Three numbers, in this order:
 
-- **Verdict** (`judge.verdict`: `pass`, `fail`, `wrong-actor`): did the agent complete the scenario's task with real Actor data? `wrong-actor` means it got there with an Actor other than the intended one. The numeric twin `judge.overall` (1/0) is what the dashboards average; its average is the pass rate, the OKR baseline per Actor per model.
+- **Verdict** (`judge.verdict`: `pass`, `fail`, `wrong-actor`, `inconclusive`): did the agent complete the scenario's task with real Actor data and pass every deterministic check? `wrong-actor` means it used an Actor other than the intended one (read from its tool calls). `inconclusive` means infrastructure failed, not the Actor. The numeric twin `judge.overall` (1/0) is what the dashboards average; its average is the pass rate, the OKR baseline per Actor per model.
 - **Found vs Works**: *Found* = discovery scenarios, where the agent had to pick your Actor in store search (checked deterministically by Actor name). *Works* = usage scenarios, where your Actor is pinned and the agent has to drive it. A Found failure belongs to store search and how the Actor presents itself; a Works failure belongs to the Actor.
 - **Fix area** (`judge.fixArea`): the one thing the judge thinks the team should change first, with a cited tool call. `input-schema`, `readme-docs`, `output-format`, `error-messages` are yours. `discoverability` is store search. `agent-or-model` means your Actor did its part.
 
 ### Check whether a change to your Actor helped
 
-1. Open the Actor in Console, press **Run**. Set **Only these Actors** to your Actor slug (e.g. `crawler-google-places`) and **Repeats** to 3. Leave the rest.
-2. Wait a few minutes. The last log line and the OUTPUT record hold the results link.
-3. In the compare view, choose the previous run of your Actor as the baseline. Rows that flipped are the story. Three repeats mean a 2/3 → 3/3 move is real, a 1/3 flip is probably a flaky scrape.
-4. The team dashboard trend catches up over the next daily runs.
+1. Open the Actor in Console, press **Run**. Set **Only these Actors** to your Actor (e.g. `compass/crawler-google-places`) or **Only this team** to your team, and **Repeats** to 3. Leave the rest.
+2. Wait a few minutes. The last log lines and the OUTPUT record hold the results link. The run is named `store-actors · <model> · subject:<actor> · ×3 · <time> · web` so you find it in the experiments list.
+3. In the compare view, choose the previous run of your Actor as the baseline. Rows that flipped are the story. With repeats the judge writes `eval.passAtN` (any repeat passed) and `eval.consistency` per scenario, and OUTPUT lists `flaky` scenarios; a 2/3 → 3/3 move is real, a 1/3 flip is probably a flaky scrape.
+4. Filtered runs do not move the OKR trend (no run-level scores); the daily full run does. The team dashboard catches up over the next daily runs.
+
+### Deterministic checks and verdicts
+
+Each scenario can declare checks that are decided by code, not by the judge: which Actor was actually called, the input the agent built, how many items the run produced and which fields they have, whether the numbers in the answer exist in the Actor output, and comparisons against a fresh reference run. See [scenarios/README.md](../../scenarios/README.md). A failed check makes the verdict `fail` even if the judge liked the answer; an infrastructure failure (Actor run failed, MCP exposed no tools, timeout) makes it `inconclusive` and is not charged to anyone.
 
 ### Add a scenario
 
@@ -56,6 +60,10 @@ Keep prompts finishable in about two minutes: cap result counts, no whole-site c
 5. Starts the [Eval Judge](../judge/README.md) (`Actor.call`, env `JUDGE_ACTOR`) on the new run and merges its summary into OUTPUT: `resultsUrl` (compare view), `passRate`, `foundRate`, `worksRate`, `fixAreas`, `scoreboard`, `judgeRunUrl`.
 
 A broken harness fails the item loudly; an agent that ran out of turns or hit the timeout is a scored result, not an error (spec D13/D14).
+
+### Run health and exit codes
+
+The run status reports system health, never scenario results (spec D14). Exit 0: ran and judged. 10: fewer than `healthThreshold` of the sessions completed. 11: the judge Actor failed. 12: no scenario matched the filters. 13: telemetry flush failed. 14: preflight failed (MCP server returned no tools or the LLM proxy did not answer). Schedules and tasks get Apify's failure notifications for free.
 
 ### Secrets and permissions
 

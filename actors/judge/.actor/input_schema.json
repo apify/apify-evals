@@ -1,78 +1,98 @@
 {
-  "title": "Eval Judge input",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "datasetRunId": {
-      "title": "Langfuse dataset-run id",
-      "type": "string",
-      "description": "The run to judge; the Runner Actor returns this in its OUTPUT as datasetRunId. v1 judges by dataset-run id only; traceIds/filter inputs and full-log fetching are planned follow-ups.",
-      "editor": "textfield"
+    "title": "Eval Judge input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "datasetRunId": {
+            "title": "Langfuse dataset-run id",
+            "type": "string",
+            "description": "The run to judge; the Runner Actor returns this in its OUTPUT as datasetRunId. v1 judges by dataset-run id only; traceIds/filter inputs and full-log fetching are planned follow-ups.",
+            "editor": "textfield"
+        },
+        "judgeModel": {
+            "title": "Judge model (OpenRouter id)",
+            "type": "string",
+            "description": "Exact model id, never an alias; stamped into every score.",
+            "default": "anthropic/claude-sonnet-4.6",
+            "editor": "textfield"
+        },
+        "promptLabel": {
+            "title": "Judge prompt label",
+            "type": "string",
+            "description": "Langfuse prompt-management label; resolved to a concrete version once per batch.",
+            "default": "production",
+            "editor": "textfield"
+        },
+        "force": {
+            "title": "Force re-judge",
+            "type": "boolean",
+            "description": "Write a new score set even when a matching (rubric, model, prompt, impl) set exists. Never mutates old scores.",
+            "default": false
+        },
+        "concurrency": {
+            "title": "Concurrency",
+            "type": "integer",
+            "description": "Parallel judge calls.",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 20
+        },
+        "langfuseBaseUrl": {
+            "title": "Langfuse base URL",
+            "type": "string",
+            "description": "Falls back to LANGFUSE_BASE_URL env var.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "langfusePublicKey": {
+            "title": "Langfuse public key",
+            "type": "string",
+            "description": "Falls back to LANGFUSE_PUBLIC_KEY env var.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        },
+        "langfuseSecretKey": {
+            "title": "Langfuse secret key",
+            "type": "string",
+            "description": "Falls back to LANGFUSE_SECRET_KEY env var.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        },
+        "artifactStore": {
+            "title": "Eval artifacts store",
+            "type": "string",
+            "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id IoT4ipiOnFHyRsZQH); the picker grants this run access. Leave empty to use the default store by name.",
+            "editor": "resourcePicker",
+            "resourceType": "keyValueStore",
+            "resourcePermissions": [
+                "READ"
+            ],
+            "nullable": true
+        },
+        "writeRunScores": {
+            "title": "Write run-level scores",
+            "type": "boolean",
+            "description": "pass_rate, found_rate, works_rate and friends on the dataset run. The runner sets this to false for filtered (team) runs so they do not move the OKR trend.",
+            "default": true
+        },
+        "auditQueue": {
+            "title": "Audit queue",
+            "type": "string",
+            "description": "Langfuse annotation queue that receives every non-pass scenario plus a sample of passes for human review of the judge. Empty disables.",
+            "editor": "textfield",
+            "default": "judge-audit"
+        },
+        "auditPassSample": {
+            "title": "Audit sample of passes",
+            "type": "string",
+            "description": "Share of passing scenarios also sent to the audit queue (0 to 1).",
+            "editor": "textfield",
+            "default": "0.1"
+        }
     },
-    "judgeModel": {
-      "title": "Judge model (OpenRouter id)",
-      "type": "string",
-      "description": "Exact model id, never an alias; stamped into every score.",
-      "default": "anthropic/claude-sonnet-4.6",
-      "editor": "textfield"
-    },
-    "promptLabel": {
-      "title": "Judge prompt label",
-      "type": "string",
-      "description": "Langfuse prompt-management label; resolved to a concrete version once per batch.",
-      "default": "production",
-      "editor": "textfield"
-    },
-    "force": {
-      "title": "Force re-judge",
-      "type": "boolean",
-      "description": "Write a new score set even when a matching (rubric, model, prompt, impl) set exists. Never mutates old scores.",
-      "default": false
-    },
-    "concurrency": {
-      "title": "Concurrency",
-      "type": "integer",
-      "description": "Parallel judge calls.",
-      "default": 4,
-      "minimum": 1,
-      "maximum": 20
-    },
-    "langfuseBaseUrl": {
-      "title": "Langfuse base URL",
-      "type": "string",
-      "description": "Falls back to LANGFUSE_BASE_URL env var.",
-      "editor": "textfield",
-      "nullable": true
-    },
-    "langfusePublicKey": {
-      "title": "Langfuse public key",
-      "type": "string",
-      "description": "Falls back to LANGFUSE_PUBLIC_KEY env var.",
-      "editor": "textfield",
-      "isSecret": true,
-      "nullable": true
-    },
-    "langfuseSecretKey": {
-      "title": "Langfuse secret key",
-      "type": "string",
-      "description": "Falls back to LANGFUSE_SECRET_KEY env var.",
-      "editor": "textfield",
-      "isSecret": true,
-      "nullable": true
-    },
-    "artifactStore": {
-      "title": "Eval artifacts store",
-      "type": "string",
-      "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id IoT4ipiOnFHyRsZQH); the picker grants this run access. Leave empty to use the default store by name.",
-      "editor": "resourcePicker",
-      "resourceType": "keyValueStore",
-      "resourcePermissions": [
-        "READ"
-      ],
-      "nullable": true
-    }
-  },
-  "required": [
-    "datasetRunId"
-  ]
+    "required": [
+        "datasetRunId"
+    ]
 }
