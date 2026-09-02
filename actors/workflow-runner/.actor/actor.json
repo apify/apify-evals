@@ -1,14 +1,20 @@
 {
-    "actorSpecification": 1,
-    "name": "eval-workflow-runner-poc",
-    "title": "Eval Workflow Runner",
-    "description": "Runner Actor for ai-team#238: consumes a Langfuse dataset, runs one isolated agent session per item in parallel inside one Actor run, emits contract-conformant traces (judge-ready conversation, durable artifact pointers), returns the dataset-run id for the Judge Actor.",
-    "version": "0.2",
-    "buildTag": "latest",
-    "input": "./input_schema.json",
-    "dockerfile": "../Dockerfile",
-    "dockerContextDir": "../../..",
-    "meta": {
-        "generatedBy": "Claude Code with Claude Fable 5"
-    }
+  "actorSpecification": 1,
+  "name": "eval-workflow-runner-poc",
+  "title": "Eval Workflow Runner",
+  "description": "Runner Actor for ai-team#238: consumes a Langfuse dataset, runs one isolated agent session per item in parallel inside one Actor run, emits contract-conformant traces (judge-ready conversation, durable artifact pointers), returns the dataset-run id for the Judge Actor.",
+  "version": "0.2",
+  "buildTag": "latest",
+  "input": "./input_schema.json",
+  "dockerfile": "../Dockerfile",
+  "dockerContextDir": "../../..",
+  "meta": {
+    "generatedBy": "Claude Code with Claude Fable 5"
+  },
+  "environmentVariables": {
+    "LANGFUSE_BASE_URL": "https://langfuse.apify.dev",
+    "LANGFUSE_PUBLIC_KEY": "@langfusePublicKey",
+    "LANGFUSE_SECRET_KEY": "@langfuseSecretKey",
+    "JUDGE_ACTOR": "artogahr/eval-judge"
+  }
 }

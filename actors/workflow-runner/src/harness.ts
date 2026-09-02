@@ -13,7 +13,7 @@ import {
     validateAgentSpanMetadata,
     validateAgentSpanOutput,
 } from '@apify-evals/contract';
-import { startActiveObservation } from '@langfuse/tracing';
+import { propagateAttributes, startActiveObservation } from '@langfuse/tracing';
 import { log } from 'apify';
 
 import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
@@ -38,6 +38,7 @@ export interface HarnessConfig {
 
 export interface SessionContext {
     item: { id?: string; input?: unknown; metadata?: DatasetItemMetadata | null };
+    datasetName: string;
     harness: HarnessConfig;
     mcpUrl: string;
     apifyToken: string;
@@ -383,7 +384,17 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     const prompt = typeof input === 'string' ? input : (input?.prompt ?? JSON.stringify(input));
     const adapter = ADAPTERS[harness.kind];
 
-    return startActiveObservation(
+    // Trace tags are what Langfuse dashboards can group by, so this is where
+    // the team-facing slicing (per actor / team / skill) is wired in.
+    const meta = item.metadata ?? {};
+    const tags = [
+        `dataset:${ctx.datasetName}`,
+        `model:${harness.model}`,
+        ...(meta.actor ? [`actor:${meta.actor}`] : []),
+        ...(meta.team ? [`team:${meta.team}`] : []),
+        ...(meta.skill ? [`skill:${meta.skill}`] : []),
+    ];
+    const runInSpan = () => startActiveObservation(
         'agent',
         async (span) => {
             const r = await adapter({ ...ctx, prompt });
@@ -405,7 +416,6 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 conversation: r.conversation,
                 finalResult: r.output,
             };
-            const meta = item.metadata ?? {};
             const metadata: AgentSpanMetadata = {
                 ...(r.metrics as object),
                 harness: harness.kind,
@@ -416,6 +426,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 ...(snapshotRef ? { toolSchemaSnapshotUrl: snapshotRef.url, toolSchemaHash: snapshotRef.hash } : {}),
                 // Item identity for the judge's per-actor scoreboard.
                 ...(item.id ? { itemId: String(item.id) } : {}),
+                ...(meta.title ? { itemTitle: String(meta.title) } : {}),
                 ...(meta.actor ? { itemActor: String(meta.actor) } : {}),
                 ...(meta.team ? { itemTeam: String(meta.team) } : {}),
                 ...(meta.skill ? { itemSkill: String(meta.skill) } : {}),
@@ -434,5 +445,22 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
             return { output: r.output };
         },
         { asType: 'agent' },
+    );
+
+    // Langfuse dashboards can group scores only by a fixed set of trace
+    // attributes (tags group by the whole array, not per tag; a score's
+    // sessionId is its own subject, not the trace's), so the team-facing
+    // slices are mapped onto them: userId = Actor (per-Actor widgets),
+    // version = model, sessionId = Actor too (the Sessions page then lists
+    // every trace of one Actor). Team stays a tag (dashboard-level filter);
+    // skill has no slot (Found vs Works uses the run-level rates).
+    return propagateAttributes(
+        {
+            tags,
+            version: harness.model,
+            ...(meta.actor ? { sessionId: String(meta.actor), userId: String(meta.actor) } : {}),
+            ...(typeof meta.title === 'string' && meta.title ? { traceName: meta.title } : {}),
+        },
+        runInSpan,
     );
 }

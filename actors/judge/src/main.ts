@@ -80,7 +80,17 @@ const version = {
     judgeImplVersion: JUDGE_IMPL_VERSION,
 };
 
+// The comments API needs the project id; the key is project-scoped.
+const projectId = ((await langfuse.api.projects.get()) as { data?: { id: string }[] }).data?.[0]?.id;
+if (!projectId) throw new Error('Could not resolve the Langfuse project id from the API key');
+
 const items = await loadRunItems(langfuse, datasetRunId);
+// Deterministic check results (runner-side) feed the fix-area override for
+// discovery misses, so they are loaded before judging, not only for the board.
+const deterministic = await loadDeterministicResults(
+    langfuse,
+    items.map((i) => i.traceId),
+);
 const judgedTraceIds = await loadJudgedTraceIds(
     langfuse,
     datasetRunId,
@@ -107,9 +117,13 @@ async function worker() {
                 datasetRunId: datasetRunId as string,
                 judgedTraceIds,
                 force,
+                projectId: projectId as string,
+                deterministic: deterministic.get(item.traceId),
             });
             results.push(r);
-            log.info(`${item.experimentItemId}: ${r.status}${r.overall ? ` overall=${r.overall}` : ''}`);
+            log.info(
+                `${item.experimentItemId}: ${r.status}${r.overall ? ` overall=${r.overall}` : ''}${r.fixArea ? ` fix=${r.fixArea}` : ''}`,
+            );
         } catch (err) {
             log.error(`${item.experimentItemId}: judge failed: ${err}`);
             results.push({
@@ -122,15 +136,51 @@ async function worker() {
     }
 }
 await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-await langfuse.flush();
 
 const judged = results.filter((r) => r.status === 'judged');
-const deterministic = await loadDeterministicResults(
-    langfuse,
-    items.map((i) => i.traceId),
-);
 const scoreboard = buildScoreboard(results, deterministic);
 const skippedCount = results.filter((r) => r.status === 'skipped-already-judged').length;
+
+// Run-level numbers: Found (discovery scenarios whose deterministic check
+// passed) and Works (usage scenarios the judge passed) split "whose problem";
+// pass_rate is the OKR headline. Denominator = judged items in this batch.
+const passed = judged.filter((r) => r.overall === 'pass').length;
+const found = scoreboard.reduce((acc, row) => ({ pass: acc.pass + row.found.pass, total: acc.total + row.found.total }), {
+    pass: 0,
+    total: 0,
+});
+const works = scoreboard.reduce((acc, row) => ({ pass: acc.pass + row.works.pass, total: acc.total + row.works.total }), {
+    pass: 0,
+    total: 0,
+});
+const rate = (x: { pass: number; total: number }) => (x.total === 0 ? null : x.pass / x.total);
+const passRate = judged.length === 0 ? null : passed / judged.length;
+const foundRate = rate(found);
+const worksRate = rate(works);
+const fixAreas: Record<string, number> = {};
+for (const r of judged) {
+    if (r.fixArea && r.fixArea !== 'none') fixAreas[r.fixArea] = (fixAreas[r.fixArea] ?? 0) + 1;
+}
+
+// Run-level scores attach to the dataset run itself (subject kind
+// "experiment"), which is what the experiments list and compare-view header
+// show. Only written when this batch judged something new, so a re-run that
+// skipped everything does not stack duplicate run scores.
+if (judged.length > 0) {
+    const runScore = (name: string, value: number, comment: string) =>
+        langfuse.api.scores.create({
+            datasetRunId,
+            name,
+            value,
+            comment,
+            metadata: version as Record<string, unknown>,
+        });
+    await runScore('pass_rate', passRate as number, `${passed}/${judged.length} scenarios passed`);
+    if (foundRate !== null) await runScore('found_rate', foundRate, `${found.pass}/${found.total} discovery scenarios found the intended Actor`);
+    if (worksRate !== null) await runScore('works_rate', worksRate, `${works.pass}/${works.total} usage scenarios completed`);
+}
+await langfuse.flush();
+
 await Actor.setValue('SCOREBOARD', renderScoreboard(scoreboard, datasetRunId, skippedCount), {
     contentType: 'text/markdown',
 });
@@ -138,8 +188,12 @@ const summary = {
     datasetRunId,
     items: items.length,
     judged: judged.length,
-    passed: judged.filter((r) => r.overall === 'pass').length,
-    skippedAlreadyJudged: results.filter((r) => r.status === 'skipped-already-judged').length,
+    passed,
+    passRate,
+    foundRate,
+    worksRate,
+    fixAreas,
+    skippedAlreadyJudged: skippedCount,
     skippedNoTrace: results.filter((r) => r.status === 'skipped-no-trace').length,
     errors: results.filter((r) => r.status === 'error').length,
     degraded: judged.filter((r) => r.degraded).length,

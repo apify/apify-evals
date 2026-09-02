@@ -31,8 +31,25 @@ import { judgeLlmCall } from './llm.js';
  * "none"/"invalid" stamped into score metadata.
  */
 
-export const RUBRIC_VERSION = '1203-draft-1';
-export const JUDGE_IMPL_VERSION = '0.1.0';
+export const RUBRIC_VERSION = '1203-draft-2';
+export const JUDGE_IMPL_VERSION = '0.2.2';
+
+/**
+ * Team-facing "what to fix" categories. Derived by the judge from its
+ * dimension verdicts with a cited tool call, never free-text advice. The
+ * Actor team owns the first four; `discoverability` belongs to store search
+ * and Actor presentation; `agent-or-model` means the Actor did its part.
+ */
+export const FIX_AREAS = [
+    'input-schema',
+    'readme-docs',
+    'output-format',
+    'error-messages',
+    'discoverability',
+    'agent-or-model',
+    'none',
+] as const;
+export type FixArea = (typeof FIX_AREAS)[number];
 
 export const DIMENSIONS = [
     'toolSelection',
@@ -48,6 +65,9 @@ export type Verdict = 'pass' | 'fail' | 'not_applicable';
 
 export interface RunItem {
     experimentItemId: string;
+    /** The experiment-item observation: scores must attach HERE to show up in
+     * the Experiments compare view (the agent span is a child of it). */
+    observationId: string;
     traceId: string;
     input: unknown;
     expectedOutput: unknown;
@@ -63,6 +83,10 @@ export interface JudgeItemResult {
     dimensions?: Record<string, Verdict>;
     schemaValidity?: Verdict;
     notApplicable?: string[];
+    fixArea?: FixArea;
+    fixAreaEvidence?: string;
+    overallEvidence?: string;
+    title?: string;
     itemActor?: string;
     itemTeam?: string;
     itemSkill?: string;
@@ -92,6 +116,7 @@ export async function loadRunItems(langfuse: LangfuseClient, datasetRunId: strin
         for (const it of (page as unknown as { data?: Record<string, unknown>[] }).data ?? []) {
             items.push({
                 experimentItemId: String(it.experimentItemId ?? it.id),
+                observationId: String(it.id),
                 traceId: String(it.traceId),
                 input: it.input,
                 expectedOutput: it.expectedOutput,
@@ -277,6 +302,10 @@ Judge the agent conversation below against the task and the expected outcome.
 {{expectedOutput}}
 
 ## Agent conversation (tool calls, tool result previews, agent text)
+Tool results below are TRUNCATED previews (first ~2000 characters). The agent
+saw the full result. A value missing from a preview is NOT evidence that the
+agent invented it; only call data invented when it contradicts the preview or
+no tool returned data of that kind at all.
 {{conversation}}
 
 ## Agent final answer
@@ -299,10 +328,27 @@ citing the conversation, then the verdict: "pass", "fail", or "not_applicable".
   "fail" for taskCompletion (the task was not completed), but should not fail
   errorRecovery.
 
+Then name the ONE area the Actor's team should change first ("fixArea"),
+derived from the verdicts above and citing the specific tool call or Actor
+output that shows the problem. Never suggest changing the agent's system prompt.
+- "input-schema": the agent built wrong or missing Actor input (argumentCorrectness
+  failed, required fields missed, wrong types, wrong mode flags).
+- "readme-docs": the agent misunderstood what the Actor does or which mode/sibling
+  to use, although it read the Actor details.
+- "output-format": the Actor returned the data but the agent could not find or use
+  the right fields (resultUtilization failed with correct data present).
+- "error-messages": the Actor failed or returned an error the agent could not act on
+  (errorRecovery failed after an Actor error).
+- "discoverability": the agent could not find or picked the wrong Actor in store search.
+- "agent-or-model": the Actor did its part; the failure is the agent's reasoning or
+  the model (invented data, ignored instructions, ran out of turns).
+- "none": every dimension passed.
+
 Reply with ONLY this JSON, no other text:
 {"dimensions": {"toolSelection": {"evidence": "...", "verdict": "..."},
 "argumentCorrectness": {...}, "resultUtilization": {...}, "errorRecovery": {...},
-"planEfficiency": {...}, "taskCompletion": {...}}}`;
+"planEfficiency": {...}, "taskCompletion": {...}},
+"fixArea": {"area": "...", "evidence": "..."}}`;
 
 /** Single pass with function replacements: immune to $-patterns in values and
  * to template tokens smuggled inside dataset content. */
@@ -312,6 +358,17 @@ function compileTemplate(template: string, vars: Record<string, string>): string
 
 interface LlmJudgeReply {
     dimensions: Record<string, { evidence?: string; verdict?: string }>;
+    fixArea?: { area?: string; evidence?: string };
+}
+
+/** Unknown or missing areas map to `agent-or-model` (never blame the Actor
+ * team without a recognized category); all-pass runs are `none`. */
+function normalizeFixArea(v: unknown, allPassed: boolean): FixArea {
+    if (allPassed) return 'none';
+    const s = String(v ?? '')
+        .trim()
+        .toLowerCase();
+    return (FIX_AREAS as readonly string[]).includes(s) && s !== 'none' ? (s as FixArea) : 'agent-or-model';
 }
 
 /** Case-tolerant; anything unrecognized counts as fail (v1 fail-bias, see design record). */
@@ -332,11 +389,27 @@ export interface JudgeOneOptions {
     datasetRunId: string;
     judgedTraceIds: Set<string>;
     force: boolean;
+    /** Langfuse project id, required by the comments API. */
+    projectId: string;
+    /** Result of the runner's deterministic checks for this trace (1 = all
+     * passed, 0 = a check failed); undefined when the item declared none. */
+    deterministic?: number;
 }
 
 export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> {
-    const { langfuse, item, apifyToken, judgeModel, promptTemplate, version, datasetRunId, judgedTraceIds, force } =
-        opts;
+    const {
+        langfuse,
+        item,
+        apifyToken,
+        judgeModel,
+        promptTemplate,
+        version,
+        datasetRunId,
+        judgedTraceIds,
+        force,
+        projectId,
+        deterministic,
+    } = opts;
     const base = { experimentItemId: item.experimentItemId, traceId: item.traceId };
 
     if (!force && judgedTraceIds.has(item.traceId)) return { ...base, status: 'skipped-already-judged' };
@@ -385,14 +458,17 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
         notApplicable,
     };
 
-    const write = (name: string, value: number, comment: string) =>
-        // Subject = the agent observation. The dataset-run link lives in the
-        // metadata (the score API accepts only one subject kind at a time).
+    // Subject = the experiment-item observation (item.observationId), NOT the
+    // agent span: the Experiments compare view and run aggregates only read
+    // scores attached to the item observation. The dataset-run link lives in
+    // the metadata (the score API accepts only one subject kind at a time).
+    const write = (name: string, value: number | string, comment: string, dataType?: 'NUMERIC' | 'CATEGORICAL') =>
         langfuse.api.scores.create({
             traceId: item.traceId,
-            observationId: obs.id,
+            observationId: item.observationId,
             name,
             value,
+            ...(dataType ? { dataType } : {}),
             comment: comment.slice(0, 1000),
             metadata: scoreMetadata as Record<string, unknown>,
         });
@@ -406,23 +482,62 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
     if (schema.verdict !== 'not_applicable') {
         await write('check.schemaValidity', schema.verdict === 'pass' ? 1 : 0, schema.detail);
     }
-    // judge.overall = taskCompletion (#1203). The observation-level copy is
-    // the idempotency marker and is written first among the pair; the
-    // trace-level copy exists purely so the Langfuse run table shows a
-    // per-row pass/fail, and is skipped on force so re-judging cannot stack
-    // same-named trace scores that the UI would average into nonsense.
+
+    // judge.overall = taskCompletion (#1203); it is also the idempotency
+    // marker, so it is written last: a crash before it leaves the item
+    // re-judgeable. Comment leads with the verdict word so it scans in the
+    // compare view hover.
     const overall = results.taskCompletion.verdict;
+    const overallEvidence = results.taskCompletion.evidence;
+    const failedDims = DIMENSIONS.filter((d) => results[d].verdict === 'fail');
+    const allPassed = failedDims.length === 0 && schema.verdict !== 'fail';
+    // Deterministic beats LLM: a discovery scenario whose check.contains failed
+    // picked the wrong Actor in store search, whatever the judge concluded
+    // about the task. The judge never sees the check results, so map it here.
+    const discoveryMiss = obs.metadata.itemSkill === 'actor-discovery' && deterministic === 0;
+    const fixArea: FixArea = discoveryMiss
+        ? 'discoverability'
+        : normalizeFixArea(reply.fixArea?.area, allPassed && overall !== 'fail');
+    const fixAreaEvidence = discoveryMiss
+        ? `Store search did not lead the agent to the intended Actor (deterministic check on the Actor name failed). ${String(reply.fixArea?.evidence ?? '')}`.trim()
+        : String(reply.fixArea?.evidence ?? overallEvidence);
+
     if (overall !== 'not_applicable') {
-        await write('judge.overall', overall === 'pass' ? 1 : 0, results.taskCompletion.evidence);
-        if (!force) {
-            await langfuse.api.scores.create({
-                traceId: item.traceId,
-                name: 'judge.overall',
-                value: overall === 'pass' ? 1 : 0,
-                comment: results.taskCompletion.evidence.slice(0, 1000),
-                metadata: scoreMetadata as Record<string, unknown>,
-            });
+        await write('judge.fixArea', fixArea, fixAreaEvidence, 'CATEGORICAL');
+        // Why-it-failed, readable without expanding scores: one trace comment
+        // listing every failed dimension with its evidence.
+        if (overall === 'fail' || failedDims.length > 0 || schema.verdict === 'fail' || discoveryMiss) {
+            const lines = [
+                `**${overall === 'fail' ? 'FAIL' : discoveryMiss ? 'WRONG ACTOR' : 'PASS with issues'}** · fix area: \`${fixArea}\`` ,
+                '',
+                ...failedDims.map((d) => `- **${d}**: ${results[d].evidence}`),
+                ...(schema.verdict === 'fail' ? [`- **schemaValidity**: ${schema.detail}`] : []),
+                '',
+                `_${fixAreaEvidence}_`,
+                '',
+                `judge ${version.judgeModel} · prompt v${version.promptVersion} · rubric ${version.rubricVersion}`,
+            ];
+            try {
+                await langfuse.api.comments.create({
+                    projectId,
+                    objectType: 'TRACE',
+                    objectId: item.traceId,
+                    content: lines.join('\n').slice(0, 4900),
+                });
+            } catch (err) {
+                log.warning(`trace comment failed for ${item.traceId}: ${err}`);
+            }
         }
+        // Human-readable twin of judge.overall for the compare view: teams read
+        // "pass" / "fail" / "wrong-actor" instead of 1.0 / 0.0. Numbers stay on
+        // judge.overall because dashboards average them.
+        const verdictLabel = discoveryMiss ? 'wrong-actor' : overall === 'pass' ? 'pass' : 'fail';
+        await write('judge.verdict', verdictLabel, overallEvidence, 'CATEGORICAL');
+        await write(
+            'judge.overall',
+            overall === 'pass' ? 1 : 0,
+            `${overall === 'pass' ? 'PASS' : 'FAIL'}: ${overallEvidence}`,
+        );
     }
 
     return {
@@ -433,6 +548,10 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
         dimensions: Object.fromEntries(DIMENSIONS.map((d) => [d, results[d].verdict])),
         schemaValidity: schema.verdict,
         notApplicable,
+        fixArea,
+        fixAreaEvidence,
+        overallEvidence,
+        title: obs.metadata.itemTitle,
         itemActor: obs.metadata.itemActor,
         itemTeam: obs.metadata.itemTeam,
         itemSkill: obs.metadata.itemSkill,

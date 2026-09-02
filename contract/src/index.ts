@@ -80,6 +80,7 @@ export const agentSpanMetadataSchema = {
         // Item identity, stamped by the runner so the judge can aggregate
         // per-actor scoreboards without extra dataset lookups.
         itemId: { type: 'string' },
+        itemTitle: { type: 'string' },
         itemActor: { type: 'string' },
         itemTeam: { type: 'string' },
         itemSkill: { type: 'string' },

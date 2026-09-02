@@ -1,69 +1,61 @@
 # Eval Judge
 
-Judge Actor for [ai-team#242](https://github.com/apify/ai-team/issues/242) /
-[#244](https://github.com/apify/ai-team/issues/244). It grades finished eval
-runs from their Langfuse traces and writes the grades back. It never starts
-the evaluated agent, which is what makes re-grading history free.
+Grades finished eval runs from their Langfuse traces and writes the grades
+back. **You normally never run this yourself**: the
+[Store Actor AI evals](../workflow-runner/README.md) runner starts it after
+every run. Run it directly only to re-grade an old run with a new judge model
+or prompt version. It never starts the evaluated agent, which is what makes
+re-grading history free.
 
-## What it does
+## What it writes to Langfuse
 
-1. Takes a **dataset-run id** (the Runner returns it in its OUTPUT).
-2. Loads every item of that run and fetches each item's agent span.
-3. Runs the deterministic layer: `check.schemaValidity` validates every tool
-   call's input against the tool-schema snapshot the agent actually saw
-   (fetched by pointer from the `eval-artifacts` store, hash-verified).
-4. Runs one structured LLM call per item (via the OpenRouter proxy, on the
-   run's own `APIFY_TOKEN`) scoring the 6 rubric dimensions from
-   apify-mcp-server#1203: toolSelection, argumentCorrectness,
-   resultUtilization, errorRecovery, planEfficiency, taskCompletion.
-   Evidence is written before each verdict; taskCompletion is judged last.
-5. Writes scores back to Langfuse, append-only, each stamped with the full
-   version tuple (rubric, judge model, prompt version, judge impl version).
-   `judge.overall` mirrors `judge.taskCompletion` by design.
+Per scenario, on the experiment-item observation (so the Experiments compare
+view and dashboards can read them):
 
-## Score semantics
+- `judge.verdict` (`pass` / `fail` / `wrong-actor`): the per-scenario result in words, for reading the compare view. `wrong-actor` = a discovery scenario where the agent completed the task with an Actor other than the intended one.
+- `judge.overall` (1/0): the same result as a number so dashboards can average it. Comment starts with `PASS:` or `FAIL:` and the evidence.
+- `judge.fixArea` (category): `input-schema` · `readme-docs` · `output-format` · `error-messages` · `discoverability` · `agent-or-model` · `none`, with the cited tool call as comment.
+- `judge.toolSelection`, `judge.argumentCorrectness`, `judge.resultUtilization`, `judge.errorRecovery`, `judge.planEfficiency`, `judge.taskCompletion` (1/0): the rubric from apify-mcp-server#1203. `not_applicable` writes no score.
+- `check.schemaValidity` (1/0): every Actor input validates against the tool schema the agent saw (hash-verified snapshot from `eval-artifacts`).
+- A trace comment on every failed scenario listing the failed dimensions with evidence.
 
-- `judge.*` scores are LLM verdicts (1 = pass, 0 = fail), with the judge's
-  evidence sentence as the score comment.
-- `check.*` scores are deterministic code, not the LLM.
-- `not_applicable` verdicts (e.g. errorRecovery on an error-free trace) write
-  NO score, so they never pollute aggregates; they are listed in the
-  `notApplicable` field of the score metadata.
+Per run (subject = the dataset run): `pass_rate`, `found_rate`, `works_rate`.
+
+Every score carries the version tuple `{rubricVersion, judgeModel, promptVersion, judgeImplVersion}` plus `datasetRunId` and `experimentItemId`.
 
 ## Idempotency and versioning
 
-Re-running the judge on an already-judged run writes nothing (items are
-skipped when a `judge.overall` score with the same version tuple exists).
-`force: true` writes a NEW score set alongside the old one; nothing is ever
-mutated, so eras of judging stay comparable. The judge prompt lives in
-Langfuse prompt management (`workflow-judge`), is resolved by label once per
-batch, and the resolved version is stamped into every score.
+Re-running on an already-judged run writes nothing: an item is skipped when a
+`judge.overall` score with the same version tuple exists. `force: true` writes
+a new score set alongside the old one; nothing is ever mutated. The prompt is
+`workflow-judge` in Langfuse prompt management, resolved by label
+(`production`) once per batch; the resolved version is stamped into every
+score. Bump `RUBRIC_VERSION` in `core.ts` when the rubric's meaning changes.
 
-## Degraded mode (historical traces)
+## Degraded mode
 
-Traces from before the trace contract (no `contractVersion` on the span) and
-contract-invalid spans are still judged, from their conversation JSON alone:
-schema-validity becomes not_applicable and score metadata carries
-`contractVersion: "none"` (or `"invalid"`), so degraded grades are filterable.
+Traces without a `contractVersion` (pre-contract) or with an invalid span are
+judged from their conversation JSON alone; schema validity becomes
+`not_applicable` and score metadata carries `contractVersion: "none"` or
+`"invalid"`.
 
-## How to run
+## Run directly (re-grading)
 
 ```sh
-apify call <account>/eval-judge --memory 1024 --timeout 900 -i '{
-    "datasetRunId": "<from the Runner OUTPUT>",
-    "langfuseBaseUrl": "https://langfuse.apify.dev",
-    "langfusePublicKey": "pk-lf-...",
-    "langfuseSecretKey": "sk-lf-..."
+apify call artogahr/eval-judge --memory 1024 --timeout 1800 -i '{
+    "datasetRunId": "<Langfuse experiment id, from the runner OUTPUT>",
+    "judgeModel": "anthropic/claude-sonnet-4.6",
+    "force": true
 }'
 ```
 
-OUTPUT: `{items, judged, passed, skippedAlreadyJudged, skippedNoTrace, errors, degraded, version}`.
+Langfuse keys come from the Actor's environment; `artifactStore` is the
+`eval-artifacts` store picker (read access for snapshots and logs).
 
-## v1 scope notes
+OUTPUT: `{datasetRunId, items, judged, passed, passRate, foundRate, worksRate, fixAreas, skippedAlreadyJudged, skippedNoTrace, errors, degraded, version, scoreboard}`; `SCOREBOARD` is the same per-Actor table as markdown.
 
-- Judges by dataset-run id only; traceIds/filter inputs are planned.
-- Judges from the span's conversation JSON; fetching the full session log via
-  the span's `fullLogUrl` pointer is future work.
-- The halo-audit mode (isolated per-dimension calls with a disagreement
-  threshold) from the design record is not built yet.
-- Deploy: `scripts/deploy.sh judge` from the repo root (monorepo build).
+## Scope notes
+
+- Judges by dataset-run id only; judging from the span's conversation JSON, not the full log.
+- The halo-audit mode (isolated per-dimension calls) from the design record is not built.
+- Deploy: `scripts/deploy.sh judge` from the repo root.

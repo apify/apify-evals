@@ -4,46 +4,66 @@ import { promisify } from 'node:util';
 import type { DatasetItemMetadata, DeterministicCheck } from '@apify-evals/contract';
 import { Actor, log } from 'apify';
 
-import { DEMO_ITEMS } from './demo-dataset.js';
-
 const execFile = promisify(execFileCb);
 
 const OUTPUT_PREVIEW_CAP = 500;
+const DEFAULT_JUDGE_ACTOR = 'artogahr/eval-judge';
 
 interface Input {
     datasetName?: string;
+    /** Deprecated: the experiment is always named after the dataset so all runs share one compare view. */
     experimentName?: string;
     runName?: string;
+    model?: string;
     harness?: Partial<{ kind: string; model: string; maxTurns: number }>;
+    repeats?: number;
+    judge?: boolean;
+    judgeModel?: string;
     concurrency?: number;
     perItemTimeoutSecs?: number;
     itemLimit?: number;
     categories?: string[];
     mcpUrl?: string;
     useOpenRouterProxy?: boolean;
-    createDemoDataset?: boolean;
     artifactStore?: string;
     langfuseBaseUrl?: string;
     langfusePublicKey?: string;
     langfuseSecretKey?: string;
 }
 
+interface JudgeOutput {
+    items?: number;
+    judged?: number;
+    passed?: number;
+    passRate?: number | null;
+    foundRate?: number | null;
+    worksRate?: number | null;
+    errors?: number;
+    scoreboard?: unknown[];
+    fixAreas?: Record<string, number>;
+}
+
 await Actor.init();
 const input = ((await Actor.getInput()) ?? {}) as Input;
 const {
-    datasetName = 'runner-poc',
-    experimentName = 'runner-poc',
+    datasetName = 'store-actors',
     runName,
+    model: modelInput,
     harness: harnessInput,
+    repeats = 1,
+    judge = true,
+    judgeModel = 'anthropic/claude-sonnet-4.6',
     concurrency = 4,
     perItemTimeoutSecs = 300,
     itemLimit = 0,
     categories = [],
     mcpUrl = 'https://mcp.apify.com',
     useOpenRouterProxy = true,
-    createDemoDataset = false,
     artifactStore: artifactStoreId,
 } = input;
+if (input.experimentName && input.experimentName !== datasetName) {
+    log.warning(`experimentName is ignored; runs are grouped under the dataset name "${datasetName}"`);
+}
 
 // Credentials: input wins, env fallback. Env must be set BEFORE the Langfuse
 // modules load, because parts of the SDK capture process.env at module load;
@@ -63,12 +83,14 @@ const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
 const { ArtifactStore, SnapshotCache } = await import('./artifacts.js');
 
-// Merge partial harness input over defaults so {kind:'claude-code'} still gets a model.
+// `model` is the team-facing input; the `harness` object stays accepted for
+// older callers. Merge partial harness input over defaults.
 const harness = {
     kind: 'claude-code',
     model: 'anthropic/claude-haiku-4.5',
     maxTurns: DEFAULT_MAX_TURNS,
     ...(harnessInput ?? {}),
+    ...(modelInput ? { model: modelInput } : {}),
 };
 validateHarness(harness);
 
@@ -91,34 +113,19 @@ const langfuse = new LangfuseClient();
 const artifactStore = await ArtifactStore.open(artifactStoreId);
 const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
 
-async function ensureDataset() {
-    try {
-        return await langfuse.dataset.get(datasetName);
-    } catch (err) {
-        // PoC shortcut: the SDK throws no typed 404, so fall back to message
-        // sniffing. Tighten once the SDK exposes a status code reliably.
-        const notFound =
-            (err as { statusCode?: number })?.statusCode === 404 ||
-            /not found/i.test(String((err as Error)?.message ?? ''));
-        if (!createDemoDataset || !notFound) throw err;
-        log.info(`Dataset "${datasetName}" not found, creating demo dataset`);
-        await langfuse.api.datasets.create({ name: datasetName, description: 'Runner PoC demo dataset' });
-        for (const item of DEMO_ITEMS) {
-            await langfuse.dataset.createItem({ datasetName, ...item });
-        }
-        // Re-fetch: the create API returns no items; get() returns the full FetchedDataset.
-        return langfuse.dataset.get(datasetName);
-    }
-}
-
-const dataset = await ensureDataset();
+const dataset = await langfuse.dataset.get(datasetName);
 const filtered = dataset.items
     .filter((i) => i.status !== 'ARCHIVED')
     .filter((i) => categories.length === 0 || categories.includes((i.metadata as DatasetItemMetadata)?.category ?? ''));
-const items = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
+const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
+// Repeats: each repeat is its own experiment item, so every average (compare
+// view, dashboards) already accounts for it and flaky scenarios show as x/N.
+const safeRepeats = Math.max(1, Math.min(10, Math.floor(repeats)));
+const items = Array.from({ length: safeRepeats }, () => selected).flat();
 log.info(
-    `Dataset "${datasetName}": running ${items.length} items, concurrency ${concurrency}, harness ${harness.kind}/${harness.model}`,
+    `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, concurrency ${concurrency}, harness ${harness.kind}/${harness.model}`,
 );
+if (items.length === 0) throw new Error(`No scenarios selected (categories=${JSON.stringify(categories)})`);
 
 /** Deterministic health-gate checks declared per item as metadata.checks.
  * A malformed check writes a failing `check-error` score instead of vanishing. */
@@ -152,26 +159,38 @@ function runChecks(output: unknown, metadata: unknown) {
     });
 }
 
+// Human-readable run name: "<dataset> · <model> · 2026-09-02 14:05". The
+// experiment is always the dataset, so every run lands in one compare view.
+const shortModel = harness.model.replace(/^[^/]+\//, '');
+const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+const effectiveRunName = runName ?? `${datasetName} · ${shortModel} · ${stamp}`;
+const actorRunId = process.env.ACTOR_RUN_ID ?? null;
+const consoleRunUrl = actorRunId ? `https://console.apify.com/actors/runs/${actorRunId}` : null;
+
 const suiteStarted = Date.now();
 let result;
 try {
     result = await langfuse.experiment.run({
-        name: experimentName,
-        ...(runName ? { runName } : {}),
-        description: `Runner: ${harness.kind} / ${harness.model}`,
+        name: datasetName,
+        runName: effectiveRunName,
+        description: [`Runner: ${harness.kind} / ${harness.model}`, judge ? `Judge: ${judgeModel}` : 'Not judged', consoleRunUrl]
+            .filter(Boolean)
+            .join(' · '),
         metadata: {
             harness: harness.kind,
             model: harness.model,
             surface: 'mcp',
             runner: 'workflow-runner',
-            actorRunId: process.env.ACTOR_RUN_ID ?? null,
-            environment: process.env.ACTOR_RUN_ID ? 'apify' : 'local',
+            actorRunId,
+            repeats: safeRepeats,
+            environment: actorRunId ? 'apify' : 'local',
         },
         data: items,
         maxConcurrency: concurrency,
         task: async (item) => {
             const r = await runSession({
                 item: item as never,
+                datasetName,
                 harness,
                 mcpUrl,
                 apifyToken,
@@ -201,12 +220,59 @@ try {
 }
 
 const suiteMs = Date.now() - suiteStarted;
+const datasetRunId = result.datasetRunId ?? null;
+
+// The compare view is the team-facing results page: one row per scenario,
+// scores as columns, this run as the baseline.
+const datasetRunUrl: string | null = result.datasetRunUrl ?? null;
+const urlParts = datasetRunUrl?.match(/^(https?:\/\/[^/]+)\/project\/([^/]+)\//);
+const resultsUrl =
+    urlParts && datasetRunId
+        ? `${urlParts[1]}/project/${urlParts[2]}/experiments/results?baseline=${datasetRunId}`
+        : datasetRunUrl;
+
+// Judge: a separate Actor (re-gradable, spec D9) that the runner starts so a
+// single Run click produces scored results. Its Langfuse credentials come from
+// its own Actor env vars; only the run id and the artifact grant are passed.
+let judgeOutput: JudgeOutput | null = null;
+let judgeRunUrl: string | null = null;
+if (judge && datasetRunId) {
+    const judgeActor = process.env.JUDGE_ACTOR ?? DEFAULT_JUDGE_ACTOR;
+    log.info(`Starting judge ${judgeActor} for run ${datasetRunId}`);
+    try {
+        const judgeRun = await Actor.call(
+            judgeActor,
+            { datasetRunId, judgeModel, ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}) },
+            { memory: 1024, timeout: 1800 },
+        );
+        judgeRunUrl = `https://console.apify.com/actors/runs/${judgeRun.id}`;
+        if (judgeRun.status !== 'SUCCEEDED') {
+            log.error(`Judge run ${judgeRun.id} ended with ${judgeRun.status}`);
+        } else {
+            const record = await Actor.apifyClient.keyValueStore(judgeRun.defaultKeyValueStoreId).getRecord('OUTPUT');
+            judgeOutput = (record?.value ?? null) as JudgeOutput | null;
+        }
+    } catch (err) {
+        log.error(`Judge failed: ${err}`);
+    }
+}
 
 const summary = {
+    resultsUrl,
+    passRate: judgeOutput?.passRate ?? null,
+    passed: judgeOutput?.passed ?? null,
+    judged: judgeOutput?.judged ?? null,
+    foundRate: judgeOutput?.foundRate ?? null,
+    worksRate: judgeOutput?.worksRate ?? null,
+    fixAreas: judgeOutput?.fixAreas ?? null,
+    scoreboard: judgeOutput?.scoreboard ?? null,
+    judgeRunUrl,
     datasetName,
-    datasetRunId: result.datasetRunId ?? null,
+    datasetRunId,
     datasetRunName: result.runName ?? null,
-    datasetRunUrl: result.datasetRunUrl ?? null,
+    datasetRunUrl,
+    scenarios: selected.length,
+    repeats: safeRepeats,
     items: items.length,
     // itemResults excludes items whose task threw (broken harness); the gap
     // between items and completed is the health signal (spec D13).
@@ -214,6 +280,7 @@ const summary = {
     suiteMs,
     harness: harness.kind,
     model: harness.model,
+    judgeModel: judge ? judgeModel : null,
 };
 log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
 
@@ -227,4 +294,8 @@ await Actor.pushData(
     })),
 );
 await Actor.setValue('OUTPUT', summary);
+if (summary.passRate !== null) {
+    log.info(`Pass rate ${Math.round(summary.passRate * 100)}% (${summary.passed}/${summary.judged} scenarios)`);
+}
+log.info(`Results: ${resultsUrl}`);
 await Actor.exit();
