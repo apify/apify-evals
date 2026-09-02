@@ -1,0 +1,31 @@
+# compass/google-maps-reviews-scraper · owner: google · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: compass/google-maps-reviews-scraper
+scenarios:
+  - id: google-maps-reviews-discovery-ritz
+    skill: find
+    title: "Discovery: review-summary task finds the reviews scraper, not the places scraper"
+    prompt: Summarize the main complaints and praises for the Ritz-Carlton in Chicago from its 30 most
+      recent Google reviews.
+    expected: The agent discovers compass/google-maps-reviews-scraper (not the general places scraper),
+      caps at 30 reviews, and produces a complaint/praise summary grounded in actual review text.
+      (Daniela-tested prompt, 2026-07-16.)
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: compass/google-maps-reviews-scraper
+      - id: namedActor
+        type: answer.contains
+        value: compass/google-maps-reviews-scraper
+  - id: google-maps-reviews-usage-ritz-trend
+    skill: use
+    title: "Usage: pinned reviews scraper, sorted pull plus agent-side trend computation"
+    prompt: Using the compass/google-maps-reviews-scraper Actor, pull the 30 most recent Google reviews
+      of the Ritz-Carlton in Chicago, sorted newest first. Report the average star rating of the
+      newest 15 versus the previous 15, and say whether the trend is up or down.
+    expected: The agent uses newest-first sorting and a 30-review cap, computes both averages from the
+      retrieved star ratings itself, and states the trend direction consistent with its own numbers.
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \b[1-5](\.\d+)?\b

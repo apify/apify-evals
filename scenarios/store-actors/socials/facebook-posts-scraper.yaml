@@ -1,0 +1,30 @@
+# apify/facebook-posts-scraper · owner: socials · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: apify/facebook-posts-scraper
+scenarios:
+  - id: facebook-posts-scraper-discovery-nasa-page
+    skill: find
+    title: "Discovery: Facebook page-posts task finds the flagship posts scraper"
+    prompt: Get the 5 most recent posts from NASA's Facebook page (facebook.com/NASA) with each post's
+      text and reaction count.
+    expected: The agent discovers apify/facebook-posts-scraper (the socials-team flagship for page
+      posts), runs it with the page URL and a 5-post cap, and reports real post texts and reaction
+      counts from retrieved data.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/facebook-posts-scraper
+      - id: namedActor
+        type: answer.contains
+        value: apify/facebook-posts-scraper
+  - id: facebook-posts-scraper-usage-nasa-engagement
+    skill: use
+    title: "Usage: pinned Facebook posts scraper, page pull with engagement fields"
+    prompt: Using the apify/facebook-posts-scraper Actor, get the 5 most recent posts from
+      https://www.facebook.com/NASA and report each post's first sentence and its reactions count.
+    expected: The agent runs the pinned actor with startUrls set to the NASA page and a 5-post results
+      limit, and reports real post text and reaction counts from the retrieved data (not invented).
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \d{2,}

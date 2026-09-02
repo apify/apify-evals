@@ -1,0 +1,31 @@
+# maxcopell/tripadvisor · owner: google · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: maxcopell/tripadvisor
+scenarios:
+  - id: tripadvisor-discovery-barcelona-attractions
+    skill: find
+    title: "Discovery: attractions task finds the main TripAdvisor actor, not its -reviews sibling"
+    prompt: Compare the top 10 attractions in Barcelona by rating and number of reviews, using
+      TripAdvisor data.
+    expected: The agent discovers maxcopell/tripadvisor (NOT the -reviews sibling; attractions live in
+      the main actor), caps results at 10, and reports attractions with rating and review counts
+      from retrieved data.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: maxcopell/tripadvisor
+      - id: namedActor
+        type: answer.regex
+        value: maxcopell/tripadvisor(?!-)
+  - id: tripadvisor-usage-rome-restaurants
+    skill: use
+    title: "Usage: pinned TripAdvisor actor, restaurants mode with typed fields"
+    prompt: Using the maxcopell/tripadvisor Actor, find 10 top-rated restaurants in Rome with cuisine
+      type, price range, and rating. Report how many you retrieved and name the top one with its
+      rating.
+    expected: The agent enables the restaurants mode of the pinned actor, caps at 10, and reports real
+      cuisines, price levels, and ratings from retrieved data.
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \b[3-5]\.\d\b

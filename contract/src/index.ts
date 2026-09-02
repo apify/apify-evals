@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { Ajv } from 'ajv';
 import type { FromSchema } from 'json-schema-to-ts';
 
-export const CONTRACT_VERSION = '1.0.0';
+export const CONTRACT_VERSION = '1.1.0';
 
 /** Contract-wide hash convention for artifact pointers: the stored bytes are
  * exactly the hashed bytes, so any consumer can verify a fetched record. */
@@ -89,16 +89,56 @@ export const agentSpanMetadataSchema = {
     additionalProperties: true,
 } as const;
 
-/** Deterministic health-gate check declared on a dataset item. */
+/**
+ * Deterministic check declared on a scenario. `type` picks the checker (see
+ * checks.ts); the remaining fields are type-specific and validated there, so
+ * new check types do not need a schema change. `id` names the score
+ * (`check.<id>`); `severity: warn` never gates the verdict.
+ */
+export const CHECK_TYPES = [
+    // legacy aliases of answer.contains / answer.regex
+    'contains',
+    'regex',
+    // final-answer checks (runner, no I/O)
+    'answer.contains',
+    'answer.regex',
+    'answer.grounded',
+    // evidence checks (runner, after evidence extraction)
+    'subject.used',
+    'apify.run',
+    'apify.input',
+    'apify.items',
+    'tool.called',
+    'workspace.file',
+    'reference',
+] as const;
+export type CheckType = (typeof CHECK_TYPES)[number];
+
 const checkSchema = {
     type: 'object',
     properties: {
-        type: { enum: ['contains', 'regex'] },
-        value: { type: 'string' },
+        id: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_-]{0,40}$' },
+        type: { enum: [...CHECK_TYPES] },
+        severity: { enum: ['fail', 'warn'] },
+        value: {},
     },
-    required: ['type', 'value'],
-    additionalProperties: false,
+    required: ['type'],
+    additionalProperties: true,
 } as const;
+
+/** Skills: generic `find` / `use`; the store aliases stay valid. */
+export const SKILLS = ['find', 'use', 'actor-discovery', 'actor-usage'] as const;
+export type Skill = (typeof SKILLS)[number];
+
+/** Collapse the store aliases onto the generic skills; unknown -> null. */
+export function normalizeSkill(skill: unknown): 'find' | 'use' | null {
+    if (skill === 'find' || skill === 'actor-discovery') return 'find';
+    if (skill === 'use' || skill === 'actor-usage') return 'use';
+    return null;
+}
+
+/** The thing under test. `kind` comes from the suite profile. */
+export const SUBJECT_KINDS = ['actor', 'mcp-tool', 'cli-command', 'sdk-feature', 'agent'] as const;
 
 /** Dataset item `metadata` (the question bank's item anatomy). */
 export const datasetItemMetadataSchema = {
@@ -106,14 +146,43 @@ export const datasetItemMetadataSchema = {
     type: 'object',
     properties: {
         title: { type: 'string' },
+        // Generic identity (any suite): what is under test and who owns it.
+        suite: { type: 'string' },
+        profile: { type: 'string' },
+        subject: {
+            type: 'object',
+            properties: { kind: { enum: [...SUBJECT_KINDS] }, id: { type: 'string' } },
+            required: ['kind', 'id'],
+            additionalProperties: false,
+        },
+        owner: { type: 'string' },
+        skill: { enum: [...SKILLS] },
+        notes: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        // Store-suite sugar, kept for the existing items and filters.
         actor: { type: 'string' },
         team: { type: 'string' },
-        skill: { enum: ['actor-discovery', 'actor-usage'] },
         category: { type: 'string' },
+        // Harness setup for this scenario.
         tools: { type: 'array', items: { type: 'string' } },
         allowBash: { type: 'boolean' },
         maxTurns: { type: 'integer' },
+        timeoutSecs: { type: 'integer' },
         checks: { type: 'array', items: checkSchema },
+        // Fresh ground truth: the runner runs this Actor once per experiment
+        // and compares per `compare` entries (see checks.ts).
+        reference: {
+            type: 'object',
+            properties: {
+                actor: { type: 'string' },
+                input: {},
+                maxSecs: { type: 'integer' },
+                cacheKey: { type: 'string' },
+                compare: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            },
+            required: ['input'],
+            additionalProperties: true,
+        },
     },
     additionalProperties: true,
 } as const;
@@ -153,3 +222,5 @@ export const validateScoreMetadata = ajv.compile<ScoreMetadata>(scoreMetadataSch
 export function isPreContract(output: unknown): boolean {
     return typeof output !== 'object' || output === null || !('contractVersion' in output);
 }
+
+export * from './checks.js';

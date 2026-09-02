@@ -1,0 +1,33 @@
+# misceres/indeed-scraper · owner: video · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: misceres/indeed-scraper
+scenarios:
+  - id: indeed-scraper-discovery-denver-marketing
+    skill: find
+    title: "Discovery: job-benchmark task finds the Indeed scraper"
+    prompt: I am hiring a marketing coordinator in Denver, CO. Show me 10 similar postings on Indeed
+      with salary and company ratings so I can benchmark our offer.
+    expected: The agent discovers misceres/indeed-scraper, runs it with the position and location and a
+      10-posting cap, and reports salaries and company ratings from retrieved postings. (The
+      unbounded Tesla company-page half of the team's original scenario was dropped.)
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: misceres/indeed-scraper
+      - id: namedActor
+        type: answer.contains
+        value: misceres/indeed-scraper
+  - id: indeed-scraper-usage-swe-skills
+    skill: use
+    title: "Usage: pinned Indeed scraper, description pull plus agent-side skill tally"
+    maxTurns: 14
+    prompt: Using the misceres/indeed-scraper Actor, pull 20 current software engineer job postings with
+      their full descriptions, and report the 5 skills mentioned most often across those
+      descriptions.
+    expected: The agent caps at 20 postings, reads real description text, and tallies skill mentions
+      itself; the actor has no skills field, so the aggregation is the agent's job and must be
+      grounded in the retrieved descriptions.
+    checks:
+      - id: shape
+        type: answer.regex
+        value: (python|aws|sql|java|docker|react|kubernetes)

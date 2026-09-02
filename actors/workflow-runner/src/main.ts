@@ -1,7 +1,7 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { DatasetItemMetadata, DeterministicCheck } from '@apify-evals/contract';
+import { type DatasetItemMetadata, type DeterministicCheck, validateDatasetItemMetadata } from '@apify-evals/contract';
 import { Actor, log } from 'apify';
 
 const execFile = promisify(execFileCb);
@@ -114,6 +114,12 @@ const artifactStore = await ArtifactStore.open(artifactStoreId);
 const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
 
 const dataset = await langfuse.dataset.get(datasetName);
+// Fail fast on malformed scenarios: a typo in `skill` or `checks` would
+// otherwise silently drop the item from every aggregate.
+const invalid = dataset.items
+    .filter((i) => i.status !== 'ARCHIVED' && !validateDatasetItemMetadata(i.metadata ?? {}))
+    .map((i) => `${i.id}: ${JSON.stringify(validateDatasetItemMetadata.errors)}`);
+if (invalid.length > 0) throw new Error(`Invalid scenario metadata in "${datasetName}":\n${invalid.join('\n')}`);
 const filtered = dataset.items
     .filter((i) => i.status !== 'ARCHIVED')
     .filter((i) => categories.length === 0 || categories.includes((i.metadata as DatasetItemMetadata)?.category ?? ''));
@@ -130,31 +136,38 @@ if (items.length === 0) throw new Error(`No scenarios selected (categories=${JSO
 /** Deterministic health-gate checks declared per item as metadata.checks.
  * A malformed check writes a failing `check-error` score instead of vanishing. */
 function runChecks(output: unknown, metadata: unknown) {
-    const checks = ((metadata as DatasetItemMetadata)?.checks ?? []) as DeterministicCheck[];
+    const checks = ((metadata as DatasetItemMetadata)?.checks ?? []) as (DeterministicCheck & { id?: string })[];
     const text = String(output);
+    // Score name: `check.<id>` when the scenario names the check, else the
+    // legacy per-type name so older items keep their columns.
+    const nameFor = (check: { id?: string; type: string }, legacy: string) =>
+        check.id ? `check.${check.id}` : legacy;
     return checks.flatMap((check) => {
+        const value = String(check.value ?? '');
         try {
-            if (check.type === 'contains') {
+            if (check.type === 'contains' || check.type === 'answer.contains') {
                 return [
                     {
-                        name: 'check.contains',
-                        value: text.toLowerCase().includes(check.value.toLowerCase()) ? 1 : 0,
-                        comment: `contains: ${check.value}`,
+                        name: nameFor(check, 'check.contains'),
+                        value: text.toLowerCase().includes(value.toLowerCase()) ? 1 : 0,
+                        comment: `answer contains: ${value}`,
                     },
                 ];
             }
-            if (check.type === 'regex') {
+            if (check.type === 'regex' || check.type === 'answer.regex') {
                 return [
                     {
-                        name: 'check.regex',
-                        value: new RegExp(check.value, 'i').test(text) ? 1 : 0,
-                        comment: `regex: ${check.value}`,
+                        name: nameFor(check, 'check.regex'),
+                        value: new RegExp(value, 'i').test(text) ? 1 : 0,
+                        comment: `answer matches: ${value}`,
                     },
                 ];
             }
+            // Evidence-based checks (subject.used, apify.*, ...) run after the
+            // session with the evidence snapshot; see harness.ts.
             return [];
         } catch (err) {
-            return [{ name: 'check.error', value: 0, comment: `${check.type}: ${check.value} → ${err}` }];
+            return [{ name: 'check.error', value: 0, comment: `${check.type}: ${value} → ${err}` }];
         }
     });
 }

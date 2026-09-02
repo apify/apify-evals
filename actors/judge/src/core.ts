@@ -6,6 +6,7 @@ import {
     type ConversationEntry,
     type ScoreMetadata,
     isPreContract,
+    normalizeSkill,
     validateAgentSpanOutput,
 } from '@apify-evals/contract';
 import type { LangfuseClient } from '@langfuse/client';
@@ -159,7 +160,7 @@ interface ScorePage {
 async function loadScoresForTraces(
     langfuse: LangfuseClient,
     traceIds: string[],
-    names: string,
+    names: string | undefined,
 ): Promise<NonNullable<ScorePage['data']>> {
     const out: NonNullable<ScorePage['data']> = [];
     for (let i = 0; i < traceIds.length; i += TRACE_ID_CHUNK) {
@@ -168,7 +169,7 @@ async function loadScoresForTraces(
         do {
             const page = (await langfuse.api.scoresV3.getManyV3({
                 traceId: chunk,
-                name: names,
+                ...(names ? { name: names } : {}),
                 fields: 'details,subject',
                 limit: 100,
                 cursor,
@@ -494,7 +495,7 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
     // Deterministic beats LLM: a discovery scenario whose check.contains failed
     // picked the wrong Actor in store search, whatever the judge concluded
     // about the task. The judge never sees the check results, so map it here.
-    const discoveryMiss = obs.metadata.itemSkill === 'actor-discovery' && deterministic === 0;
+    const discoveryMiss = normalizeSkill(obs.metadata.itemSkill) === 'find' && deterministic === 0;
     const fixArea: FixArea = discoveryMiss
         ? 'discoverability'
         : normalizeFixArea(reply.fixArea?.area, allPassed && overall !== 'fail');
@@ -581,9 +582,13 @@ export async function loadDeterministicResults(
     traceIds: string[],
 ): Promise<Map<string, number>> {
     const byTrace = new Map<string, number>();
-    for (const s of await loadScoresForTraces(langfuse, traceIds, 'check.contains,check.regex,check.error')) {
+    // Runner-side checks are named `check.<id>` (or the legacy per-type names),
+    // so fetch every score of the traces and keep the check.* family, minus the
+    // judge's own schema validity, which is not a scenario gate.
+    for (const s of await loadScoresForTraces(langfuse, traceIds, undefined)) {
         const t = s.subject?.traceId;
-        if (!t) continue;
+        const name = String(s.name ?? '');
+        if (!t || !name.startsWith('check.') || name === 'check.schemaValidity') continue;
         byTrace.set(t, Math.min(byTrace.get(t) ?? 1, Number(s.value ?? 0)));
     }
     return byTrace;
@@ -602,14 +607,14 @@ export function buildScoreboard(results: JudgeItemResult[], deterministic: Map<s
             schemaFails: 0,
             verdict: '',
         };
-        if (r.itemSkill === 'actor-discovery') {
+        if (normalizeSkill(r.itemSkill) === 'find') {
             // Only measured discovery items count: absence of a deterministic
             // check is missing data, not a failure.
             if (deterministic.has(r.traceId)) {
                 row.found.total++;
                 if (deterministic.get(r.traceId) === 1) row.found.pass++;
             }
-        } else if (r.itemSkill === 'actor-usage') {
+        } else if (normalizeSkill(r.itemSkill) === 'use') {
             row.works.total++;
             if (r.overall === 'pass') row.works.pass++;
         } else {

@@ -1,0 +1,30 @@
+# streamers/youtube-scraper · owner: video · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: streamers/youtube-scraper
+scenarios:
+  - id: youtube-scraper-discovery-espresso
+    skill: find
+    title: "Discovery: video-search task finds the YouTube scraper"
+    prompt: Find the 10 most-viewed YouTube videos about home espresso machines published in the last
+      month, with view counts and channel names.
+    expected: The agent discovers streamers/youtube-scraper, uses the last-month date filter and views
+      sorting with a 10-video cap, and reports real titles, view counts, and channel names. (Rolling
+      window; does not go stale.)
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: streamers/youtube-scraper
+      - id: namedActor
+        type: answer.contains
+        value: streamers/youtube-scraper
+  - id: youtube-scraper-usage-espresso-engagement
+    skill: use
+    title: "Usage: pinned YouTube scraper, search with engagement fields"
+    prompt: Using the streamers/youtube-scraper Actor, get the top 5 YouTube search results for "home
+      espresso machine review" and report each video's views, likes, and comment count.
+    expected: The agent runs the pinned actor with the search query and a 5-result cap and reports real
+      per-video engagement numbers (views, likes, comments) from retrieved data.
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \d{4,}|\d{1,3}(,\d{3})+
