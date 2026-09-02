@@ -60,13 +60,24 @@ export interface Evidence {
         harnessBroke: boolean;
         exitCode: number | null;
         subtype: string | null;
+        /** MCP servers the harness reported at init, with status. */
+        mcpServers?: { name: string; status: string }[];
+        /** Number of MCP tools the agent actually had (from the init tool list). */
+        mcpToolCount?: number;
+        /** Whether the scenario expected MCP tools at all. */
+        mcpExpected?: boolean;
+        /** Sessions restarted because the MCP tools did not load. */
+        mcpRestarts?: number;
     };
 }
 
 export interface CheckResult {
     id: string;
     type: string;
+    /** 1/0, or a fraction for answer.grounded. */
     value: number;
+    /** Whether the check counts as passed (grounded: fraction >= minFraction). */
+    passed: boolean;
     severity: 'fail' | 'warn';
     applicable: boolean;
     comment: string;
@@ -82,6 +93,12 @@ export function infraStatus(evidence: Evidence): { ok: boolean; reasons: string[
     if (evidence.session.harnessBroke) reasons.push('harness broke');
     if (evidence.session.timedOut) reasons.push('session timed out');
     if (evidence.session.stdoutTruncated) reasons.push('session log truncated');
+    // The harness connected to the MCP server but the agent got no tools from
+    // it: the agent cannot be blamed for not using tools it never had.
+    if (evidence.session.mcpExpected && evidence.session.mcpToolCount === 0) reasons.push('MCP server exposed no tools to the agent');
+    for (const srv of evidence.session.mcpServers ?? []) {
+        if (srv.status !== 'connected') reasons.push(`MCP server ${srv.name} ${srv.status}`);
+    }
     for (const r of evidence.actorRuns) {
         if (r.status && TERMINAL_BAD.has(r.status)) reasons.push(`Actor run ${r.runId} (${r.actor}) ${r.status}`);
     }
@@ -98,15 +115,15 @@ export function runChecks(checks: DeterministicCheck[], evidence: Evidence): Che
             const r = evaluate(check, evidence);
             return { id, type: check.type, severity, ...r };
         } catch (err) {
-            return { id, type: check.type, severity, value: 0, applicable: true, comment: `check error: ${err}` };
+            return { id, type: check.type, severity, value: 0, passed: false, applicable: true, comment: `check error: ${err}` };
         }
     });
 }
 
-type Partial = { value: number; applicable: boolean; comment: string };
-const pass = (comment: string): Partial => ({ value: 1, applicable: true, comment });
-const fail = (comment: string): Partial => ({ value: 0, applicable: true, comment });
-const na = (comment: string): Partial => ({ value: 0, applicable: false, comment });
+type Partial = { value: number; passed: boolean; applicable: boolean; comment: string };
+const pass = (comment: string): Partial => ({ value: 1, passed: true, applicable: true, comment });
+const fail = (comment: string): Partial => ({ value: 0, passed: false, applicable: true, comment });
+const na = (comment: string): Partial => ({ value: 0, passed: false, applicable: false, comment });
 
 function evaluate(check: AnyCheck, ev: Evidence): Partial {
     switch (check.type) {
@@ -332,7 +349,7 @@ function grounded(check: AnyCheck, ev: Evidence): Partial {
         missing.length === 0
             ? `all ${answerNums.length} numbers found in Actor output`
             : `${missing.length} of ${answerNums.length} numbers not in Actor output: ${missing.slice(0, 6).map((n) => n.toLocaleString('en-US')).join(', ')}`;
-    return { value: Number(fraction.toFixed(3)), applicable: true, comment: fraction >= minFraction ? comment : `FAIL: ${comment}` };
+    return { value: Number(fraction.toFixed(3)), passed: fraction >= minFraction, applicable: true, comment };
 }
 
 // ---------------------------------------------------------------------------

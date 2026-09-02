@@ -19,6 +19,11 @@ scenarios:
       - id: namedActor
         type: answer.contains
         value: clockworks/tiktok-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
   - id: tiktok-scraper-usage-protein-coffee
     skill: use
     title: "Usage: pinned TikTok scraper, video search sorted by plays"
@@ -30,3 +35,18 @@ scenarios:
       - id: shape
         type: answer.regex
         value: \d{4,}|\d{1,3}(,\d{3})+
+      - id: rightActor
+        type: subject.used
+        value: clockworks/tiktok-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: plays
+        type: apify.items
+        requiredFields:
+          - playCount
+        severity: warn
+      - id: grounded
+        type: answer.grounded
+        minDigits: 4

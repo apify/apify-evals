@@ -17,6 +17,11 @@ scenarios:
       - id: namedActor
         type: answer.regex
         value: maxcopell/tripadvisor(?!-)
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
   - id: tripadvisor-usage-rome-restaurants
     skill: use
     title: "Usage: pinned TripAdvisor actor, restaurants mode with typed fields"
@@ -29,3 +34,29 @@ scenarios:
       - id: shape
         type: answer.regex
         value: \b[3-5]\.\d\b
+      - id: rightActor
+        type: subject.used
+        value: maxcopell/tripadvisor
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: restaurantsMode
+        type: apify.input
+        path: includeRestaurants
+        op: equals
+        value: true
+        severity: warn
+      - id: items
+        type: apify.items
+        count:
+          min: 1
+          max: 10
+      - id: ratingField
+        type: apify.items
+        requiredFields:
+          - rating
+        severity: warn
+      - id: grounded
+        type: answer.grounded
+        minDigits: 4

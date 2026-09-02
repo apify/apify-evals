@@ -1,7 +1,7 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { type DatasetItemMetadata, type DeterministicCheck, validateDatasetItemMetadata } from '@apify-evals/contract';
+import { type DatasetItemMetadata, validateDatasetItemMetadata } from '@apify-evals/contract';
 import { Actor, log } from 'apify';
 
 const execFile = promisify(execFileCb);
@@ -82,6 +82,7 @@ const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
 const { ArtifactStore, SnapshotCache } = await import('./artifacts.js');
+const { ReferenceRunner } = await import('./evidence.js');
 
 // `model` is the team-facing input; the `harness` object stays accepted for
 // older callers. Merge partial harness input over defaults.
@@ -112,6 +113,10 @@ otel.start();
 const langfuse = new LangfuseClient();
 const artifactStore = await ArtifactStore.open(artifactStoreId);
 const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
+const references = new ReferenceRunner();
+const writeScore = async (score: { traceId: string; observationId: string; name: string; value: number; comment: string }) => {
+    await langfuse.api.scores.create({ ...score, dataType: 'NUMERIC' });
+};
 
 const dataset = await langfuse.dataset.get(datasetName);
 // Fail fast on malformed scenarios: a typo in `skill` or `checks` would
@@ -132,45 +137,6 @@ log.info(
     `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, concurrency ${concurrency}, harness ${harness.kind}/${harness.model}`,
 );
 if (items.length === 0) throw new Error(`No scenarios selected (categories=${JSON.stringify(categories)})`);
-
-/** Deterministic health-gate checks declared per item as metadata.checks.
- * A malformed check writes a failing `check-error` score instead of vanishing. */
-function runChecks(output: unknown, metadata: unknown) {
-    const checks = ((metadata as DatasetItemMetadata)?.checks ?? []) as (DeterministicCheck & { id?: string })[];
-    const text = String(output);
-    // Score name: `check.<id>` when the scenario names the check, else the
-    // legacy per-type name so older items keep their columns.
-    const nameFor = (check: { id?: string; type: string }, legacy: string) =>
-        check.id ? `check.${check.id}` : legacy;
-    return checks.flatMap((check) => {
-        const value = String(check.value ?? '');
-        try {
-            if (check.type === 'contains' || check.type === 'answer.contains') {
-                return [
-                    {
-                        name: nameFor(check, 'check.contains'),
-                        value: text.toLowerCase().includes(value.toLowerCase()) ? 1 : 0,
-                        comment: `answer contains: ${value}`,
-                    },
-                ];
-            }
-            if (check.type === 'regex' || check.type === 'answer.regex') {
-                return [
-                    {
-                        name: nameFor(check, 'check.regex'),
-                        value: new RegExp(value, 'i').test(text) ? 1 : 0,
-                        comment: `answer matches: ${value}`,
-                    },
-                ];
-            }
-            // Evidence-based checks (subject.used, apify.*, ...) run after the
-            // session with the evidence snapshot; see harness.ts.
-            return [];
-        } catch (err) {
-            return [{ name: 'check.error', value: 0, comment: `${check.type}: ${value} → ${err}` }];
-        }
-    });
-}
 
 // Human-readable run name: "<dataset> · <model> · 2026-09-02 14:05". The
 // experiment is always the dataset, so every run lands in one compare view.
@@ -211,11 +177,14 @@ try {
                 perItemTimeoutSecs,
                 artifactStore,
                 snapshots,
+                references,
+                writeScore,
             });
             return r.output;
         },
-        // Real scoring belongs to the Judge Actor (#244); these are health gates.
-        evaluators: [async ({ output, metadata }) => runChecks(output, metadata)],
+        // Deterministic checks are scored inside runSession (they need the
+        // evidence); the LLM rubric belongs to the Judge Actor.
+        evaluators: [],
     });
 } finally {
     // Flush all telemetry even when the run fails, so completed items keep

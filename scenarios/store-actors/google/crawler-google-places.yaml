@@ -16,6 +16,11 @@ scenarios:
       - id: namedActor
         type: answer.contains
         value: compass/crawler-google-places
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
   - id: crawler-google-places-usage-prague-coffee
     skill: use
     title: "Usage: pinned Google Maps scraper, filtered place search with contact fields"
@@ -29,3 +34,29 @@ scenarios:
       - id: shape
         type: answer.regex
         value: \+?\d[\d ()-]{7,}
+      - id: rightActor
+        type: subject.used
+        value: compass/crawler-google-places
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: cap
+        type: apify.input
+        path: maxCrawledPlacesPerSearch
+        op: lte
+        value: 10
+        severity: warn
+      - id: items
+        type: apify.items
+        count:
+          min: 1
+          max: 10
+      - id: fields
+        type: apify.items
+        requiredFields:
+          - title
+          - totalScore
+      - id: grounded
+        type: answer.grounded
+        minDigits: 4

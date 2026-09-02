@@ -6,9 +6,12 @@ scenarios:
     skill: find
     title: "Discovery: agent picks the flagship Instagram actor unaided"
     appendSuffix: false
-    prompt: |-
-      Get the 3 most recent posts from the Instagram profile @nasa. When you are done, reply with exactly two lines:
+    prompt: >-
+      Get the 3 most recent posts from the Instagram profile @nasa. When you are done, reply with
+      exactly two lines:
+
       Actor: <username/name of the Apify Actor you used>
+
       Posts: <number of posts you retrieved>
     expected: "The agent discovers an Instagram scraper via store search, runs it with input limiting
       results to 3 recent posts from the nasa profile, and truthfully reports the actor name and the
@@ -23,6 +26,11 @@ scenarios:
       - id: namedActor
         type: answer.contains
         value: apify/instagram-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
   - id: instagram-scraper-usage-engagement-nasa
     skill: use
     title: "Usage: agent drives the pinned flagship actor to compute engagement"
@@ -39,3 +47,32 @@ scenarios:
       - id: shape
         type: answer.regex
         value: \d[\d,]{5,}
+      - id: rightActor
+        type: subject.used
+        value: apify/instagram-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+      - id: profileUrl
+        type: apify.input
+        path: directUrls[0]
+        op: regex
+        value: instagram\.com/nasa
+      - id: grounded
+        type: answer.grounded
+        minDigits: 5
+      - id: followers
+        type: reference
+        compare:
+          - answerRegex: ([\d,]{9,})\s*followers|followers?[^0-9]{0,30}([\d,]{9,})
+            field: followersCount
+            tolerance: 0.02
+    reference:
+      input:
+        directUrls:
+          - https://www.instagram.com/nasa/
+        resultsType: details
+        resultsLimit: 1
+      maxSecs: 120
+      cacheKey: nasa-profile-details

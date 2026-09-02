@@ -132,7 +132,8 @@ describe('runChecks', () => {
         expect(ok.value).toBeCloseTo(0.75, 2);
         expect(ok.comment).toContain('153,536');
         const lenient = runChecks([{ id: 'g', type: 'answer.grounded', minDigits: 4, minFraction: 0.7 }], evidence)[0];
-        expect(lenient.comment.startsWith('FAIL')).toBe(false);
+        expect(lenient.passed).toBe(true);
+        expect(ok.passed).toBe(false);
         const invented = runChecks(
             [{ id: 'g', type: 'answer.grounded' }],
             { ...evidence, finalResult: 'The post has 39,600,000 plays and 3.9M likes.' },
@@ -198,6 +199,16 @@ describe('infraStatus', () => {
         });
         expect(bad.ok).toBe(false);
         expect(bad.reasons).toHaveLength(2);
+    });
+    it('flags an MCP server that exposed no tools', () => {
+        const r = infraStatus({
+            ...evidence,
+            session: { ...evidence.session, mcpExpected: true, mcpToolCount: 0, mcpServers: [{ name: 'apify', status: 'connected' }] },
+        });
+        expect(r.ok).toBe(false);
+        expect(r.reasons[0]).toContain('no tools');
+        const ok = infraStatus({ ...evidence, session: { ...evidence.session, mcpExpected: true, mcpToolCount: 12 } });
+        expect(ok.ok).toBe(true);
     });
 });
 

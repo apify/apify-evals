@@ -10,13 +10,26 @@ import {
     type AgentSpanOutput,
     type ConversationEntry,
     type DatasetItemMetadata,
+    type DeterministicCheck,
+    type Evidence,
+    infraStatus,
+    runChecks,
     validateAgentSpanMetadata,
     validateAgentSpanOutput,
 } from '@apify-evals/contract';
 import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing';
+import { trace } from '@opentelemetry/api';
 import { log } from 'apify';
 
 import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
+import {
+    enrichFromApify,
+    extractFromTools,
+    summarizeRuns,
+    type RawToolCall,
+    type RawToolResult,
+    type ReferenceRunner,
+} from './evidence.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -46,6 +59,16 @@ export interface SessionContext {
     perItemTimeoutSecs: number;
     artifactStore: ArtifactStore;
     snapshots: SnapshotCache;
+    /** Reference runs (fresh ground truth), shared across sessions of one experiment. */
+    references: ReferenceRunner;
+    /** Writes one score onto an observation (the experiment item root). */
+    writeScore: (score: {
+        traceId: string;
+        observationId: string;
+        name: string;
+        value: number;
+        comment: string;
+    }) => Promise<void>;
 }
 
 /** One assistant turn or one tool result, with its arrival time, used to
@@ -101,6 +124,8 @@ function capToolInput(input: unknown): unknown {
 interface ParsedSession {
     conversation: ConversationEntry[];
     timeline: TimelineEvent[];
+    mcpServers: { name: string; status: string }[] | null;
+    mcpToolCount: number | null;
     finalResult: string | null;
     subtype: string | null;
     isError: boolean;
@@ -120,6 +145,8 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     let usage: unknown = null;
     let costUsd: number | null = null;
     let numTurns: number | null = null;
+    let mcpServers: ParsedSession['mcpServers'] = null;
+    let mcpToolCount: number | null = null;
     const lines = ndjson.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -131,6 +158,12 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
             continue;
         }
         const t = lineTimes[i] ?? fallbackTime;
+        if (ev.type === 'system' && ev.subtype === 'init') {
+            const init = parseInitEvent(ev);
+            mcpServers = init.mcpServers;
+            mcpToolCount = init.mcpToolCount;
+            continue;
+        }
         // Claude Code streams one assistant event per content block, sharing
         // message.id; fold them into one turn so the trace shows one
         // generation per model call, with that call's token usage.
@@ -194,7 +227,37 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
             numTurns = ev.num_turns ?? null;
         }
     }
-    return { conversation, timeline, finalResult, subtype, isError, usage, costUsd, numTurns };
+    return { conversation, timeline, mcpServers, mcpToolCount, finalResult, subtype, isError, usage, costUsd, numTurns };
+}
+
+/** The `system/init` event lists the MCP servers and every tool the agent has. */
+function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
+    mcpServers: { name: string; status: string }[];
+    mcpToolCount: number;
+} {
+    const servers = Array.isArray(ev.mcp_servers)
+        ? (ev.mcp_servers as { name?: unknown; status?: unknown }[]).map((s) => ({
+              name: String(s.name ?? 'unknown'),
+              status: String(s.status ?? 'unknown'),
+          }))
+        : [];
+    const tools = Array.isArray(ev.tools) ? (ev.tools as unknown[]).map(String) : [];
+    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length };
+}
+
+/** True when the init line has arrived and shows an MCP server without any
+ * mcp__ tools: the session is doomed to "I have no tools"; restart it. */
+function initShowsMissingMcpTools(stdoutSoFar: string): boolean {
+    const nl = stdoutSoFar.indexOf('\n');
+    if (nl === -1) return false;
+    try {
+        const ev = JSON.parse(stdoutSoFar.slice(0, nl));
+        if (ev.type !== 'system' || ev.subtype !== 'init') return false;
+        const init = parseInitEvent(ev);
+        return init.mcpServers.length > 0 && init.mcpToolCount === 0;
+    } catch {
+        return false;
+    }
 }
 
 function lastAssistantText(conversation: ConversationEntry[]): string {
@@ -264,7 +327,32 @@ function buildClaudeEnv(opts: {
     };
 }
 
-function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<AdapterResult> {
+const MAX_MCP_RESTARTS = 1;
+
+/**
+ * Claude Code sometimes reports the MCP server as connected while exposing
+ * none of its tools; the agent then answers "I have no tools" and the
+ * scenario is lost for a reason that has nothing to do with the subject.
+ * Detect it on the init line and restart the session once.
+ */
+async function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<AdapterResult> {
+    const expectsMcp = Array.isArray(ctx.item.metadata?.tools) && ctx.item.metadata.tools.length > 0;
+    let restarts = 0;
+    for (;;) {
+        const r = await runClaudeCodeOnce(ctx, expectsMcp && restarts < MAX_MCP_RESTARTS);
+        const m = r.metrics as { mcpToolsMissing?: boolean };
+        if (m.mcpToolsMissing && expectsMcp && restarts < MAX_MCP_RESTARTS) {
+            restarts++;
+            log.warning(`MCP tools missing at init; restarting session (${restarts}/${MAX_MCP_RESTARTS})`);
+            continue;
+        }
+        (r.metrics as Record<string, unknown>).mcpRestarts = restarts;
+        (r.metrics as Record<string, unknown>).mcpExpected = expectsMcp;
+        return r;
+    }
+}
+
+function runClaudeCodeOnce(ctx: SessionContext & { prompt: string }, abortOnMissingMcp: boolean): Promise<AdapterResult> {
     const { prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
@@ -315,6 +403,8 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
         let errOut = '';
         let settled = false;
         let timedOut = false;
+        let mcpToolsMissing = false;
+        let initChecked = false;
         let peakRssMb = 0;
         let graceTimer: NodeJS.Timeout | null = null;
 
@@ -361,13 +451,14 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
                 /* best effort */
             }
 
-            const { conversation, timeline, finalResult, subtype, isError, usage, costUsd, numTurns } =
+            const { conversation, timeline, mcpServers, mcpToolCount, finalResult, subtype, isError, usage, costUsd, numTurns } =
                 parseSessionOutput(out, lineTimes);
 
             // Agent exhausted turns or hit our timeout: an eval result, not breakage.
             const ranOutOfTurns = subtype === 'error_max_turns';
             const harnessBroke =
-                Boolean(spawnError) || (!timedOut && !ranOutOfTurns && finalResult === null && exitCode !== 0);
+                Boolean(spawnError) ||
+                (!timedOut && !ranOutOfTurns && !mcpToolsMissing && finalResult === null && exitCode !== 0);
 
             resolve({
                 output: finalResult ?? lastAssistantText(conversation),
@@ -389,6 +480,9 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
                     costUsd,
                     peakChildRssMb: peakRssMb || null,
                     toolCalls: conversation.filter((c) => c.type === 'tool_call').length,
+                    mcpServers,
+                    mcpToolCount,
+                    mcpToolsMissing,
                 },
                 harnessBroke,
                 stderr: (spawnError ?? errOut).slice(0, STDERR_CAP),
@@ -405,6 +499,15 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
                 outBytes += d.length;
                 const now = Date.now();
                 for (let i = 0; i < chunk.length; i++) if (chunk.charCodeAt(i) === 10) lineTimes.push(now);
+                // First complete line = the init event. Kill early when the MCP
+                // server exposed no tools; the caller restarts the session.
+                if (!initChecked && out.includes('\n')) {
+                    initChecked = true;
+                    if (initShowsMissingMcpTools(out)) {
+                        mcpToolsMissing = true;
+                        if (abortOnMissingMcp) killTree();
+                    }
+                }
             } else {
                 stdoutTruncated = true;
             }
@@ -435,6 +538,98 @@ export function validateHarness(harness: HarnessConfig): void {
     if (typeof harness.model !== 'string' || harness.model.length === 0) {
         throw new Error('harness.model must be a non-empty model id string');
     }
+}
+
+/** Build the evidence snapshot for one finished session. */
+async function collectEvidence(
+    ctx: SessionContext,
+    meta: DatasetItemMetadata,
+    prompt: string,
+    r: AdapterResult,
+): Promise<Evidence> {
+    const calls: RawToolCall[] = [];
+    const results: RawToolResult[] = [];
+    for (const e of r.timeline) {
+        if (e.kind === 'assistant') for (const tu of e.toolUses) calls.push({ id: tu.id, name: tu.name, input: tu.input });
+        else results.push({ toolUseId: e.toolUseId, content: e.content, isError: e.isError });
+    }
+    const extracted = extractFromTools(calls, results);
+    const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead);
+
+    let reference = null;
+    const refSpec = meta.reference as { actor?: string; input: unknown; maxSecs?: number; cacheKey?: string } | undefined;
+    if (refSpec?.input !== undefined) {
+        const actor = refSpec.actor ?? (meta.subject as { id?: string } | undefined)?.id ?? meta.actor;
+        if (actor) reference = await ctx.references.run({ actor, input: refSpec.input, maxSecs: refSpec.maxSecs, cacheKey: refSpec.cacheKey });
+    }
+
+    const m = r.metrics as {
+        timedOut?: boolean;
+        stdoutTruncated?: boolean;
+        exitCode?: number | null;
+        subtype?: string | null;
+        mcpServers?: { name: string; status: string }[] | null;
+        mcpToolCount?: number | null;
+        mcpExpected?: boolean;
+        mcpRestarts?: number;
+    };
+    return {
+        prompt,
+        finalResult: r.output,
+        toolCalls: extracted.toolCalls,
+        actorRuns: enriched.actorRuns,
+        datasets: enriched.datasets,
+        reference,
+        session: {
+            timedOut: Boolean(m.timedOut),
+            stdoutTruncated: Boolean(m.stdoutTruncated),
+            harnessBroke: r.harnessBroke,
+            exitCode: m.exitCode ?? null,
+            subtype: m.subtype ?? null,
+            ...(m.mcpServers ? { mcpServers: m.mcpServers } : {}),
+            ...(typeof m.mcpToolCount === 'number' ? { mcpToolCount: m.mcpToolCount } : {}),
+            mcpExpected: Boolean(m.mcpExpected),
+            mcpRestarts: m.mcpRestarts ?? 0,
+        },
+    };
+}
+
+/**
+ * Write check.<id> per check (not-applicable checks are skipped, not failed),
+ * plus check.all (every fail-severity check passed) and check.infra (no
+ * infrastructure failure: Actor runs finished, session did not time out).
+ */
+async function writeCheckScores(
+    ctx: SessionContext,
+    traceId: string,
+    observationId: string,
+    checks: ReturnType<typeof runChecks>,
+    infra: ReturnType<typeof infraStatus>,
+): Promise<void> {
+    const write = (name: string, value: number, comment: string) =>
+        ctx.writeScore({ traceId, observationId, name, value, comment: comment.slice(0, 1000) }).catch((err) => {
+            log.warning(`score ${name} failed: ${err}`);
+        });
+    for (const c of checks) {
+        if (!c.applicable) {
+            log.info(`check.${c.id} not applicable: ${c.comment}`);
+            continue;
+        }
+        await write(`check.${c.id}`, c.value, `${c.passed ? 'PASS' : 'FAIL'}${c.severity === 'warn' ? ' (warn)' : ''}: ${c.comment}`);
+    }
+    const gating = checks.filter((c) => c.applicable && c.severity === 'fail');
+    const failed = gating.filter((c) => !c.passed);
+    const skipped = checks.filter((c) => !c.applicable);
+    if (gating.length > 0 || skipped.length > 0) {
+        await write(
+            'check.all',
+            failed.length === 0 ? 1 : 0,
+            failed.length === 0
+                ? `${gating.length} check(s) passed${skipped.length ? `; ${skipped.length} not applicable` : ''}`
+                : `failed: ${failed.map((c) => c.id).join(', ')}${skipped.length ? `; not applicable: ${skipped.map((c) => c.id).join(', ')}` : ''}`,
+        );
+    }
+    await write('check.infra', infra.ok ? 1 : 0, infra.ok ? 'no infrastructure failure' : infra.reasons.join('; '));
 }
 
 /**
@@ -504,8 +699,18 @@ function emitTimeline(
             const p = pending.get(e.toolUseId);
             const out = e.content.slice(0, CHILD_OUTPUT_CAP);
             if (p) {
+                // Actor run links straight from the trace: the most useful
+                // thing for an Actor engineer reading a failed scenario.
+                const links: Record<string, string> = {};
+                if (p.name === 'call-actor' || p.name === 'get-actor-run') {
+                    const m = e.content.match(/"runId"\s*:\s*"([A-Za-z0-9]{17})"/);
+                    if (m) links.apifyRunUrl = `https://console.apify.com/actors/runs/${m[1]}`;
+                    const d = e.content.match(/"datasets"\s*:\s*\{\s*"default"\s*:\s*\{\s*"id"\s*:\s*"([A-Za-z0-9]{17})"/);
+                    if (d) links.datasetUrl = `https://console.apify.com/storage/datasets/${d[1]}`;
+                }
                 p.obs.update({
                     output: out,
+                    ...(Object.keys(links).length > 0 ? { metadata: links } : {}),
                     ...(e.isError ? { level: 'ERROR', statusMessage: 'tool returned an error' } : {}),
                 });
                 p.obs.end(new Date(e.t));
@@ -543,6 +748,11 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
         ...(meta.team ? [`team:${meta.team}`] : []),
         ...(meta.skill ? [`skill:${meta.skill}`] : []),
     ];
+    // The experiment-item-run span is active here (the SDK opened it around
+    // the task): checks are scored onto it, because that is the observation
+    // the compare view and the run aggregates read.
+    const rootSpanId = trace.getActiveSpan()?.spanContext().spanId ?? null;
+
     const runInSpan = () => startActiveObservation(
         'agent',
         async (span) => {
@@ -551,6 +761,24 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
 
             const traceId = span.otelSpan.spanContext().traceId;
             const logRef = await ctx.artifactStore.putLog(traceId, r.rawStdout);
+
+            // Evidence: what the agent actually did, from full tool results,
+            // enriched from the Apify API, frozen as an artifact. Checks run
+            // here so the judge (and any re-judge) reads results, not live data.
+            const evidence = await collectEvidence(ctx, meta, prompt, r);
+            const checks = runChecks((meta.checks ?? []) as DeterministicCheck[], evidence);
+            const infra = infraStatus(evidence);
+            const evidenceRef = await ctx.artifactStore
+                .putJson(`evidence-${traceId}`, { evidence, checks, infra })
+                .catch((err) => {
+                    log.warning(`evidence artifact failed: ${err}`);
+                    return null;
+                });
+            if (rootSpanId) {
+                await writeCheckScores(ctx, traceId, rootSpanId, checks, infra);
+            } else {
+                log.warning('no active experiment span; check scores not written');
+            }
 
             const tools = item.metadata?.tools;
             let snapshotRef = null;
@@ -561,10 +789,11 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 });
             }
 
+            // finalResult first: the collapsed preview in the trace reads the answer.
             const output: AgentSpanOutput = {
+                finalResult: r.output,
                 contractVersion: CONTRACT_VERSION,
                 conversation: r.conversation,
-                finalResult: r.output,
             };
             const metadata: AgentSpanMetadata = {
                 ...(r.metrics as object),
@@ -580,6 +809,18 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 ...(meta.actor ? { itemActor: String(meta.actor) } : {}),
                 ...(meta.team ? { itemTeam: String(meta.team) } : {}),
                 ...(meta.skill ? { itemSkill: String(meta.skill) } : {}),
+                ...(meta.profile ? { itemProfile: String(meta.profile) } : {}),
+                ...(meta.owner ? { itemOwner: String(meta.owner) } : {}),
+                ...((meta.subject as { id?: string } | undefined)?.id ? { itemSubject: String((meta.subject as { id: string }).id) } : {}),
+                // Evidence pointers and the deterministic verdicts, for the judge.
+                ...(evidenceRef ? { evidenceUrl: evidenceRef.url, evidenceHash: evidenceRef.hash } : {}),
+                actorRuns: summarizeRuns(evidence),
+                actorRunsCostUsd: evidence.actorRuns.reduce((acc, run) => acc + (run.costUsd ?? 0), 0),
+                toolsUsed: [...new Set(evidence.toolCalls.map((c) => c.tool.replace(/^mcp__[^_]+__/, '')))],
+                checksPassed: checks.filter((c) => c.applicable && c.passed).length,
+                checksTotal: checks.filter((c) => c.applicable).length,
+                infraOk: infra.ok,
+                infraReasons: infra.reasons,
             };
 
             // Emit-side contract enforcement: an invalid span is a runner bug.

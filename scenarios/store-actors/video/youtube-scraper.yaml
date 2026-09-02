@@ -17,6 +17,11 @@ scenarios:
       - id: namedActor
         type: answer.contains
         value: streamers/youtube-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
   - id: youtube-scraper-usage-espresso-engagement
     skill: use
     title: "Usage: pinned YouTube scraper, search with engagement fields"
@@ -28,3 +33,30 @@ scenarios:
       - id: shape
         type: answer.regex
         value: \d{4,}|\d{1,3}(,\d{3})+
+      - id: rightActor
+        type: subject.used
+        value: streamers/youtube-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: cap
+        type: apify.input
+        path: maxResults
+        op: lte
+        value: 5
+        severity: warn
+      - id: items
+        type: apify.items
+        count:
+          min: 1
+          max: 5
+      - id: engagementFields
+        type: apify.items
+        requiredFields:
+          - viewCount
+          - likes
+        severity: warn
+      - id: grounded
+        type: answer.grounded
+        minDigits: 4

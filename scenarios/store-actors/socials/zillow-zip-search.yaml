@@ -19,6 +19,11 @@ scenarios:
       - id: namedActor
         type: answer.contains
         value: maxcopell/zillow
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
   - id: zillow-zip-search-usage-scottsdale
     skill: use
     title: "Usage: pinned Zillow ZIP search, required-flags schema comprehension"
@@ -33,3 +38,32 @@ scenarios:
       - id: shape
         type: answer.regex
         value: \d{1,3},\d{3}
+      - id: rightActor
+        type: subject.used
+        value: maxcopell/zillow-zip-search
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: requiredFlags
+        type: apify.input
+        required:
+          - zipCodes
+          - forSaleByAgent
+          - forSaleByOwner
+          - forRent
+          - sold
+      - id: priceCap
+        type: apify.input
+        path: priceMax
+        op: lte
+        value: 800000
+        severity: warn
+      - id: tenResults
+        type: apify.items
+        count:
+          min: 1
+          max: 10
+      - id: grounded
+        type: answer.grounded
+        minDigits: 5
