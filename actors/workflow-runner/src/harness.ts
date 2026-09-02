@@ -13,7 +13,7 @@ import {
     validateAgentSpanMetadata,
     validateAgentSpanOutput,
 } from '@apify-evals/contract';
-import { propagateAttributes, startActiveObservation } from '@langfuse/tracing';
+import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing';
 import { log } from 'apify';
 
 import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
@@ -48,9 +48,23 @@ export interface SessionContext {
     snapshots: SnapshotCache;
 }
 
+/** One assistant turn or one tool result, with its arrival time, used to
+ * rebuild the session as child observations (generations + tool spans). */
+type TimelineEvent =
+    | {
+          kind: 'assistant';
+          t: number;
+          text: string[];
+          toolUses: { id: string; name: string; input: unknown }[];
+          usage: Record<string, unknown> | null;
+      }
+    | { kind: 'tool_result'; t: number; toolUseId: string; content: string; isError: boolean };
+
 interface AdapterResult {
     output: string;
     conversation: ConversationEntry[];
+    timeline: TimelineEvent[];
+    startedAt: number;
     rawStdout: string;
     metrics: Record<string, unknown>;
     harnessBroke: boolean;
@@ -64,6 +78,9 @@ const TEXT_BLOCK_CAP = 4000;
 const TOOL_INPUT_CAP = 2000;
 const TOOL_RESULT_CAP = 2000;
 const STDERR_CAP = 2000;
+/** Child tool observations carry more of the result than the judge-facing
+ * conversation JSON: the trace is where a human reads what the Actor returned. */
+const CHILD_OUTPUT_CAP = 20_000;
 const EXIT_GRACE_MS = 1000;
 
 function readFileSafe(path: string): string | null {
@@ -83,6 +100,7 @@ function capToolInput(input: unknown): unknown {
 
 interface ParsedSession {
     conversation: ConversationEntry[];
+    timeline: TimelineEvent[];
     finalResult: string | null;
     subtype: string | null;
     isError: boolean;
@@ -93,21 +111,58 @@ interface ParsedSession {
 
 /** Parse the claude --output-format stream-json session output into a
  * judge-ready conversation plus the final result summary. */
-function parseSessionOutput(ndjson: string): ParsedSession {
+function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTime = Date.now()): ParsedSession {
     const conversation: ConversationEntry[] = [];
+    const timeline: TimelineEvent[] = [];
     let finalResult: string | null = null;
     let subtype: string | null = null;
     let isError = false;
     let usage: unknown = null;
     let costUsd: number | null = null;
     let numTurns: number | null = null;
-    for (const line of ndjson.split('\n')) {
+    const lines = ndjson.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         if (!line.trim()) continue;
         let ev;
         try {
             ev = JSON.parse(line);
         } catch {
             continue;
+        }
+        const t = lineTimes[i] ?? fallbackTime;
+        // Claude Code streams one assistant event per content block, sharing
+        // message.id; fold them into one turn so the trace shows one
+        // generation per model call, with that call's token usage.
+        if (ev.type === 'assistant') {
+            const last = timeline[timeline.length - 1];
+            const msgId = ev.message?.id ?? null;
+            let turn = last?.kind === 'assistant' && msgId && (last as { msgId?: string }).msgId === msgId ? last : null;
+            if (!turn) {
+                turn = { kind: 'assistant', t, text: [], toolUses: [], usage: null };
+                (turn as { msgId?: string }).msgId = msgId;
+                timeline.push(turn);
+            }
+            turn.t = t;
+            turn.usage = ev.message?.usage ?? turn.usage;
+            for (const block of ev.message?.content ?? []) {
+                if (block.type === 'text' && block.text?.trim()) turn.text.push(String(block.text));
+                else if (block.type === 'tool_use') {
+                    turn.toolUses.push({ id: String(block.id ?? ''), name: String(block.name), input: block.input });
+                }
+            }
+        } else if (ev.type === 'user') {
+            for (const block of ev.message?.content ?? []) {
+                if (block.type !== 'tool_result') continue;
+                const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+                timeline.push({
+                    kind: 'tool_result',
+                    t,
+                    toolUseId: String(block.tool_use_id ?? ''),
+                    content,
+                    isError: Boolean(block.is_error),
+                });
+            }
         }
         if (ev.type === 'assistant' || ev.type === 'user') {
             for (const block of ev.message?.content ?? []) {
@@ -139,7 +194,7 @@ function parseSessionOutput(ndjson: string): ParsedSession {
             numTurns = ev.num_turns ?? null;
         }
     }
-    return { conversation, finalResult, subtype, isError, usage, costUsd, numTurns };
+    return { conversation, timeline, finalResult, subtype, isError, usage, costUsd, numTurns };
 }
 
 function lastAssistantText(conversation: ConversationEntry[]): string {
@@ -253,6 +308,9 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
         const errDecoder = new StringDecoder('utf8');
         let out = '';
         let outBytes = 0;
+        // Arrival time of every newline-terminated stdout line, by line index,
+        // so the trace's child observations get real timings.
+        const lineTimes: number[] = [];
         let stdoutTruncated = false;
         let errOut = '';
         let settled = false;
@@ -303,7 +361,8 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
                 /* best effort */
             }
 
-            const { conversation, finalResult, subtype, isError, usage, costUsd, numTurns } = parseSessionOutput(out);
+            const { conversation, timeline, finalResult, subtype, isError, usage, costUsd, numTurns } =
+                parseSessionOutput(out, lineTimes);
 
             // Agent exhausted turns or hit our timeout: an eval result, not breakage.
             const ranOutOfTurns = subtype === 'error_max_turns';
@@ -313,6 +372,8 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
             resolve({
                 output: finalResult ?? lastAssistantText(conversation),
                 conversation,
+                timeline,
+                startedAt: started,
                 rawStdout: out,
                 metrics: {
                     harness: harness.kind,
@@ -339,8 +400,11 @@ function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<Adapte
         // skips unparseable lines.
         child.stdout.on('data', (d: Buffer) => {
             if (outBytes < MAX_STDOUT_BYTES) {
-                out += outDecoder.write(d);
+                const chunk = outDecoder.write(d);
+                out += chunk;
                 outBytes += d.length;
+                const now = Date.now();
+                for (let i = 0; i < chunk.length; i++) if (chunk.charCodeAt(i) === 10) lineTimes.push(now);
             } else {
                 stdoutTruncated = true;
             }
@@ -374,6 +438,91 @@ export function validateHarness(harness: HarnessConfig): void {
 }
 
 /**
+ * Rebuild the session as child observations of the agent span so the trace
+ * view shows the flow: one generation per model turn (text, tool calls,
+ * token usage) and one tool observation per tool call (arguments in, result
+ * out, errors marked). Times come from stdout arrival, so durations are real.
+ * The judge does not read these; it reads the conversation JSON on the span.
+ */
+function emitTimeline(
+    span: { otelSpan: { spanContext: () => unknown } },
+    timeline: TimelineEvent[],
+    startedAt: number,
+    prompt: string,
+    model: string,
+): void {
+    type Child = { update: (attrs: Record<string, unknown>) => unknown; end: (t?: Date) => void };
+    // The top-level startObservation honours startTime; the parent link is
+    // explicit because these are created after the fact, not in the active
+    // context of the moment they happened.
+    const parentSpanContext = span.otelSpan.spanContext();
+    const start = (name: string, attrs: Record<string, unknown>, asType: 'generation' | 'tool', t: number): Child =>
+        (startObservation as unknown as (n: string, a: unknown, o: unknown) => Child)(name, attrs, {
+            asType,
+            startTime: new Date(t),
+            parentSpanContext,
+        });
+
+    const pending = new Map<string, { obs: Child; name: string }>();
+    let lastInput: unknown = prompt;
+    let pendingResults: { tool: string; result: string }[] = [];
+    let prevT = startedAt;
+    let turnNo = 0;
+    for (const e of timeline) {
+        if (e.kind === 'assistant') {
+            turnNo++;
+            const u = (e.usage ?? {}) as Record<string, number>;
+            const usageDetails: Record<string, number> = {};
+            if (typeof u.input_tokens === 'number') usageDetails.input = u.input_tokens;
+            if (typeof u.output_tokens === 'number') usageDetails.output = u.output_tokens;
+            if (typeof u.cache_read_input_tokens === 'number') usageDetails.cache_read = u.cache_read_input_tokens;
+            if (typeof u.cache_creation_input_tokens === 'number') {
+                usageDetails.cache_creation = u.cache_creation_input_tokens;
+            }
+            const gen = start(
+                `turn ${turnNo}`,
+                {
+                    model,
+                    input: lastInput,
+                    output: {
+                        text: e.text.join('\n\n').slice(0, CHILD_OUTPUT_CAP),
+                        toolCalls: e.toolUses.map((tu) => ({ tool: tu.name, input: capToolInput(tu.input) })),
+                    },
+                    ...(Object.keys(usageDetails).length > 0 ? { usageDetails } : {}),
+                },
+                'generation',
+                prevT,
+            );
+            gen.end(new Date(e.t));
+            for (const tu of e.toolUses) {
+                const name = tu.name.replace(/^mcp__apify__/, '');
+                pending.set(tu.id, { obs: start(name, { input: tu.input }, 'tool', e.t), name });
+            }
+            pendingResults = [];
+            lastInput = null;
+        } else {
+            const p = pending.get(e.toolUseId);
+            const out = e.content.slice(0, CHILD_OUTPUT_CAP);
+            if (p) {
+                p.obs.update({
+                    output: out,
+                    ...(e.isError ? { level: 'ERROR', statusMessage: 'tool returned an error' } : {}),
+                });
+                p.obs.end(new Date(e.t));
+                pending.delete(e.toolUseId);
+            }
+            pendingResults.push({ tool: p?.name ?? 'unknown', result: out.slice(0, TOOL_RESULT_CAP) });
+            lastInput = pendingResults;
+        }
+        prevT = e.t;
+    }
+    for (const { obs } of pending.values()) {
+        obs.update({ level: 'WARNING', statusMessage: 'no result before the session ended' });
+        obs.end(new Date(prevT));
+    }
+}
+
+/**
  * Run one session inside a Langfuse "agent" span attached to the experiment
  * trace. Emits the v1 contract: validated output + metadata, full log and
  * tool-schema snapshot in the named artifact store, pointers on the span.
@@ -398,6 +547,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
         'agent',
         async (span) => {
             const r = await adapter({ ...ctx, prompt });
+            emitTimeline(span, r.timeline, r.startedAt, prompt, harness.model);
 
             const traceId = span.otelSpan.spanContext().traceId;
             const logRef = await ctx.artifactStore.putLog(traceId, r.rawStdout);
