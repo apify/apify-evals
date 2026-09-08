@@ -55,15 +55,31 @@ describe('planScoreConfigs', () => {
         expect(plan[0]).toEqual({
             name: 'agent_judge',
             action: 'conflict',
-            id: 'id-agent_judge',
-            reason: 'exists with dataType NUMERIC, expected BOOLEAN',
+            ids: ['id-agent_judge'],
+            reason: 'expected a live BOOLEAN config, found id-agent_judge (NUMERIC)',
         });
         expect(plan.slice(1).every((e) => e.action === 'create')).toBe(true);
     });
 
     it('reports an archived same-name config as a conflict', () => {
         const plan = planScoreConfigs(desired, [existingBoolean('agent_judge', { isArchived: true })]);
-        expect(plan[0]).toMatchObject({ action: 'conflict', reason: 'exists but is archived' });
+        expect(plan[0]).toMatchObject({
+            action: 'conflict',
+            reason: 'expected a live BOOLEAN config, found id-agent_judge (BOOLEAN, archived)',
+        });
+    });
+
+    it('names every same-name config in the conflict reason', () => {
+        const existing = [
+            existingBoolean('agent_judge', { id: 'old', isArchived: true }),
+            existingBoolean('agent_judge', { id: 'num', dataType: 'NUMERIC' }),
+        ];
+        expect(planScoreConfigs(desired, existing)[0]).toEqual({
+            name: 'agent_judge',
+            action: 'conflict',
+            ids: ['old', 'num'],
+            reason: 'expected a live BOOLEAN config, found old (BOOLEAN, archived), num (NUMERIC)',
+        });
     });
 
     it('prefers a usable config when an archived duplicate also exists', () => {

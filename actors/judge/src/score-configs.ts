@@ -28,7 +28,7 @@ export interface ExistingScoreConfig {
 export type ScoreConfigPlanEntry =
     | { name: string; action: 'create'; config: DesiredScoreConfig }
     | { name: string; action: 'exists'; id: string }
-    | { name: string; action: 'conflict'; id: string; reason: string };
+    | { name: string; action: 'conflict'; ids: string[]; reason: string };
 
 export function desiredOnlineScoreConfigs(rubric: Rubric = ONLINE_RUBRIC): DesiredScoreConfig[] {
     const stamp = `Rubric ${rubric.name} v${rubric.version}.`;
@@ -52,14 +52,16 @@ function planOne(config: DesiredScoreConfig, sameName: ExistingScoreConfig[]): S
     const usable = sameName.find((c) => !c.isArchived && c.dataType === config.dataType);
     if (usable) return { name: config.name, action: 'exists', id: usable.id };
 
-    // A same-name config that cannot be used is a decision for a human: creating
-    // a second one would leave two configs with one name, forever.
-    const [first] = sameName;
-    const reason =
-        first.dataType === config.dataType
-            ? 'exists but is archived'
-            : `exists with dataType ${first.dataType}, expected ${config.dataType}`;
-    return { name: config.name, action: 'conflict', id: first.id, reason };
+    // Same-name configs that cannot be used are a decision for a human: creating
+    // another one would leave several configs with one name, forever. List them
+    // all, since any of them may be the one to unarchive or rename.
+    const found = sameName.map((c) => `${c.id} (${c.dataType}${c.isArchived ? ', archived' : ''})`).join(', ');
+    return {
+        name: config.name,
+        action: 'conflict',
+        ids: sameName.map((c) => c.id),
+        reason: `expected a live ${config.dataType} config, found ${found}`,
+    };
 }
 
 export function planScoreConfigs(

@@ -74,14 +74,14 @@ with six criteria, each judged independently as PASS or FAIL and each carrying
 a one-paragraph description that the judge prompt, this README and the score
 configs share:
 
-| Criterion             | Passes when                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------------ |
-| `toolSelection`       | Every tool and Actor choice is defensible for the task; nothing unnecessary was called.    |
-| `argumentCorrectness` | Tool inputs are well-formed, taken from the conversation, and do what the task asks.       |
-| `resultUtilization`   | The answer is faithful to the retrieved data: nothing invented, nothing important ignored. |
-| `taskCompletion`      | The user got what they asked for, grounded in retrieved data. Honest failure still fails.  |
-| `errorRecovery`       | Errors were noticed, adapted to and reported plainly (or no error occurred).               |
-| `planEfficiency`      | The step count is proportionate: no loops, duplicated work or detours.                     |
+| Criterion             | Passes when                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `toolSelection`       | Every tool and Actor choice is defensible for the task; nothing unnecessary was called.       |
+| `argumentCorrectness` | Tool inputs are well-formed, taken from the conversation, and do what the task asks.          |
+| `resultUtilization`   | The answer is faithful to the retrieved data: nothing invented, nothing important ignored.    |
+| `taskCompletion`      | The user got what they asked for, grounded in retrieved data. Honest failure still fails.     |
+| `errorRecovery`       | Errors were noticed, adapted to and reported plainly. Not scored when no tool error occurred. |
+| `planEfficiency`      | The step count is proportionate: no loops, duplicated work or detours.                        |
 
 The holistic verdict is a separate judgment over the whole turn (#269). It is
 not a computed AND over the criteria and, unlike the offline `judge.overall`,
@@ -130,7 +130,10 @@ LANGFUSE_SECRET_KEY=sk-lf-... \
 npm run create-score-configs --workspace actors/judge
 ```
 
-Tests: `npm test --workspace actors/judge` (vitest, `test/`).
+Tests: `npm test --workspace actors/judge` (vitest, `test/`). The build
+tsconfig covers `src/` only; `npm run typecheck --workspace actors/judge`
+type-checks `src/`, `scripts/` and `test/` together (`tsconfig.check.json`,
+no emit).
 
 ## v1 scope notes
 

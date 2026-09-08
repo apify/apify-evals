@@ -24,6 +24,7 @@
         "start": "node dist/main.js",
         "build": "tsc",
         "test": "vitest run",
-        "create-score-configs": "tsx scripts/create-score-configs.ts"
+        "create-score-configs": "tsx scripts/create-score-configs.ts",
+        "typecheck": "tsc -p tsconfig.check.json"
     }
 }
