@@ -9,6 +9,7 @@ import {
     computeWindow,
     EXPORT_LAG_MS,
     type FilterCondition,
+    langfuseObservationFetcher,
     type ObservationFetcher,
     type ObservationPage,
     safeUpperBound,
@@ -111,11 +112,47 @@ describe('filters', () => {
         ]);
     });
 
-    it('completedFilter adds the span name and the string completed flag', () => {
-        expect(completedFilter(window).slice(3)).toEqual([
-            { type: 'string', column: 'name', operator: '=', value: 'apify-ai.turn-complete' },
-            { type: 'stringObject', column: 'metadata', key: 'completed', operator: '=', value: 'true' },
-        ]);
+    it('completedFilter adds only the span name, never a metadata condition', () => {
+        const extra = completedFilter(window).slice(3);
+        expect(extra).toEqual([{ type: 'string', column: 'name', operator: '=', value: 'apify-ai.turn-complete' }]);
+        expect(completedFilter(window).some((c) => c.column === 'metadata')).toBe(false);
+    });
+});
+
+describe('langfuseObservationFetcher', () => {
+    const window = { start: new Date(NOW.getTime() - HOUR_MS), end: NOW };
+
+    it('sends the window, the filter as a JSON string, fields core, limit 1000 and the cursor', async () => {
+        const requests: Record<string, unknown>[] = [];
+        const pages: ObservationPage[] = [
+            { data: [{ traceId: 'a' }, { traceId: null }], meta: { cursor: 'next' } },
+            { data: [{ traceId: 'b' }], meta: {} },
+        ];
+        const fake = {
+            api: {
+                observations: {
+                    getMany: async (request: Record<string, unknown>) => {
+                        requests.push(request);
+                        return pages[requests.length - 1];
+                    },
+                },
+            },
+        };
+
+        const ids = await collectTraceIds(langfuseObservationFetcher(fake), window, traceFilter(window));
+
+        expect([...ids]).toEqual(['a', 'b']);
+        expect(requests.length).toBe(2);
+        expect(requests[0]).toMatchObject({
+            fromStartTime: '2026-09-08T11:00:00.000Z',
+            toStartTime: '2026-09-08T12:00:00.000Z',
+            fields: 'core',
+            limit: 1000,
+            cursor: undefined,
+        });
+        expect(typeof requests[0].filter).toBe('string');
+        expect(JSON.parse(requests[0].filter as string)).toEqual(traceFilter(window));
+        expect(requests[1].cursor).toBe('next');
     });
 });
 

@@ -163,6 +163,5 @@
             "editor": "textfield",
             "nullable": true
         }
-    },
-    "required": []
+    }
 }

@@ -1,4 +1,4 @@
-import { Actor } from 'apify';
+import { Actor, log } from 'apify';
 
 /**
  * Online-eval trace selection (ai-team#267): given a time window, return the
@@ -109,16 +109,14 @@ export function traceFilter(window: Window): FilterCondition[] {
 }
 
 /**
- * Only the completion-signal spans. `completed` is matched as the string
- * 'true' because the observations `metadata` column accepts only
- * `stringObject` filters, which is why the agent writes it as a string.
+ * Only the completion-signal spans, selected by name. The agent's
+ * `completed: 'true'` is TRACE metadata and is set on every span of this name,
+ * so filtering the observation `metadata` column on it would add no
+ * selectivity, only an unproven match that could zero `completedTraces` for
+ * good while the checkpoint kept advancing.
  */
 export function completedFilter(window: Window): FilterCondition[] {
-    return [
-        ...traceFilter(window),
-        { type: 'string', column: 'name', operator: '=', value: TURN_COMPLETE_SPAN_NAME },
-        { type: 'stringObject', column: 'metadata', key: 'completed', operator: '=', value: 'true' },
-    ];
+    return [...traceFilter(window), { type: 'string', column: 'name', operator: '=', value: TURN_COMPLETE_SPAN_NAME }];
 }
 
 export interface ObservationPage {
@@ -158,7 +156,7 @@ export function sampleTraceIds(traceIds: string[], sampleRate: number, maxItems:
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     const size = Math.min(Math.ceil(sampleRate * traceIds.length), maxItems);
-    return shuffled.slice(0, Math.max(0, size));
+    return shuffled.slice(0, size);
 }
 
 export interface SelectionCounters {
@@ -192,10 +190,9 @@ export interface SelectTracesOptions {
  * the checkpoint: a backfill of an old range must not rewind production.
  *
  * The checkpoint is written here, after selection succeeds, so a run that
- * fails before this point is retried over the same window. #270 may move the
- * write behind the score-write step once there is one; either is defensible,
- * because a failed judge call on a sampled trace is counted in
- * `failedToJudge`, not silently lost.
+ * fails before this point is retried over the same window. Once #270 writes
+ * scores, the write MUST move behind the score-write step: with it here, a
+ * process death during scoring loses the window's sample for good.
  */
 export async function selectTraces(opts: SelectTracesOptions): Promise<Selection> {
     const { now, sampleRate, maxItems, override = {}, rng, fetchPage, checkpoints, runId } = opts;
@@ -203,13 +200,24 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
     const checkpoint = isOverridden ? null : await checkpoints.read();
     const window = computeWindow(now, checkpoint, override);
     const empty = { tracesInWindow: 0, completedTraces: 0, sampled: 0, sampledTraceIds: [], checkpointWritten: false };
-    if (!window) return { ...empty, window: null };
+    if (!window) {
+        const start = windowStart(now, checkpoint, override).toISOString();
+        const end = (override.windowEnd ? new Date(override.windowEnd) : safeUpperBound(now)).toISOString();
+        log.warning(`Empty window: start ${start} is at or past the upper bound ${end}; nothing selected`);
+        return { ...empty, window: null };
+    }
 
     const all = await collectTraceIds(fetchPage, window, traceFilter(window));
     const completed = await collectTraceIds(fetchPage, window, completedFilter(window));
     // Intersect defensively: both queries share the tag and window, so this is
     // a no-op unless a completion span arrives under a trace with no other span.
     const completedIds = [...completed].filter((id) => all.has(id));
+    if (all.size > 0 && completedIds.length === 0) {
+        log.warning(
+            `${all.size} apify-ai traces in the window but none carry a "${TURN_COMPLETE_SPAN_NAME}" span: ` +
+                'that is the signature of a broken completion gate (name or tag drift), not of unfinished traffic',
+        );
+    }
     const sampledTraceIds = sampleTraceIds(completedIds, sampleRate, maxItems, rng);
 
     if (!isOverridden) {
