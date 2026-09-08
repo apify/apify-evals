@@ -46,7 +46,7 @@ async function main(): Promise<void> {
         } else if (entry.action === 'exists') {
             rows.push({ name: entry.name, status: 'existing', detail: entry.id });
         } else {
-            rows.push({ name: entry.name, status: 'CONFLICT', detail: `${entry.reason} (id ${entry.id})` });
+            rows.push({ name: entry.name, status: 'CONFLICT', detail: entry.reason });
         }
     }
     console.table(rows);

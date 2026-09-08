@@ -90,10 +90,11 @@ export const ONLINE_RUBRIC: Rubric = {
         {
             id: 'errorRecovery',
             description:
-                'When a tool call failed, returned nothing useful or hit a limit, the agent noticed, adapted ' +
-                '(retried with corrected input, chose another tool, or narrowed the task) and told the user ' +
-                'plainly what did not work. PASS when errors were handled reasonably or no error occurred; FAIL ' +
-                'when the agent ignored an error, repeated the same failing call or hid the failure from the user.',
+                'Not scored when no tool error occurred. When a tool call failed, returned nothing useful or hit ' +
+                'a limit, the agent noticed, adapted (retried with corrected input, chose another tool, or ' +
+                'narrowed the task) and told the user plainly what did not work. PASS when the errors that ' +
+                'occurred were handled that way; FAIL when the agent ignored an error, repeated the same failing ' +
+                'call or hid the failure from the user.',
         },
         {
             id: 'planEfficiency',
