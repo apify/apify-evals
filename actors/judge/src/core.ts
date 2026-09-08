@@ -306,7 +306,7 @@ Reply with ONLY this JSON, no other text:
 
 /** Single pass with function replacements: immune to $-patterns in values and
  * to template tokens smuggled inside dataset content. */
-function compileTemplate(template: string, vars: Record<string, string>): string {
+export function compileTemplate(template: string, vars: Record<string, string>): string {
     return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => (key in vars ? vars[key] : match));
 }
 

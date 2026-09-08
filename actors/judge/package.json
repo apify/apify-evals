@@ -11,8 +11,9 @@
     "dependencies": {
         "@apify-evals/contract": "*",
         "@langfuse/client": "^5.10.1",
-        "apify": "^3.7.0",
-        "ajv": "^8.20.0"
+        "@modelcontextprotocol/sdk": "^1.30.0",
+        "ajv": "^8.20.0",
+        "apify": "^3.7.0"
     },
     "devDependencies": {
         "@apify/eslint-config": "^2.0.0",

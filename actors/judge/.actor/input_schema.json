@@ -59,9 +59,9 @@
         "judgeModel": {
             "title": "Judge model (OpenRouter id)",
             "type": "string",
-            "description": "Exact model id, never an alias; stamped into every score.",
-            "default": "anthropic/claude-sonnet-4.6",
-            "editor": "textfield"
+            "description": "Exact model id, never an alias; stamped into every score. Defaults per mode: anthropic/claude-sonnet-4.6 in datasetRun mode, deepseek/deepseek-v4-flash in online mode.",
+            "editor": "textfield",
+            "nullable": true
         },
         "promptLabel": {
             "title": "Judge prompt label",

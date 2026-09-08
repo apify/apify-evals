@@ -24,11 +24,14 @@ const {
     datasetRunId,
     sampleRate = 0.2,
     maxItems = 100,
-    judgeModel = 'anthropic/claude-sonnet-4.6',
     promptLabel = 'production',
     force = false,
     concurrency = 4,
 } = input;
+// Per-mode default: the offline suite keeps Sonnet; online scoring runs on
+// every sampled production turn, so it defaults to the cheaper flash model.
+const judgeModel =
+    input.judgeModel ?? (mode === 'online' ? 'deepseek/deepseek-v4-flash' : 'anthropic/claude-sonnet-4.6');
 if (mode === 'datasetRun' && !datasetRunId) {
     throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
 }
@@ -44,26 +47,84 @@ for (const [inputKey, envKey] of [
 }
 
 const { LangfuseClient } = await import('@langfuse/client');
+const { resolveOrSeedPrompt } = await import('./prompt.js');
 
-/** Seam for #269: judge the sampled traces. Until then nothing is judged. */
-// TODO(#269): replace with the online judge. TODO(#270): write the scores AND
-// move the checkpoint write (now inside selectTraces) behind the score write;
-// with it before scoring, a process death mid-batch loses the window's sample.
-async function judgeOnline(_traceIds: string[]): Promise<{ judged: number; failedToJudge: number }> {
-    return { judged: 0, failedToJudge: 0 };
-}
+const apifyToken = process.env.APIFY_TOKEN;
+if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for the judge LLM and artifact reads)');
 
 if (mode === 'online') {
     const { actorCheckpointStore, DEFAULT_ENVIRONMENT, langfuseObservationFetcher, selectTraces } =
         await import('./select.js');
     const environment = input.environment ?? DEFAULT_ENVIRONMENT;
+    const { DEFAULT_ONLINE_JUDGE_PROMPT, ONLINE_JUDGE_PROMPT_NAME, judgeOnlineTrace } =
+        await import('./online-judge.js');
+    const { mcpToolSchemaSource } = await import('./online-schema.js');
+    const langfuse = new LangfuseClient();
+
+    /**
+     * Score every sampled trace (ai-team#269). Returns the verdicts and writes
+     * NOTHING to Langfuse: TODO(#270) write the scores from `verdicts`, AND move
+     * the checkpoint write (now inside selectTraces) behind that write; with it
+     * before scoring, a process death mid-batch loses the window's sample.
+     */
+    async function judgeOnline(traceIds: string[]) {
+        if (traceIds.length === 0) return { judged: 0, failedToJudge: 0, verdicts: [] };
+        const prompt = await resolveOrSeedPrompt(langfuse, {
+            name: ONLINE_JUDGE_PROMPT_NAME,
+            label: promptLabel,
+            defaultPrompt: DEFAULT_ONLINE_JUDGE_PROMPT,
+        });
+        // One tools/list per batch; a failure omits argumentCorrectness for the
+        // whole batch rather than failing every trace.
+        const schemas = await mcpToolSchemaSource({ token: apifyToken as string })
+            .load()
+            .catch((err: unknown) => {
+                log.warning(`MCP tools/list failed, argumentCorrectness will be omitted: ${err}`);
+                return null;
+            });
+        log.info(
+            `Judging ${traceIds.length} traces: model ${judgeModel}, prompt v${prompt.version}, live toolset ${schemas?.hash}`,
+        );
+
+        const verdicts: Awaited<ReturnType<typeof judgeOnlineTrace>>[] = [];
+        let failedToJudge = 0;
+        let next = 0;
+        async function onlineWorker() {
+            while (next < traceIds.length) {
+                const traceId = traceIds[next++];
+                try {
+                    const v = await judgeOnlineTrace({
+                        langfuse,
+                        traceId,
+                        apifyToken: apifyToken as string,
+                        judgeModel,
+                        promptTemplate: prompt.template,
+                        promptVersion: prompt.version,
+                        schemas,
+                    });
+                    verdicts.push(v);
+                    const holistic = v.scores.find((s) => s.name === 'agent_judge');
+                    log.info(
+                        `${traceId}: judged, agent_judge=${holistic && 'value' in holistic ? holistic.value : 'n/a'}`,
+                    );
+                } catch (err) {
+                    // One bad trace must not abort the batch.
+                    failedToJudge++;
+                    log.error(`${traceId}: judge failed: ${err}`);
+                }
+            }
+        }
+        await Promise.all(Array.from({ length: Math.min(concurrency, traceIds.length) }, onlineWorker));
+        return { judged: verdicts.length, failedToJudge, verdicts };
+    }
+
     const selection = await selectTraces({
         now: new Date(),
         sampleRate,
         maxItems,
         override: { windowStart: input.windowStart, windowEnd: input.windowEnd },
         rng: Math.random,
-        fetchPage: langfuseObservationFetcher(new LangfuseClient()),
+        fetchPage: langfuseObservationFetcher(langfuse),
         checkpoints: actorCheckpointStore(),
         runId: Actor.getEnv().actorRunId,
         environment,
@@ -114,33 +175,15 @@ const {
     renderScoreboard,
 } = await import('./core.js');
 
-const apifyToken = process.env.APIFY_TOKEN;
-if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for the judge LLM and artifact reads)');
-
 const langfuse = new LangfuseClient();
 
 // Resolve the judge prompt by label ONCE per batch and stamp that exact version
 // into every score (decision 5): never judge mid-batch off a mutable label.
-async function resolvePrompt() {
-    try {
-        return await langfuse.prompt.get(JUDGE_PROMPT_NAME, { label: promptLabel, type: 'text' });
-    } catch (err) {
-        // Seed ONLY on not-found; any other failure (network, auth) must not
-        // create a surprise new "production" prompt version.
-        const notFound =
-            (err as { statusCode?: number })?.statusCode === 404 ||
-            /not found/i.test(String((err as Error)?.message ?? ''));
-        if (!notFound) throw err;
-        log.info(`Judge prompt "${JUDGE_PROMPT_NAME}" not found, seeding the default`);
-        return langfuse.prompt.create({
-            name: JUDGE_PROMPT_NAME,
-            type: 'text',
-            prompt: DEFAULT_JUDGE_PROMPT,
-            labels: [promptLabel],
-        });
-    }
-}
-const promptClient = await resolvePrompt();
+const promptClient = await resolveOrSeedPrompt(langfuse, {
+    name: JUDGE_PROMPT_NAME,
+    label: promptLabel,
+    defaultPrompt: DEFAULT_JUDGE_PROMPT,
+});
 const version = {
     rubricVersion: RUBRIC_VERSION,
     judgeModel,
@@ -170,7 +213,7 @@ async function worker() {
                 item,
                 apifyToken: apifyToken as string,
                 judgeModel,
-                promptTemplate: promptClient.prompt as string,
+                promptTemplate: promptClient.template,
                 version,
                 datasetRunId: datasetRunId as string,
                 judgedTraceIds,
