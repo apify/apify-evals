@@ -19,7 +19,7 @@
             },
             "runOptions": {
                 "build": "latest",
-                "timeoutSecs": 3600,
+                "timeoutSecs": 7200,
                 "memoryMbytes": 1024,
                 "restartOnError": false
             }
