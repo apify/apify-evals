@@ -135,6 +135,64 @@ tsconfig covers `src/` only; `npm run typecheck --workspace actors/judge`
 type-checks `src/`, `scripts/` and `test/` together (`tsconfig.check.json`,
 no emit).
 
+## Online mode (production traces)
+
+`mode: "online"` ([ai-team#267](https://github.com/apify/ai-team/issues/267))
+selects finished production Apify AI traces from a time window and samples
+them for scoring. Selection is built; scoring (#269) and score writing (#270)
+are stacked on top and today the run judges nothing (`judged` is 0).
+
+**Window.** `[checkpoint ?? now-24h, now - 33 min)`. The upper bound is
+`now - requestTimeoutMs - exportLag`: apify-ai-agent's `server.requestTimeoutMs`
+is 30 min, so any turn that started before that point has finished, and 3 min
+(the conservative end of the observed 1 to 3 min Langfuse export lag) lets its
+completion span land. An empty or inverted window selects nothing and leaves
+the checkpoint alone.
+
+**Checkpoint.** The window's upper bound is written to the Actor's default
+key-value store under `ONLINE_CHECKPOINT` as
+`{upperBound, runId, writtenAt}` after selection succeeds, so the next run
+starts where this one stopped and a missed run backfills. A run that fails
+before selection completes does not move it. Setting `windowStart` or
+`windowEnd` skips the checkpoint entirely (neither read nor written), so a
+backfill or debugging run never rewinds production. #270 may move the write
+behind the score-write step.
+
+**Selection.** Two paged queries against
+`GET /api/public/v2/observations` (the instance runs Langfuse v4 in
+`events_only` mode, so there is no trace API), each with `fromStartTime` /
+`toStartTime` set to the window and the same bounds repeated in `filter`:
+
+```json
+[
+    { "type": "datetime", "column": "startTime", "operator": ">=", "value": "<window.start>" },
+    { "type": "datetime", "column": "startTime", "operator": "<", "value": "<window.end>" },
+    { "type": "arrayOptions", "column": "traceTags", "operator": "any of", "value": ["apify-ai"] }
+]
+```
+
+gives `tracesInWindow` (distinct trace ids). Appending
+
+```json
+[
+    { "type": "string", "column": "name", "operator": "=", "value": "apify-ai.turn-complete" },
+    { "type": "stringObject", "column": "metadata", "key": "completed", "operator": "=", "value": "true" }
+]
+```
+
+gives `completedTraces`: traces carrying the completion signal. A trace
+without it is not finished and is never judged. The completed ids are
+Fisher-Yates shuffled, `ceil(sampleRate * n)` are taken, then the result is
+truncated to `maxItems`; shuffling first keeps a capped sample unbiased.
+
+**Inputs.** `sampleRate` (default 0.2), `maxItems` (default 100: about a
+dollar of judge calls and well under the run timeout at concurrency 4 on a
+busy day), `windowStart` / `windowEnd` (ISO 8601 overrides, see above).
+`judgeModel`, `promptLabel` and the Langfuse keys apply as in datasetRun mode.
+
+**OUTPUT.** `{mode, window, checkpointWritten, tracesInWindow, completedTraces,
+sampled, judged, failedToJudge, sampledTraceIds}`.
+
 ## v1 scope notes
 
 - Judges by dataset-run id only; traceIds/filter inputs are planned.

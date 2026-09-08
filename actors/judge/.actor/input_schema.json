@@ -3,11 +3,49 @@
     "type": "object",
     "schemaVersion": 1,
     "properties": {
+        "mode": {
+            "title": "Mode",
+            "type": "string",
+            "description": "datasetRun judges one Langfuse dataset run (requires datasetRunId). online samples finished production apify-ai traces from a time window; the sampleRate, maxItems, windowStart and windowEnd inputs apply only here.",
+            "default": "datasetRun",
+            "enum": ["datasetRun", "online"],
+            "enumTitles": ["Dataset run", "Online (production traces)"]
+        },
         "datasetRunId": {
             "title": "Langfuse dataset-run id",
             "type": "string",
-            "description": "The run to judge; the Runner Actor returns this in its OUTPUT as datasetRunId. v1 judges by dataset-run id only; traceIds/filter inputs and full-log fetching are planned follow-ups.",
-            "editor": "textfield"
+            "description": "The run to judge; the Runner Actor returns this in its OUTPUT as datasetRunId. Required in datasetRun mode, ignored in online mode.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "sampleRate": {
+            "title": "Sample rate (online)",
+            "type": "number",
+            "description": "Fraction of completed traces in the window to judge, 0 to 1. The sample size is ceil(sampleRate * completedTraces), then capped by maxItems.",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 1
+        },
+        "maxItems": {
+            "title": "Max sampled traces (online)",
+            "type": "integer",
+            "description": "Ceiling on the sampled traces per run; the shuffle happens before the cap so a capped sample stays unbiased. Bounds judge cost and run time on busy days.",
+            "default": 100,
+            "minimum": 0
+        },
+        "windowStart": {
+            "title": "Window start override (online)",
+            "type": "string",
+            "description": "ISO 8601. Replaces the checkpoint (or now-24h) lower bound. Setting either override skips the checkpoint entirely: it is neither read nor written, so backfills and debugging never move production.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "windowEnd": {
+            "title": "Window end override (online)",
+            "type": "string",
+            "description": "ISO 8601, exclusive. Replaces the computed upper bound (now minus the agent request timeout minus export lag). Same checkpoint rule as windowStart.",
+            "editor": "textfield",
+            "nullable": true
         },
         "judgeModel": {
             "title": "Judge model (OpenRouter id)",
@@ -66,13 +104,9 @@
             "description": "The named key-value store the Runner wrote full logs and tool-schema snapshots to. Grants this limited-permission Actor read access to verify snapshots.",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
-            "resourcePermissions": [
-                "READ"
-            ],
+            "resourcePermissions": ["READ"],
             "nullable": true
         }
     },
-    "required": [
-        "datasetRunId"
-    ]
+    "required": []
 }

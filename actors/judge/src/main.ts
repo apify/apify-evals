@@ -1,7 +1,12 @@
 import { Actor, log } from 'apify';
 
 interface Input {
+    mode?: 'datasetRun' | 'online';
     datasetRunId?: string;
+    sampleRate?: number;
+    maxItems?: number;
+    windowStart?: string;
+    windowEnd?: string;
     judgeModel?: string;
     promptLabel?: string;
     force?: boolean;
@@ -14,13 +19,15 @@ interface Input {
 await Actor.init();
 const input = ((await Actor.getInput()) ?? {}) as Input;
 const {
+    mode = 'datasetRun',
     datasetRunId,
+    sampleRate = 0.2,
+    maxItems = 100,
     judgeModel = 'anthropic/claude-sonnet-4.6',
     promptLabel = 'production',
     force = false,
     concurrency = 4,
 } = input;
-if (!datasetRunId) throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
 
 // Env must be set before the Langfuse SDK loads (it captures env at module load).
 for (const [inputKey, envKey] of [
@@ -33,6 +40,46 @@ for (const [inputKey, envKey] of [
 }
 
 const { LangfuseClient } = await import('@langfuse/client');
+
+/** Seam for #269: judge the sampled traces. Until then nothing is judged. */
+// TODO(#269): replace with the online judge; #270 writes the scores.
+async function judgeOnline(_traceIds: string[]): Promise<{ judged: number; failedToJudge: number }> {
+    return { judged: 0, failedToJudge: 0 };
+}
+
+if (mode === 'online') {
+    const { actorCheckpointStore, langfuseObservationFetcher, selectTraces } = await import('./select.js');
+    const selection = await selectTraces({
+        now: new Date(),
+        sampleRate,
+        maxItems,
+        override: { windowStart: input.windowStart, windowEnd: input.windowEnd },
+        rng: Math.random,
+        fetchPage: langfuseObservationFetcher(new LangfuseClient()),
+        checkpoints: actorCheckpointStore(),
+        runId: Actor.getEnv().actorRunId,
+    });
+    const { judged, failedToJudge } = await judgeOnline(selection.sampledTraceIds);
+    const summary = {
+        mode,
+        window: selection.window
+            ? { start: selection.window.start.toISOString(), end: selection.window.end.toISOString() }
+            : null,
+        checkpointWritten: selection.checkpointWritten,
+        tracesInWindow: selection.tracesInWindow,
+        completedTraces: selection.completedTraces,
+        sampled: selection.sampled,
+        judged,
+        failedToJudge,
+        sampledTraceIds: selection.sampledTraceIds,
+    };
+    log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
+    await Actor.setValue('OUTPUT', summary);
+    // Actor.exit() ends the process; the datasetRun flow below never runs in this mode.
+    await Actor.exit();
+}
+if (!datasetRunId) throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
+
 const {
     DEFAULT_JUDGE_PROMPT,
     JUDGE_IMPL_VERSION,
