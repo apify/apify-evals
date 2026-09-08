@@ -155,8 +155,9 @@ key-value store under `ONLINE_CHECKPOINT` as
 starts where this one stopped and a missed run backfills. A run that fails
 before selection completes does not move it. Setting `windowStart` or
 `windowEnd` skips the checkpoint entirely (neither read nor written), so a
-backfill or debugging run never rewinds production. #270 may move the write
-behind the score-write step.
+backfill or debugging run never rewinds production. #270 must move the write
+behind the score-write step, otherwise a process death during scoring loses
+the window's sample.
 
 **Selection.** Two paged queries against
 `GET /api/public/v2/observations` (the instance runs Langfuse v4 in
@@ -174,14 +175,16 @@ behind the score-write step.
 gives `tracesInWindow` (distinct trace ids). Appending
 
 ```json
-[
-    { "type": "string", "column": "name", "operator": "=", "value": "apify-ai.turn-complete" },
-    { "type": "stringObject", "column": "metadata", "key": "completed", "operator": "=", "value": "true" }
-]
+[{ "type": "string", "column": "name", "operator": "=", "value": "apify-ai.turn-complete" }]
 ```
 
 gives `completedTraces`: traces carrying the completion signal. A trace
-without it is not finished and is never judged. The completed ids are
+without it is not finished and is never judged. The agent's
+`completed: 'true'` trace metadata is deliberately not part of the filter:
+it is set on every span of that name, so it adds no selectivity, and whether
+trace metadata is matchable on the observation `metadata` column is unproven.
+A window with traces but zero completed ones is logged as a warning: it means
+the gate broke (name or tag drift), not that nothing finished. The completed ids are
 Fisher-Yates shuffled, `ceil(sampleRate * n)` are taken, then the result is
 truncated to `maxItems`; shuffling first keeps a capped sample unbiased.
 

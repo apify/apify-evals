@@ -28,6 +28,9 @@ const {
     force = false,
     concurrency = 4,
 } = input;
+if (mode === 'datasetRun' && !datasetRunId) {
+    throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
+}
 
 // Env must be set before the Langfuse SDK loads (it captures env at module load).
 for (const [inputKey, envKey] of [
@@ -42,7 +45,9 @@ for (const [inputKey, envKey] of [
 const { LangfuseClient } = await import('@langfuse/client');
 
 /** Seam for #269: judge the sampled traces. Until then nothing is judged. */
-// TODO(#269): replace with the online judge; #270 writes the scores.
+// TODO(#269): replace with the online judge. TODO(#270): write the scores AND
+// move the checkpoint write (now inside selectTraces) behind the score write;
+// with it before scoring, a process death mid-batch loses the window's sample.
 async function judgeOnline(_traceIds: string[]): Promise<{ judged: number; failedToJudge: number }> {
     return { judged: 0, failedToJudge: 0 };
 }
@@ -78,7 +83,8 @@ if (mode === 'online') {
     // Actor.exit() ends the process; the datasetRun flow below never runs in this mode.
     await Actor.exit();
 }
-if (!datasetRunId) throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
+// Type narrowing only: the datasetRun guard above already threw when it was missing.
+if (!datasetRunId) throw new Error('unreachable: datasetRunId checked above');
 
 const {
     DEFAULT_JUDGE_PROMPT,
