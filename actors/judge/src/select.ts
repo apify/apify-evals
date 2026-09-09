@@ -214,11 +214,12 @@ export interface Selection extends SelectionCounters {
      * but no completion signal. The caller fails the run on it (see main.ts). */
     isGateBroken: boolean;
     sampledTraceIds: string[];
-    /** True when this call wrote the checkpoint. */
+    /** True when this call wrote the checkpoint (`writeCheckpoint` on, window not overridden, not empty,
+     * completion gate not broken). */
     checkpointWritten: boolean;
-    /** The record that moves the checkpoint past this window; null under an
-     * override, an empty window or a broken completion gate. #270 stops writing
-     * it here and writes this record itself, once the window's scores are safe. */
+    /** The record that moves the checkpoint past this window; null under an override, an empty window
+     * or a broken completion gate. With `writeCheckpoint: false` the caller writes it itself, once the
+     * window's scores are safe (#270). */
     checkpoint: Checkpoint | null;
 }
 
@@ -233,20 +234,34 @@ export interface SelectTracesOptions {
     runId: string | null;
     /** Langfuse environment to score; only these traces are selected. */
     environment: string;
+    /** Default true. The online flow passes false and writes the returned `checkpoint` itself, after the scores. */
+    writeCheckpoint?: boolean;
 }
 
 /**
  * The whole selection step. An explicit window override never reads or moves
  * the checkpoint: a backfill of an old range must not rewind production.
  *
- * The checkpoint is written here, after selection succeeds, so a run that
- * fails before this point (or hits a broken completion gate) is retried over
- * the same window. The record is also returned, so once #270 writes scores the
- * write MUST move behind the score-write step: with it here, a process death
- * during scoring loses the window's sample for good.
+ * The checkpoint record is returned and, unless `writeCheckpoint` is false,
+ * also written here after selection succeeds, so a run that fails before this
+ * point (or hits a broken completion gate) is retried over the same window.
+ * The online flow (#270) turns the write off and performs it only after the
+ * window's scores and rollup are in Langfuse: written here, a process death
+ * during scoring would lose the window's sample for good.
  */
 export async function selectTraces(opts: SelectTracesOptions): Promise<Selection> {
-    const { now, sampleRate, maxItems, override = {}, rng, fetchPage, checkpoints, runId, environment } = opts;
+    const {
+        now,
+        sampleRate,
+        maxItems,
+        override = {},
+        rng,
+        fetchPage,
+        checkpoints,
+        runId,
+        environment,
+        writeCheckpoint = true,
+    } = opts;
     const isOverridden = Boolean(override.windowStart || override.windowEnd);
     const checkpoint = isOverridden ? null : await checkpoints.read();
     const window = computeWindow(now, checkpoint, override);
@@ -291,14 +306,15 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
         isOverridden || isGateBroken
             ? null
             : { upperBound: window.end.toISOString(), runId, writtenAt: now.toISOString() };
-    if (nextCheckpoint) await checkpoints.write(nextCheckpoint);
+    const shouldWrite = nextCheckpoint !== null && writeCheckpoint;
+    if (shouldWrite) await checkpoints.write(nextCheckpoint);
     return {
         window,
         tracesInWindow: all.size,
         completedTraces: completedIds.length,
         sampled: sampledTraceIds.length,
         sampledTraceIds,
-        checkpointWritten: nextCheckpoint !== null,
+        checkpointWritten: shouldWrite,
         checkpoint: nextCheckpoint,
         isGateBroken,
     };

@@ -138,11 +138,12 @@ no emit).
 ## Online mode (production traces)
 
 `mode: "online"` ([ai-team#267](https://github.com/apify/ai-team/issues/267))
-selects finished production Apify AI traces from a time window, samples them
-and scores each sampled turn against the online rubric
-([#269](https://github.com/apify/ai-team/issues/269)). Score writing (#270) is
-stacked on top: today the verdicts are computed and counted (`judged`,
-`failedToJudge`) but nothing is written to Langfuse.
+selects finished production Apify AI traces from a time window, samples them,
+scores each sampled turn against the online rubric
+([#269](https://github.com/apify/ai-team/issues/269)) and writes every verdict
+to Langfuse twice, idempotently, plus a daily rollup
+([#270](https://github.com/apify/ai-team/issues/270), see "Online score
+writing" below).
 
 **Window.** `[checkpoint ?? now-24h, now - 33 min)`. The upper bound is
 `now - requestTimeoutMs - exportLag`: apify-ai-agent's `server.requestTimeoutMs`
@@ -153,16 +154,17 @@ the checkpoint alone.
 
 **Checkpoint.** The window's upper bound is written to the Actor's default
 key-value store under `ONLINE_CHECKPOINT` as
-`{upperBound, runId, writtenAt}` after selection succeeds, so the next run
-starts where this one stopped and a missed run backfills. A run that fails
-before selection completes does not move it, and neither does a run whose
-completion gate looks broken (see below). Setting `windowStart` or
-`windowEnd` skips the checkpoint entirely (neither read nor written), so a
-backfill or debugging run never rewinds production. `selectTraces()` returns
-the record it would write as `checkpoint` (null when it wrote nothing); #270
-must stop writing it inside selection and write that record behind the
-score-write step, otherwise a process death during scoring loses the window's
-sample.
+`{upperBound, runId, writtenAt}`, so the next run starts where this one
+stopped and a missed run backfills. `selectTraces()` computes the record and
+returns it as `checkpoint`; the online flow passes `writeCheckpoint: false`
+and writes it only after the window's scores and rollup are in Langfuse
+(`finishOnlineRun()`), so a run that dies anywhere before that point is
+retried over the same window instead of losing its sample. A run whose
+completion gate looks broken (see below) returns `checkpoint: null`, so
+nothing moves it and the next run retries the same window. Setting
+`windowStart` or `windowEnd` skips the checkpoint entirely (neither read nor
+written, `checkpoint: null`), so a backfill or debugging run never rewinds
+production.
 
 **Selection.** Two paged queries against
 `GET /api/public/v2/observations` (the instance runs Langfuse v4 in
@@ -254,8 +256,11 @@ busy day), `environment` (default `prod`, see above), `windowStart` /
 the Langfuse keys apply as in datasetRun mode.
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
-tracesInWindow, completedTraces, sampled, judged, failedToJudge,
-metadataMissing, sampledTraceIds}`.
+tracesInWindow, completedTraces, sampled, scoresSkipped, judged,
+failedToJudge, metadataMissing, scoresWritten, failedToWrite, rollupItemId,
+sampledTraceIds}`. `scoresSkipped` counts sampled traces already judged under
+this version (not judged again); `scoresWritten` and `failedToWrite` count
+traces, not individual scores.
 
 ### Verified live 2026-09-09
 
@@ -464,8 +469,8 @@ online score name, either `{value: 1|0, comment, evidence}` or
 criteria (holistic), `schemaMatch` (argumentCorrectness) and a span id, and
 quote no user text and no tool payload; the judge's evidence is kept apart
 from the comment because it may quote the turn. `judgeOnlineTrace()` returns it
-inside `{verdicts, traceMetadataFound}`; #270 consumes the verdicts, the seam
-is `judgeOnline()` in `main.ts`.
+inside `{verdicts, traceMetadataFound}`, and `src/online-scores.ts` consumes
+this value through one adapter, `pendingScores()`.
 
 **Prompt injection.** The rendered turn sits between unique
 `<<<APIFY_AI_TURN_DATA_BEGIN>>>` / `<<<APIFY_AI_TURN_DATA_END>>>` markers and the
@@ -474,6 +479,95 @@ and that the reply format is fixed regardless of the content.
 
 **Judge model.** `judgeModel` defaults to `deepseek/deepseek-v4-flash` in
 online mode and stays `anthropic/claude-sonnet-4.6` in datasetRun mode.
+
+### Online score writing
+
+`src/online-scores.ts` ([#270](https://github.com/apify/ai-team/issues/270)).
+Every scored criterion of a judged trace becomes two Langfuse scores; omitted
+criteria (errorRecovery without a tool error, argumentCorrectness without
+schemas) write nothing.
+
+**Score id.** `<traceId>-<scoreName>-p<promptVersion>-i<judgeImplVersion>-<judgeModel>`,
+for example
+`abc…-agent_judge_toolSelection-p3-i0-1-0-deepseek-deepseek-v4-flash`.
+`promptVersion` is the Langfuse prompt version resolved for the batch and
+`judgeImplVersion` is `JUDGE_IMPL_VERSION` from `core.ts` (there is no separate
+hand-bumped judge version). The impl version and the model id are sanitised
+for the id: every run of characters outside `[A-Za-z0-9_-]` (so `/`, `:`,
+`.`, spaces) becomes one `-`. The typings document no charset or length for a
+score id; `onlineScoreId()` pins the charset to the sanitiser's output and
+caps the length at 255 (the dataset item id limit, the only documented id cap
+in the API) and throws `InvalidScoreIdError` otherwise. A bumped prompt, impl
+or model gives a new id, so the new score lands beside the old one and a
+rubric change stays visible. The id builder is pure and unit-tested.
+
+**Two copies.** The trace copy (`traceId` subject) is what the trace view and
+score tables show; it is deleted with the trace by the 30-day retention sweep.
+The archival copy is the same score with `datasetRunId: 'apify-ai-online-YYYY-MM-DD'`
+(UTC date of the write) as its only subject, no `traceId`, no dataset, no
+items: Langfuse requires exactly one subject per score and does not check that
+the run exists, so the copy survives the sweep, reads back as an experiment
+subject and is aggregated by the metrics API. Its id carries the suffix
+`-run`; with the trace copy's id it would be deduplicated away. Both copies
+are `dataType: BOOLEAN`, carry the verdict comment and the score metadata
+(`rubricName`, `rubricVersion`, `judgeModel`, `promptVersion`,
+`judgeImplVersion`, `toolSchemaHash`, `schemaMatch`, `outcome`, `spanId`).
+The judge's evidence goes into the trace copy's metadata only: it may quote
+the user, and the archival copy outlives the trace's retention. `source` is
+not set: `CreateScoreRequest` accepts `API` (the default) or `ANNOTATION`, and
+`EVAL` is refused by the endpoint.
+
+**Timestamp caveat.** `CreateScoreRequest` has no timestamp field, and the
+SDK's batched ingestion path (`langfuse.score.create`) stamps the event with
+`new Date()` itself, so neither copy can be pinned to the trace's own time:
+both carry the write time. Langfuse deduplicates scores on id plus name plus
+the score's calendar date, so a same-day re-write is a no-op at the server as
+well; a re-write on a later day would create a second score, and only the
+pre-filter below prevents it.
+
+**Idempotency.** Before judging, the sampled trace ids are checked against
+`GET /api/public/v3/scores` (`name=agent_judge`, `fields=details,subject`, in
+chunks of 50 trace ids): a trace whose holistic score has the same
+`promptVersion`, `judgeImplVersion` and `judgeModel` in its metadata is
+skipped and counted in `scoresSkipped`, so a re-run over the same window
+spends nothing on the LLM and writes nothing. `force: true` judges and writes
+everything anyway (same-day repeats still dedup by id). The holistic trace copy
+is written LAST for each trace: a trace whose writes died halfway carries no
+marker, so the next run redoes it, and the id dedup makes the repeats harmless.
+
+**Daily rollup.** One dataset item per UTC day, `rollup-YYYY-MM-DD` in the
+dataset `apify-ai-online-rollups` (created on first use via `datasets.get`
+then `datasets.create` on 404; `datasets.create` is not documented as
+idempotent by name, so it is never called blindly). Dataset items upsert on
+their id (documented in `CreateDatasetItemRequest`). `input` is
+`{date, sampleRate, maxItems}`; `metadata` is the rollup: `passes` and `n` per
+score name (omitted criteria are not counted), `passRate` (`passes / n`, null
+when n is 0; the same number `avg` gives over the day's scores), the coverage
+counters `{tracesInWindow, completedTraces, sampled, judged, failedToJudge}`
+and `runs`. Several runs on one day merge: the existing item is read
+(`datasetItems.get`, 404 means none), counts and coverage are summed and the
+rates recomputed; an existing item that is not a rollup is replaced with a
+warning. The arithmetic (`computeRollup`, `mergeRollup`) is pure and tested.
+Risk: datasets and dataset items live in Postgres, not in the events store, so
+they are expected to work in `events_only` mode where the dataset-RUN lookups
+are refused; this is not verified against the live instance.
+
+**Ordering and failure.** `finishOnlineRun()`: scores, then rollup, then
+checkpoint. A failed score write for one trace is logged, counted in
+`failedToWrite` and does not stop the batch or hold the checkpoint back (it is
+one sampled item of many; holding the window would re-sample and re-judge the
+rest for nothing). A failed rollup is logged, the checkpoint is NOT written and
+the run exits non-zero (`Actor.fail`), so the schedule shows a failed run and
+the window is retried; the retry is safe because of the pre-filter and the id
+dedup. Note that the retry's rollup covers only the traces judged in the
+retry: the scores are the source of truth, the rollup a convenience for
+alerting.
+
+**What a re-run does.** Same window, same versions: selection samples again,
+the pre-filter drops every already-judged trace, new picks (if any) are
+judged and written, the rollup gains one run, the checkpoint moves. Same
+window after a prompt, impl or model bump: everything is judged again and the
+new scores land beside the old ones under new ids.
 
 ## v1 scope notes
 
