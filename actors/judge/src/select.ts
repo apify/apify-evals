@@ -31,6 +31,11 @@ export const TRACE_TAG = 'apify-ai';
 /** Completion-signal span name (apify-ai-agent `TURN_COMPLETE_SPAN_NAME`). */
 export const TURN_COMPLETE_SPAN_NAME = 'apify-ai.turn-complete';
 
+/** Only production turns are scored by default. apify-ai-agent emits
+ * `langfuse.environment` from its own `environment` setting: `prod` in
+ * settings.prod.json, `staging` in settings.staging.json, `dev` locally. */
+export const DEFAULT_ENVIRONMENT = 'prod';
+
 /** Max page size the observations v2 endpoint allows. */
 const PAGE_LIMIT = 1000;
 
@@ -88,7 +93,7 @@ export function computeWindow(now: Date, checkpoint: Checkpoint | null, override
 
 /** One condition of the observations v2 `filter` JSON (see GetObservationsV2Request). */
 export interface FilterCondition {
-    type: 'datetime' | 'string' | 'arrayOptions' | 'stringObject';
+    type: 'datetime' | 'string' | 'stringOptions' | 'arrayOptions' | 'stringObject';
     column: string;
     operator: string;
     value: string | string[];
@@ -96,17 +101,23 @@ export interface FilterCondition {
 }
 
 /**
- * Both window bounds, and every filter this module builds starts with them.
+ * The window and the environment, which every filter this module builds starts
+ * with. The environment is here rather than on one query because the span name
+ * alone does not separate populations: the same service emits the same span
+ * name from dev, staging and prod into one project, and scoring them together
+ * would mix local experiments into the production pass rate.
+ *
  * Verified live 2026-09-09: a `startTime` condition inside `filter` REPLACES
  * the `fromStartTime`/`toStartTime` query params rather than intersecting with
  * them (a `<`-only filter returned rows from two weeks before `fromStartTime`),
  * so a filter carrying one bound and not the other silently unbounds the query.
  * The `datetime` operators `>=`, `>`, `<`, `<=` behave as named; `=`/`!=` are 400.
  */
-function windowBounds(window: Window): FilterCondition[] {
+function windowBounds(window: Window, environment: string): FilterCondition[] {
     return [
         { type: 'datetime', column: 'startTime', operator: '>=', value: window.start.toISOString() },
         { type: 'datetime', column: 'startTime', operator: '<', value: window.end.toISOString() },
+        { type: 'stringOptions', column: 'environment', operator: 'any of', value: [environment] },
     ];
 }
 
@@ -116,27 +127,29 @@ function windowBounds(window: Window): FilterCondition[] {
  * (`metadata["attributes.langfuse.trace.tags"]`), so this returns one row per
  * trace and cannot be combined with a condition on a child span's name.
  */
-export function traceFilter(window: Window): FilterCondition[] {
+export function traceFilter(window: Window, environment: string): FilterCondition[] {
     return [
-        ...windowBounds(window),
+        ...windowBounds(window, environment),
         { type: 'arrayOptions', column: 'traceTags', operator: 'any of', value: [TRACE_TAG] },
     ];
 }
 
 /**
- * The completion-signal spans, selected by name inside the window and nothing
- * else. No `traceTags` condition: the tag is only on the root span while this
- * matches an event span, and the tag filter is evaluated per observation, so
- * tag AND name returns zero rows forever (verified live 2026-09-09: tag `user`
- * AND name `apify-ai_search-actors` returned 0 rows on a day where each half
- * returned 3). The name is unique to this service, which is the selectivity.
+ * The completion-signal spans: the window, the environment and the span name.
+ * No `traceTags` condition: the tag is only on the root span while this matches
+ * an event span, and the tag filter is evaluated per observation, so tag AND
+ * name returns zero rows forever (verified live 2026-09-09: tag `user` AND name
+ * `apify-ai_search-actors` returned 0 rows on a day where each half returned 3).
  *
  * No `metadata` condition either: the agent's `completed: 'true'` is TRACE
  * metadata set on every span of this name, so it would add no selectivity,
  * only an unproven match that could zero `completedTraces` for good.
  */
-export function completedFilter(window: Window): FilterCondition[] {
-    return [...windowBounds(window), { type: 'string', column: 'name', operator: '=', value: TURN_COMPLETE_SPAN_NAME }];
+export function completedFilter(window: Window, environment: string): FilterCondition[] {
+    return [
+        ...windowBounds(window, environment),
+        { type: 'string', column: 'name', operator: '=', value: TURN_COMPLETE_SPAN_NAME },
+    ];
 }
 
 export interface ObservationPage {
@@ -197,6 +210,9 @@ export interface SelectionCounters {
 
 export interface Selection extends SelectionCounters {
     window: Window | null;
+    /** `tracesInWindow > 0` with `completedTraces === 0`: the window had traffic
+     * but no completion signal. The caller fails the run on it (see main.ts). */
+    isGateBroken: boolean;
     sampledTraceIds: string[];
     /** True when this call wrote the checkpoint. */
     checkpointWritten: boolean;
@@ -215,6 +231,8 @@ export interface SelectTracesOptions {
     fetchPage: ObservationFetcher;
     checkpoints: CheckpointStore;
     runId: string | null;
+    /** Langfuse environment to score; only these traces are selected. */
+    environment: string;
 }
 
 /**
@@ -228,7 +246,7 @@ export interface SelectTracesOptions {
  * during scoring loses the window's sample for good.
  */
 export async function selectTraces(opts: SelectTracesOptions): Promise<Selection> {
-    const { now, sampleRate, maxItems, override = {}, rng, fetchPage, checkpoints, runId } = opts;
+    const { now, sampleRate, maxItems, override = {}, rng, fetchPage, checkpoints, runId, environment } = opts;
     const isOverridden = Boolean(override.windowStart || override.windowEnd);
     const checkpoint = isOverridden ? null : await checkpoints.read();
     const window = computeWindow(now, checkpoint, override);
@@ -239,6 +257,7 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
         sampledTraceIds: [],
         checkpointWritten: false,
         checkpoint: null,
+        isGateBroken: false,
     };
     if (!window) {
         const start = windowStart(now, checkpoint, override).toISOString();
@@ -247,23 +266,23 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
         return { ...empty, window: null };
     }
 
-    const all = await collectTraceIds(fetchPage, window, traceFilter(window));
+    const all = await collectTraceIds(fetchPage, window, traceFilter(window, environment));
     // The completion span's own start time is the selection key. The two
     // queries are NOT nested sets (see `tracesInWindow`), so intersecting them
     // would drop every turn whose root started before the window: on a live day
     // (2026-09-07) the tag query and a name query shared only 1 of 3 traces.
-    const completedIds = [...(await collectTraceIds(fetchPage, window, completedFilter(window)))];
-    // A window with traffic but no completion span at all is the signature of
-    // the trace contract not being deployed, or of the span name drifting, not
-    // of unfinished traffic. Selecting nothing is correct; advancing the
-    // checkpoint over it would burn the window silently, so leave it and let
-    // the next run retry. The run's OUTPUT shows both counters.
+    const completedIds = [...(await collectTraceIds(fetchPage, window, completedFilter(window, environment)))];
+    // Traffic with no completion span at all means the span name drifted or
+    // emission stopped, not that nothing finished. Selecting nothing is
+    // correct; advancing the checkpoint over it would burn the window
+    // silently, so leave it and let the next run retry. The counters are in
+    // the run's OUTPUT and the caller fails the run.
     const isGateBroken = all.size > 0 && completedIds.length === 0;
     if (isGateBroken) {
         log.warning(
             `${all.size} apify-ai traces in the window but none carry a "${TURN_COMPLETE_SPAN_NAME}" span: ` +
-                'that is the signature of a broken completion gate (the trace contract is not deployed, or the ' +
-                'span name drifted), not of unfinished traffic; the checkpoint is left in place for a retry',
+                'the span name drifted or emission stopped, this is not unfinished traffic; ' +
+                'the checkpoint is left in place for a retry',
         );
     }
     const sampledTraceIds = sampleTraceIds(completedIds, sampleRate, maxItems, rng);
@@ -281,6 +300,7 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
         sampledTraceIds,
         checkpointWritten: nextCheckpoint !== null,
         checkpoint: nextCheckpoint,
+        isGateBroken,
     };
 }
 

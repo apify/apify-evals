@@ -6,7 +6,7 @@
         "mode": {
             "title": "Mode",
             "type": "string",
-            "description": "datasetRun judges one Langfuse dataset run (requires datasetRunId). online samples finished production apify-ai traces from a time window; the sampleRate, maxItems, windowStart and windowEnd inputs apply only here.",
+            "description": "datasetRun judges one Langfuse dataset run (requires datasetRunId). online samples finished production apify-ai traces from a time window; the sampleRate, maxItems, environment, windowStart and windowEnd inputs apply only here.",
             "default": "datasetRun",
             "enum": ["datasetRun", "online"],
             "enumTitles": ["Dataset run", "Online (production traces)"]
@@ -46,6 +46,13 @@
             "description": "ISO 8601, exclusive. Replaces the computed upper bound (now minus the agent request timeout minus export lag). Same checkpoint rule as windowStart.",
             "editor": "textfield",
             "nullable": true
+        },
+        "environment": {
+            "title": "Langfuse environment (online)",
+            "type": "string",
+            "description": "Only traces from this Langfuse environment are selected. The same service emits the same span names from dev, staging and prod into one project, so without this they would be scored as one population. apify-ai-agent sets it from its own environment setting: prod, staging or dev. Use \"staging\" to backfill staging traffic.",
+            "default": "prod",
+            "editor": "textfield"
         },
         "judgeModel": {
             "title": "Judge model (OpenRouter id)",

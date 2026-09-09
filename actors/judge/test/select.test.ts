@@ -7,6 +7,7 @@ import {
     collectTraceIds,
     completedFilter,
     computeWindow,
+    DEFAULT_ENVIRONMENT,
     EXPORT_LAG_MS,
     type FilterCondition,
     langfuseObservationFetcher,
@@ -21,6 +22,7 @@ import {
 
 const NOW = new Date('2026-09-08T12:00:00.000Z');
 const HOUR_MS = 60 * 60_000;
+const ENV = 'prod';
 
 /** Deterministic RNG: cycles through fixed fractions. */
 function fixedRng(values: number[]) {
@@ -104,33 +106,47 @@ describe('computeWindow', () => {
 describe('filters', () => {
     const window = { start: new Date(NOW.getTime() - HOUR_MS), end: NOW };
 
-    it('traceFilter carries the window bounds and the apify-ai tag', () => {
-        expect(traceFilter(window)).toEqual([
+    it('traceFilter carries the window bounds, the environment and the apify-ai tag', () => {
+        expect(traceFilter(window, ENV)).toEqual([
             { type: 'datetime', column: 'startTime', operator: '>=', value: '2026-09-08T11:00:00.000Z' },
             { type: 'datetime', column: 'startTime', operator: '<', value: '2026-09-08T12:00:00.000Z' },
+            { type: 'stringOptions', column: 'environment', operator: 'any of', value: ['prod'] },
             { type: 'arrayOptions', column: 'traceTags', operator: 'any of', value: ['apify-ai'] },
         ]);
     });
 
-    it('completedFilter is the window bounds plus the span name, with no tag or metadata condition', () => {
-        expect(completedFilter(window)).toEqual([
+    it('completedFilter is the bounds and environment plus the span name, with no tag or metadata condition', () => {
+        expect(completedFilter(window, ENV)).toEqual([
             { type: 'datetime', column: 'startTime', operator: '>=', value: '2026-09-08T11:00:00.000Z' },
             { type: 'datetime', column: 'startTime', operator: '<', value: '2026-09-08T12:00:00.000Z' },
+            { type: 'stringOptions', column: 'environment', operator: 'any of', value: ['prod'] },
             { type: 'string', column: 'name', operator: '=', value: 'apify-ai.turn-complete' },
         ]);
         // The tag lives only on the root span and matches per observation, so
         // tag AND name can never return a row (live-verified 2026-09-09).
-        expect(completedFilter(window).some((c) => c.column === 'traceTags')).toBe(false);
-        expect(completedFilter(window).some((c) => c.column === 'metadata')).toBe(false);
+        expect(completedFilter(window, ENV).some((c) => c.column === 'traceTags')).toBe(false);
+        expect(completedFilter(window, ENV).some((c) => c.column === 'metadata')).toBe(false);
     });
 
     it('every filter the module builds carries both window bounds, because filter replaces the query params', () => {
-        for (const filter of [traceFilter(window), completedFilter(window)]) {
+        for (const filter of [traceFilter(window, ENV), completedFilter(window, ENV)]) {
             const bounds = filter.filter((c) => c.type === 'datetime' && c.column === 'startTime');
             expect(bounds).toEqual([
                 { type: 'datetime', column: 'startTime', operator: '>=', value: window.start.toISOString() },
                 { type: 'datetime', column: 'startTime', operator: '<', value: window.end.toISOString() },
             ]);
+        }
+    });
+
+    it('every filter the module builds pins the environment, so dev and staging turns are never scored', () => {
+        expect(DEFAULT_ENVIRONMENT).toBe('prod');
+        for (const filter of [traceFilter(window, 'staging'), completedFilter(window, 'staging')]) {
+            expect(filter).toContainEqual({
+                type: 'stringOptions',
+                column: 'environment',
+                operator: 'any of',
+                value: ['staging'],
+            });
         }
     });
 });
@@ -155,7 +171,7 @@ describe('langfuseObservationFetcher', () => {
             },
         };
 
-        const ids = await collectTraceIds(langfuseObservationFetcher(fake), window, traceFilter(window));
+        const ids = await collectTraceIds(langfuseObservationFetcher(fake), window, traceFilter(window, ENV));
 
         expect([...ids]).toEqual(['a', 'b']);
         expect(requests.length).toBe(2);
@@ -167,7 +183,7 @@ describe('langfuseObservationFetcher', () => {
             cursor: undefined,
         });
         expect(typeof requests[0].filter).toBe('string');
-        expect(JSON.parse(requests[0].filter as string)).toEqual(traceFilter(window));
+        expect(JSON.parse(requests[0].filter as string)).toEqual(traceFilter(window, ENV));
         expect(requests[1].cursor).toBe('next');
     });
 });
@@ -186,7 +202,7 @@ describe('collectTraceIds', () => {
             seen.push(cursor);
             return pages[seen.length - 1];
         };
-        const ids = await collectTraceIds(fetchPage, window, traceFilter(window));
+        const ids = await collectTraceIds(fetchPage, window, traceFilter(window, ENV));
         expect([...ids].sort()).toEqual(['a', 'b', 'c']);
         expect(seen).toEqual([undefined, 'p2', 'p3']);
     });
@@ -231,11 +247,13 @@ describe('selectTraces', () => {
             rng: fixedRng([0.2, 0.7]),
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: 'run-1',
         });
 
         expect(s.tracesInWindow).toBe(5);
         expect(s.completedTraces).toBe(3);
+        expect(s.isGateBroken).toBe(false);
         expect(s.sampled).toBe(2);
         expect(s.sampledTraceIds.length).toBe(2);
         for (const id of s.sampledTraceIds) expect(['a', 'c', 'e']).toContain(id);
@@ -263,6 +281,7 @@ describe('selectTraces', () => {
             rng: Math.random,
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: null,
         });
 
@@ -282,6 +301,7 @@ describe('selectTraces', () => {
             rng: Math.random,
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: 'run-1',
         });
 
@@ -290,6 +310,7 @@ describe('selectTraces', () => {
         expect(s.sampledTraceIds).toEqual([]);
         expect(s.checkpoint).toBeNull();
         expect(s.checkpointWritten).toBe(false);
+        expect(s.isGateBroken).toBe(true);
         expect(writes).toEqual([]);
     });
 
@@ -304,11 +325,14 @@ describe('selectTraces', () => {
             rng: Math.random,
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: null,
         });
 
         expect(s.checkpointWritten).toBe(true);
         expect(writes.length).toBe(1);
+        // No traffic at all is an idle window, not a broken gate: the run stays green.
+        expect(s.isGateBroken).toBe(false);
     });
 
     it('returns zero counts and does not move the checkpoint on an empty window', async () => {
@@ -323,10 +347,18 @@ describe('selectTraces', () => {
             rng: Math.random,
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: null,
         });
 
-        expect(s).toMatchObject({ window: null, tracesInWindow: 0, completedTraces: 0, sampled: 0, checkpoint: null });
+        expect(s).toMatchObject({
+            window: null,
+            tracesInWindow: 0,
+            completedTraces: 0,
+            sampled: 0,
+            checkpoint: null,
+            isGateBroken: false,
+        });
         expect(calls).toEqual([]);
         expect(writes).toEqual([]);
     });
@@ -344,6 +376,7 @@ describe('selectTraces', () => {
                 rng: Math.random,
                 fetchPage,
                 checkpoints: store,
+                environment: ENV,
                 runId: null,
             }),
         ).rejects.toThrow('langfuse down');
@@ -372,6 +405,7 @@ describe('selectTraces', () => {
             rng: Math.random,
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: null,
         });
 
@@ -394,6 +428,7 @@ describe('selectTraces', () => {
             rng: Math.random,
             fetchPage,
             checkpoints: store,
+            environment: ENV,
             runId: null,
         });
         expect(s.tracesInWindow).toBe(7);
