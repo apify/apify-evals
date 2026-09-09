@@ -170,6 +170,7 @@ if (mode === 'online') {
         date: selection.window?.start ?? now,
         sampleRate,
         maxItems,
+        scoresSkipped: skipped.length,
         coverage: {
             tracesInWindow: selection.tracesInWindow,
             completedTraces: selection.completedTraces,
@@ -211,7 +212,8 @@ if (mode === 'online') {
                 'The checkpoint was not moved; see OUTPUT.',
         );
     }
-    // A failed rollup or an all-failed batch exits non-zero so the schedule shows a failed run and the window is retried.
+    // A failed rollup, an all-failed judge batch or an all-failed write batch exits non-zero so the schedule shows a
+    // failed run and the window is retried.
     if (finished.error !== null) await Actor.fail(`Online run incomplete: ${finished.error}`);
     await Actor.exit();
 }

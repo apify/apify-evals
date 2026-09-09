@@ -1,8 +1,10 @@
+import { NotFoundError } from '@langfuse/core';
 import { describe, expect, it } from 'vitest';
 
 import { JUDGE_IMPL_VERSION } from '../src/core.js';
 import type { OnlineVerdicts } from '../src/online-judge.js';
 import {
+    AllJudgementsFailedError,
     AllScoreWritesFailedError,
     computeRollup,
     type CreateDatasetItemRequest,
@@ -10,6 +12,7 @@ import {
     type ExistingOnlineScore,
     finishOnlineRun,
     InvalidScoreIdError,
+    isNotFound,
     judgedUnderVersion,
     langfuseOnlineScoreReader,
     MAX_SCORE_ID_LENGTH,
@@ -83,16 +86,11 @@ function fakeScoresApi(failOn: (request: CreateScoreRequest) => boolean = () => 
 
 const notFound = () => Object.assign(new Error('not found'), { statusCode: 404 });
 
-function fakeRollupApi(opts: { datasetExists?: boolean; existingItem?: unknown; failCreate?: boolean } = {}) {
+function fakeRollupApi(opts: { existingItem?: unknown; failCreate?: boolean } = {}) {
     const calls: string[] = [];
     const items: CreateDatasetItemRequest[] = [];
     const api: RollupApi = {
         datasets: {
-            get: async (name) => {
-                calls.push(`datasets.get ${name}`);
-                if (opts.datasetExists === false) throw notFound();
-                return { name };
-            },
             create: async (request) => {
                 calls.push(`datasets.create ${request.name}`);
                 return request;
@@ -510,20 +508,29 @@ describe('upsertDailyRollup', () => {
         coverage,
     });
 
-    it('creates the dataset only when it is missing, then upserts the item', async () => {
-        const missing = fakeRollupApi({ datasetExists: false });
-        expect(await upsertDailyRollup({ api: missing.api, rollup })).toEqual({ id: 'rollup-2026-09-09' });
-        expect(missing.calls).toEqual([
-            `datasets.get ${ROLLUP_DATASET_NAME}`,
+    it('always calls datasets.create (idempotent by name), reads the existing item, then upserts', async () => {
+        const { api, calls, items } = fakeRollupApi();
+        expect(await upsertDailyRollup({ api, rollup })).toEqual({ id: 'rollup-2026-09-09' });
+        expect(calls).toEqual([
             `datasets.create ${ROLLUP_DATASET_NAME}`,
             'datasetItems.get rollup-2026-09-09',
             'datasetItems.create rollup-2026-09-09',
         ]);
+        expect(items[0].metadata).toEqual(rollup);
+    });
 
-        const present = fakeRollupApi({ datasetExists: true });
-        await upsertDailyRollup({ api: present.api, rollup });
-        expect(present.calls).not.toContain(`datasets.create ${ROLLUP_DATASET_NAME}`);
-        expect(present.items[0].metadata).toEqual(rollup);
+    it('the dataset name is permanent (no public API deletes a dataset): pin it', () => {
+        expect(ROLLUP_DATASET_NAME).toBe('apify-ai-online-rollups');
+    });
+
+    it('isNotFound recognises the real client NotFoundError by its statusCode and nothing else', () => {
+        const real = new NotFoundError({ message: 'dataset item not found' });
+        expect(real.statusCode).toBe(404);
+        expect(isNotFound(real)).toBe(true);
+        expect(isNotFound(Object.assign(new Error('x'), { statusCode: 500 }))).toBe(false);
+        expect(isNotFound(Object.assign(new Error('x'), { status: 404 }))).toBe(false);
+        expect(isNotFound(new Error('not found'))).toBe(false);
+        expect(isNotFound(undefined)).toBe(false);
     });
 
     it('merges into the existing item of the day', async () => {
@@ -545,7 +552,7 @@ describe('finishOnlineRun', () => {
         runId: 'r1',
         writtenAt: NOW.toISOString(),
     };
-    const base = { date: NOW, sampleRate: 0.2, maxItems: 100, coverage: judgeCoverage, checkpoint };
+    const base = { date: NOW, sampleRate: 0.2, maxItems: 100, coverage: judgeCoverage, scoresSkipped: 0, checkpoint };
 
     it('writes scores, then the rollup, then the checkpoint', async () => {
         const order: string[] = [];
@@ -651,6 +658,48 @@ describe('finishOnlineRun', () => {
         expect(writes).toEqual([]);
     });
 
+    it('a batch where every trace failed to judge is a failure: no rollup, no checkpoint, typed error', async () => {
+        const { api, requests } = fakeScoresApi();
+        const rollupApi = fakeRollupApi();
+        const { store, writes } = memoryCheckpoints();
+
+        const result = await finishOnlineRun({
+            ...base,
+            coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 3 },
+            scoresSkipped: 2,
+            verdicts: [],
+            scores: api,
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        expect(result).toMatchObject({ scoresWritten: 0, rollupItemId: null, checkpointWritten: false });
+        expect(result.error).toBeInstanceOf(AllJudgementsFailedError);
+        expect(String(result.error)).toContain('3 traces');
+        expect(requests).toEqual([]);
+        expect(rollupApi.calls).toEqual([]);
+        expect(writes).toEqual([]);
+    });
+
+    it('everything pre-filtered (sampled === scoresSkipped, judged 0) is not a judge failure', async () => {
+        const { api } = fakeScoresApi();
+        const rollupApi = fakeRollupApi();
+        const { store, writes } = memoryCheckpoints();
+
+        const result = await finishOnlineRun({
+            ...base,
+            coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 0 },
+            scoresSkipped: 5,
+            verdicts: [],
+            scores: api,
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        expect(result).toMatchObject({ error: null, checkpointWritten: true, rollupItemId: 'rollup-2026-09-09' });
+        expect(writes).toEqual([checkpoint]);
+    });
+
     it('skips the rollup when nothing was sampled or judged, but still moves the checkpoint', async () => {
         const { api } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
@@ -678,6 +727,8 @@ describe('finishOnlineRun', () => {
         const result = await finishOnlineRun({
             ...base,
             checkpoint: null,
+            coverage: { ...judgeCoverage, judged: 0, failedToJudge: 0 },
+            scoresSkipped: judgeCoverage.sampled,
             verdicts: [],
             scores: api,
             rollupApi: rollupApi.api,

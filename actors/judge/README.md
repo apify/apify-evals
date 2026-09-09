@@ -252,8 +252,10 @@ are idempotent, so it belongs with them and not with selection.
 **Inputs.** `sampleRate` (default 0.2), `maxItems` (default 100: about a
 dollar of judge calls and well under the run timeout at concurrency 4 on a
 busy day), `environment` (default `prod`, see above), `windowStart` /
-`windowEnd` (ISO 8601 overrides, see above). `judgeModel`, `promptLabel` and
-the Langfuse keys apply as in datasetRun mode.
+`windowEnd` (ISO 8601 overrides, see above; give them an explicit offset,
+`2026-09-01T00:00:00Z`, because a string without one is parsed as the Actor's
+local time). `judgeModel`, `promptLabel` and the Langfuse keys apply as in
+datasetRun mode.
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
 tracesInWindow, completedTraces, sampled, scoresSkipped, judged,
@@ -505,17 +507,22 @@ rubric change stays visible. The id builder is pure and unit-tested.
 score tables show; it is deleted with the trace by the 30-day retention sweep.
 The archival copy is the same score with `datasetRunId: 'apify-ai-online-YYYY-MM-DD'`
 as its only subject, no `traceId`, no dataset, no items (the date is the
-window's, see "Which day" below): Langfuse requires exactly one subject per score and does not check that
-the run exists, so the copy survives the sweep, reads back as an experiment
-subject and is aggregated by the metrics API. Its id carries the suffix
+window's, see "Which day" below). Langfuse requires exactly one subject per
+score (two is a 400) and does not check that the run exists, so the copy
+survives the sweep. It reads back through `GET /api/public/v3/scores` with the
+`experimentId=<runId>` filter (`datasetRunId` and `datasetRunName` are
+rejected as unrecognised keys) and its subject is `{kind: 'experiment', id}`;
+the metrics API aggregates it as a run. All of this was verified live against
+langfuse.apify.dev on 2026-09-09. Its id carries the suffix
 `-run`; with the trace copy's id it would be deduplicated away. Both copies
 are `dataType: BOOLEAN`, carry the verdict comment and the score metadata
 (`rubricName`, `rubricVersion`, `judgeModel`, `promptVersion`,
 `judgeImplVersion`, `toolSchemaHash`, `schemaMatch`, `outcome`, `spanId`).
 The judge's evidence goes into the trace copy's metadata only: it may quote
 the user, and the archival copy outlives the trace's retention. `source` is
-not set: `CreateScoreRequest` accepts `API` (the default) or `ANNOTATION`, and
-`EVAL` is refused by the endpoint.
+not set: the endpoint defaults to `API`, refuses `EVAL` with a 400 naming
+`API`/`ANNOTATION` as the allowed values, and `ANNOTATION` additionally
+requires a `configId`, so `API` is the only usable source here.
 
 **Timestamp caveat.** `CreateScoreRequest` has no timestamp field, and the
 SDK's batched ingestion path (`langfuse.score.create`) stamps the event with
@@ -542,7 +549,10 @@ written at about 06:0x on day D. A monitor (#271) that expects "the run copy
 for today written at ~06:0x" must read it as "the run copy for D-1 written at
 ~06:0x on D". The window start, not `now`, was chosen because the label should
 name the traffic being judged, and a backfill that lands on today would make
-today's pass rate a mix of two weeks.
+today's pass rate a mix of two weeks. Two more facts for a monitor's filters
+(verified live 2026-09-09): BOOLEAN scores read back with `value: true` /
+`value: false` (JSON booleans, not 1/0), and every score lands in the
+environment `default`, whatever environment the judged trace is in.
 
 **Idempotency.** Before judging, the sampled trace ids are checked against
 `GET /api/public/v3/scores` (`name=agent_judge`, `fields=details,subject`, in
@@ -556,10 +566,14 @@ trace whose writes died halfway carries no marker, so the next run redoes it,
 and on the same day the ids replace the rows already there.
 
 **Daily rollup.** One dataset item per UTC day of the window start,
-`rollup-YYYY-MM-DD` in the dataset `apify-ai-online-rollups` (created on first use via `datasets.get`
-then `datasets.create` on 404; `datasets.create` is not documented as
-idempotent by name, so it is never called blindly). Dataset items upsert on
-their id (documented in `CreateDatasetItemRequest`). `input` is
+`rollup-YYYY-MM-DD` in the dataset `apify-ai-online-rollups`.
+`POST /api/public/v2/datasets` is called on every run: it is idempotent by
+name in practice (verified live 2026-09-09: an existing name returns the same
+dataset id, `createdAt` preserved). WARNING: no public API deletes a dataset,
+so `ROLLUP_DATASET_NAME` is permanent once the first run creates it; the
+constant is pinned by a test, and renaming it means an orphaned empty dataset
+in the project forever. A dataset item POST with an existing id replaces the
+whole document (verified live). `input` is
 `{date, sampleRate, maxItems}`; `metadata` is the rollup: `passes` and `n` per
 score name, counted over the traces whose scores were actually WRITTEN
 (omitted criteria are not counted), `passRate` (`passes / n`, null when n is 0;
@@ -575,10 +589,8 @@ runs that had work. A retry over the SAME window (after a failed rollup or an
 all-failed batch) sums `tracesInWindow`, `completedTraces` and `sampled` a
 second time; `n` and `passes` stay exact because the retry writes only traces
 the pre-filter did not skip. The arithmetic (`computeRollup`, `mergeRollup`)
-is pure and tested.
-Risk: datasets and dataset items live in Postgres, not in the events store, so
-they are expected to work in `events_only` mode where the dataset-RUN lookups
-are refused; this is not verified against the live instance.
+is pure and tested. Datasets and dataset items work in `events_only` mode
+(verified live 2026-09-09); only the dataset-RUN lookups are refused there.
 
 **Ordering and failure.** `finishOnlineRun()`: scores, then rollup, then
 checkpoint. A failed score write for SOME traces is logged, counted in
@@ -589,8 +601,14 @@ only the traces that were written. A batch whose writes ALL failed (Langfuse
 down, subject rejected) is a failure, not a success: no rollup, the checkpoint
 is NOT written and the run exits non-zero (`AllScoreWritesFailedError` via
 `Actor.fail`), otherwise the window and its LLM spend would be lost silently.
-A failed rollup is handled the same way (logged, no checkpoint, non-zero
-exit), so the schedule shows a failed run and the window is retried; the retry
+The judge-side twin is handled the same way: when every trace given to the
+judge failed to judge (`sampled - scoresSkipped > 0` and `judged === 0`, the
+signature of a systematic judge failure such as the model or the prompt being
+broken), nothing is rolled up, the checkpoint stays and the run fails with
+`AllJudgementsFailedError`, so a broken judge holds the window instead of
+advancing past it with nothing scored. A failed rollup is handled the same way
+(logged, no checkpoint, non-zero exit). In every case the schedule shows a
+failed run and the window is retried; the retry
 is safe because of the pre-filter and the id replacement. Note that the
 retry's rollup covers only the traces written in the retry: the scores are the
 source of truth, the rollup a convenience for alerting.
