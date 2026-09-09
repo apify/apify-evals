@@ -157,8 +157,14 @@ const schemas: ToolSchemaSet = toolSchemaSetFromMcp([
     { name: 'call-actor', inputSchema: AGENT_TOOLSET['apify-ai_call-actor'].inputSchema },
 ]);
 
+/** Names are bare, as turn reconstruction produces them: the `apify-ai_` namespace is stripped there. */
 function call(name: string, args: unknown, callId = 'c1'): TurnToolCall {
     return { callId, name, arguments: args, result: {}, isError: false, observationId: `g-${callId}` };
+}
+
+/** A call whose span recorded no arguments: the `arguments` key is absent, not undefined. */
+function callWithoutArguments(name: string, callId = 'c1'): TurnToolCall {
+    return { callId, name, result: {}, isError: false, observationId: `g-${callId}` };
 }
 
 function turnWith(calls: TurnToolCall[], traceHash?: string): OnlineTurn {
@@ -171,6 +177,7 @@ function turnWith(calls: TurnToolCall[], traceHash?: string): OnlineTurn {
         finalText: '',
         hasToolError: false,
         generationIds: ['g1'],
+        excludedGenerations: 0,
         metadata: traceHash ? { toolSchemaHash: traceHash } : {},
         metadataFound: Boolean(traceHash),
     };
@@ -179,7 +186,7 @@ function turnWith(calls: TurnToolCall[], traceHash?: string): OnlineTurn {
 describe('checkArgumentCorrectness', () => {
     it('passes valid arguments and reports schemaMatch when the trace hash equals the live one', () => {
         const result = checkArgumentCorrectness(
-            turnWith([call('apify-ai_search-actors', { query: 'x', limit: 5 })], schemas.hash),
+            turnWith([call('search-actors', { query: 'x', limit: 5 })], schemas.hash),
             schemas,
         );
         expect(result).toMatchObject({
@@ -189,16 +196,13 @@ describe('checkArgumentCorrectness', () => {
             unvalidatedTools: [],
         });
         expect(result.validated).toEqual([
-            { callId: 'c1', name: 'apify-ai_search-actors', observationId: 'g-c1', valid: true, errors: [] },
+            { callId: 'c1', name: 'search-actors', observationId: 'g-c1', valid: true, errors: [] },
         ]);
     });
 
     it('fails on invalid arguments with paths and messages but never the values', () => {
         const args = { query: 'SECRET_VALUE', limit: 'many' };
-        const result = checkArgumentCorrectness(
-            turnWith([call('apify-ai_search-actors', args)], schemas.hash),
-            schemas,
-        );
+        const result = checkArgumentCorrectness(turnWith([call('search-actors', args)], schemas.hash), schemas);
         expect(result.verdict).toBe('fail');
         expect(result.validated[0].valid).toBe(false);
         expect(result.validated[0].errors.join(' ')).toContain('/limit must be integer');
@@ -213,25 +217,58 @@ describe('checkArgumentCorrectness', () => {
     });
 
     it('omits the criterion with the tool names when no called tool has a schema', () => {
-        const result = checkArgumentCorrectness(turnWith([call('apify-ai_unknown-tool', {})], schemas.hash), schemas);
+        const result = checkArgumentCorrectness(turnWith([call('unknown-tool', {})], schemas.hash), schemas);
         expect(result).toMatchObject({
             verdict: 'omitted',
-            reason: 'no schema for the called tool(s): apify-ai_unknown-tool',
+            reason: 'no schema for the called tool(s): unknown-tool',
         });
         expect(result.validated[0].valid).toBeNull();
     });
 
     it('validates what it can and lists the rest when only some tools have schemas', () => {
-        const calls = [call('apify-ai_search-actors', { query: 'x' }, 'c1'), call('apify-ai_unknown-tool', {}, 'c2')];
+        const calls = [call('search-actors', { query: 'x' }, 'c1'), call('unknown-tool', {}, 'c2')];
         const result = checkArgumentCorrectness(turnWith(calls, schemas.hash), schemas);
         expect(result.verdict).toBe('pass');
-        expect(result.unvalidatedTools).toEqual(['apify-ai_unknown-tool']);
+        expect(result.unvalidatedTools).toEqual(['unknown-tool']);
     });
 
     it('still validates on a hash mismatch, and marks schemaMatch false', () => {
-        const result = checkArgumentCorrectness(turnWith([call('apify-ai_call-actor', {})], 'sha256:other'), schemas);
+        const result = checkArgumentCorrectness(turnWith([call('call-actor', {})], 'sha256:other'), schemas);
         expect(result).toMatchObject({ verdict: 'fail', schemaMatch: false });
         expect(result.validated[0].errors[0]).toContain("must have required property 'actor'");
+    });
+
+    it('omits the criterion when no call recorded its arguments, instead of failing it', () => {
+        const result = checkArgumentCorrectness(
+            turnWith([callWithoutArguments('search-actors')], schemas.hash),
+            schemas,
+        );
+        expect(result).toMatchObject({
+            verdict: 'omitted',
+            reason: 'no arguments recorded for the called tool(s): search-actors',
+            callsWithoutArguments: ['search-actors'],
+        });
+        expect(result.validated[0]).toEqual({
+            callId: 'c1',
+            name: 'search-actors',
+            observationId: 'g-c1',
+            valid: null,
+            errors: [],
+        });
+    });
+
+    it('names both reasons when some calls have no schema and others recorded no arguments', () => {
+        const calls = [callWithoutArguments('search-actors', 'c1'), call('unknown-tool', {}, 'c2')];
+        expect(checkArgumentCorrectness(turnWith(calls, schemas.hash), schemas).reason).toBe(
+            'no schema for the called tool(s): unknown-tool; no arguments recorded for the called tool(s): search-actors',
+        );
+    });
+
+    it('judges the recorded calls when only some recorded their arguments', () => {
+        const calls = [callWithoutArguments('search-actors', 'c1'), call('call-actor', {}, 'c2')];
+        const result = checkArgumentCorrectness(turnWith(calls, schemas.hash), schemas);
+        expect(result.verdict).toBe('fail');
+        expect(result.callsWithoutArguments).toEqual(['search-actors']);
     });
 
     it('reports schemaMatch null when the trace carries no hash, and accepts bare or namespaced tool names', () => {

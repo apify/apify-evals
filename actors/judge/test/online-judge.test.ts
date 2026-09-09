@@ -34,7 +34,7 @@ const turn: OnlineTurn = {
             calls: [
                 {
                     callId: 'c1',
-                    name: 'apify-ai_search-actors',
+                    name: 'search-actors',
                     arguments: { query: TOOL_PAYLOAD },
                     result: { items: [TOOL_PAYLOAD] },
                     isError: false,
@@ -46,6 +46,7 @@ const turn: OnlineTurn = {
     finalText: `Here: ${TOOL_PAYLOAD}`,
     hasToolError: false,
     generationIds: ['g1', 'g2'],
+    excludedGenerations: 1,
     metadata: { toolSchemaHash: 'sha256:abc', outcome: 'completed' },
     metadataFound: true,
 };
@@ -64,8 +65,9 @@ const argsPass: ArgumentCorrectnessResult = {
     verdict: 'pass',
     schemaMatch: true,
     liveHash: 'sha256:abc',
-    validated: [{ callId: 'c1', name: 'apify-ai_search-actors', observationId: 'g1', valid: true, errors: [] }],
+    validated: [{ callId: 'c1', name: 'search-actors', observationId: 'g1', valid: true, errors: [] }],
     unvalidatedTools: [],
+    callsWithoutArguments: [],
 };
 
 const version = { judgeModel: DEFAULT_ONLINE_JUDGE_MODEL, promptVersion: 3 };
@@ -254,13 +256,14 @@ describe('buildOnlineVerdicts', () => {
             validated: [
                 {
                     callId: 'c1',
-                    name: 'apify-ai_search-actors',
+                    name: 'search-actors',
                     observationId: 'g1',
                     valid: false,
                     errors: ['/limit must be integer'],
                 },
             ],
-            unvalidatedTools: ['apify-ai_other'],
+            unvalidatedTools: ['other'],
+            callsWithoutArguments: ['call-actor'],
         };
         const failed = score(
             buildOnlineVerdicts({ turn, reply: passAll, argumentCheck: failing, version }).scores,
@@ -270,7 +273,8 @@ describe('buildOnlineVerdicts', () => {
         expect(failed.comment).toBe(
             'FAIL; 1 tool call(s) validated against the live MCP schemas; schemaMatch=false; ' +
                 'live schemas used; a mismatch is expected until the agent hash covers the raw JSON schema; ' +
-                'no schema for: apify-ai_other; failures: apify-ai_search-actors (span g1): /limit must be integer; span g1',
+                'no schema for: other; no arguments recorded for: call-actor; ' +
+                'failures: search-actors (span g1): /limit must be integer; span g1',
         );
         const passed = score(
             buildOnlineVerdicts({ turn, reply: passAll, argumentCheck: argsPass, version }).scores,

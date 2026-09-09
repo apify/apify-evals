@@ -134,6 +134,8 @@ export interface ArgumentCorrectnessResult {
     validated: CallValidation[];
     /** Called tools with no schema in the set. */
     unvalidatedTools: string[];
+    /** Called tools whose span recorded no arguments: unverifiable, so never a failure. */
+    callsWithoutArguments: string[];
 }
 
 function findSchema(byKey: Map<string, ToolSchema>, call: TurnToolCall): ToolSchema | undefined {
@@ -146,9 +148,12 @@ function describeErrors(errors: { instancePath?: string; message?: string }[] | 
 }
 
 /**
- * Pure: validate every call of the turn against `schemas`. A tool with no
- * schema is skipped and listed; when every call was skipped, or there were no
- * calls, the criterion is omitted with a reason instead of passing by default.
+ * Pure: validate every call of the turn against `schemas`. A call is skipped
+ * and listed when the toolset has no schema for it, and when the span recorded
+ * no arguments at all: absent arguments are missing evidence, not wrong
+ * arguments, and validating `undefined` produced a bogus "/ must be object"
+ * failure. When every call was skipped, or there were no calls, the criterion
+ * is omitted with a reason instead of passing or failing by default.
  */
 export function checkArgumentCorrectness(turn: OnlineTurn, schemas: ToolSchemaSet): ArgumentCorrectnessResult {
     const traceHash = turn.metadata.toolSchemaHash;
@@ -162,6 +167,7 @@ export function checkArgumentCorrectness(turn: OnlineTurn, schemas: ToolSchemaSe
             reason: 'no tool calls in the turn',
             validated: [],
             unvalidatedTools: [],
+            callsWithoutArguments: [],
         };
 
     const byKey = new Map(schemas.tools.map((t) => [t.key, t]));
@@ -169,9 +175,15 @@ export function checkArgumentCorrectness(turn: OnlineTurn, schemas: ToolSchemaSe
     const ajv = new Ajv({ allErrors: true, strict: false });
     const validated: CallValidation[] = [];
     const unvalidatedTools = new Set<string>();
+    const callsWithoutArguments = new Set<string>();
     for (const call of calls) {
         const schema = findSchema(byKey, call);
         const entry = { callId: call.callId, name: call.name, observationId: call.observationId };
+        if (call.arguments === undefined) {
+            callsWithoutArguments.add(call.name);
+            validated.push({ ...entry, valid: null, errors: [] });
+            continue;
+        }
         if (!schema || typeof schema.inputSchema !== 'object' || schema.inputSchema === null) {
             unvalidatedTools.add(call.name);
             validated.push({ ...entry, valid: null, errors: [] });
@@ -188,13 +200,20 @@ export function checkArgumentCorrectness(turn: OnlineTurn, schemas: ToolSchemaSe
     }
 
     const checked = validated.filter((v) => v.valid !== null);
-    const result = { ...base, validated, unvalidatedTools: [...unvalidatedTools] };
+    const result = {
+        ...base,
+        validated,
+        unvalidatedTools: [...unvalidatedTools],
+        callsWithoutArguments: [...callsWithoutArguments],
+    };
     if (checked.length === 0) {
-        return {
-            ...result,
-            verdict: 'omitted',
-            reason: `no schema for the called tool(s): ${[...unvalidatedTools].join(', ')}`,
-        };
+        const reasons = [
+            unvalidatedTools.size > 0 ? `no schema for the called tool(s): ${[...unvalidatedTools].join(', ')}` : '',
+            callsWithoutArguments.size > 0
+                ? `no arguments recorded for the called tool(s): ${[...callsWithoutArguments].join(', ')}`
+                : '',
+        ].filter((reason) => reason.length > 0);
+        return { ...result, verdict: 'omitted', reason: reasons.join('; ') };
     }
     return { ...result, verdict: checked.every((v) => v.valid) ? 'pass' : 'fail' };
 }

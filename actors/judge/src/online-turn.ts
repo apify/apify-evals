@@ -3,35 +3,35 @@
  * and did in one production turn from the trace's observations, so the judge
  * can score it without re-running the agent.
  *
- * What the exporter actually writes (apify-ai-agent on Mastra 1.61 with
- * `@mastra/otel-exporter`; read from the dist sources, see the README):
+ * What the exporter writes, confirmed against staging traces on 2026-09-09
+ * (apify-ai-agent on Mastra 1.61 with `@mastra/otel-exporter` 1.3.9):
  *
- * - ONE `chat` GENERATION per `agent.stream()` call, covering the whole agentic
- *   loop. Its `input` is the message array captured before the first step
- *   (system prompt, memory, the user message) in the OTel GenAI shape
+ * - The turn's `chat <model>` GENERATION, child of the root `invoke_agent`
+ *   AGENT span, covering the whole agentic loop. Its `input` is the message
+ *   array captured before the first step (system prompt, memory, the user
+ *   message) as a JSON string in the OTel GenAI shape
  *   `{role, parts:[{type:'text', content}]}`; its `output` is `{text}` turned
  *   into a single assistant text part. No `tool_call` parts appear on it.
- * - One TOOL observation (`mcp_tool_call` span) per tool call: `input` = the
- *   arguments, `output` = the result, `.error()` on failure (Langfuse `level`
- *   ERROR plus `statusMessage`), the tool name as `entityName` and the model's
- *   call id under `attributes.toolCallId`.
+ * - A SECOND `chat` GENERATION, also a child of the root, for Memory's thread
+ *   title and compaction (a haiku model). It is not part of the turn and must
+ *   never be judged; `turnGenerationsOf` excludes it.
+ * - One TOOL observation (`mcp_tool_call` span) per tool call, child of the
+ *   turn GENERATION: `input` = the arguments as a JSON string, `output` = the
+ *   result as a JSON string, both untruncated, the namespaced tool key as the
+ *   observation name and under `attributes.gen_ai.tool.name`, the model's call
+ *   id under `attributes.gen_ai.tool.call.id`.
  * - Trace metadata (`toolSchemaHash`, `outcome`, `steps`) is set through
  *   `tracingOptions.metadata.langfuse` and serialised as the attribute
- *   `mastra.metadata.langfuse`, a JSON string.
+ *   `mastra.metadata.langfuse`, a JSON string. That path is not yet observable
+ *   (the agent's `feat/trace-contract` is undeployed), but every other
+ *   `tracingOptions.metadata.<key>` does arrive as
+ *   `attributes.mastra.metadata.<key>` (`userId`, `threadId`, `runId`), so the
+ *   attribute name is the one to read.
  *
  * So the prompt, the earlier conversation and the final answer come from the
- * GENERATION, and the steps from the TOOL observations ordered by start time.
- * Parsing `tool_call` / `tool_call_response` parts out of GENERATION messages
- * is kept only as a fallback for a trace with no TOOL observations.
- *
- * The `metadata["attributes.*"]` bag is read for exactly three short values
- * (tool name, call id, the trace-metadata JSON), all well under the 200-char
- * cap at which Langfuse truncates those values.
- *
- * A first live trace must confirm: (a) the chat GENERATION output carries no
- * `tool_call` parts, (b) TOOL observations have `input`/`output` populated,
- * (c) how an MCP `isError` result surfaces (level ERROR, `statusMessage`,
- * `attributes.success=false` or `isError` in the output; all four are read).
+ * turn GENERATION, and the steps from the TOOL observations ordered by start
+ * time. Parsing `tool_call` / `tool_call_response` parts out of GENERATION
+ * messages is kept only as a fallback for a trace with no TOOL observations.
  */
 
 /** The fields of an observation this module reads (a subset of Langfuse's ObservationV2). */
@@ -46,6 +46,11 @@ export interface TraceObservation {
     metadata?: unknown;
     level?: string | null;
     statusMessage?: string | null;
+    /** Thread id on the turn's own spans, empty string on Memory's title/compaction generation. */
+    sessionId?: string | null;
+    parentObservationId?: string | null;
+    /** What the live endpoint returns for the `model` field group; documented as `providedModelName`. */
+    model?: string | null;
     providedModelName?: string | null;
 }
 
@@ -54,8 +59,12 @@ export interface TurnToolCall {
     callId: string;
     /** Bare MCP tool name (`search-actors`); any `apify-ai_` namespace prefix is stripped. */
     name: string;
-    /** Parsed arguments; a string when the recorded arguments were not JSON. */
-    arguments: unknown;
+    /**
+     * Parsed arguments; a string when the recorded arguments were not JSON.
+     * Absent when the span recorded none, which makes the call unverifiable
+     * rather than wrong: `argumentCorrectness` skips it instead of failing it.
+     */
+    arguments?: unknown;
     /** The tool result as recorded, a string when it was not JSON. Undefined when no result was recorded. */
     result?: unknown;
     isError: boolean;
@@ -97,8 +106,10 @@ export interface OnlineTurn {
     /** The assistant text after the last tool result; empty when the turn produced none. */
     finalText: string;
     hasToolError: boolean;
-    /** GENERATION observation ids in start-time order; the last one is the turn-level span to cite. */
+    /** The TURN's GENERATION ids in start-time order; the last one is the turn-level span to cite. */
     generationIds: string[];
+    /** GENERATIONs of the same trace that belong to something else (Memory's title/compaction call). */
+    excludedGenerations: number;
     metadata: TurnTraceMetadata;
     /** False when no observation carried any trace metadata: the judge then cannot know the outcome or the hash. */
     metadataFound: boolean;
@@ -132,10 +143,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null;
 }
 
+/**
+ * Whether a recorded tool result is a failure.
+ *
+ * The live shape (staging, 2026-09-09) is a serialised MastraError on the
+ * span's `output`: `{name:'Error', cause:{...}, id:'TOOL_EXECUTION_FAILED',
+ * domain:'TOOL', category:'USER'}`. It is matched here and not only by span
+ * `level`, because a tool that reports failure without throwing leaves the
+ * span at level DEFAULT with that same payload.
+ */
 function isErrorOutput(output: unknown): boolean {
     const record = asRecord(output);
     if (!record) return false;
-    return record.isError === true || (typeof record.type === 'string' && record.type.startsWith('error'));
+    if (record.isError === true) return true;
+    if (typeof record.type === 'string' && record.type.startsWith('error')) return true;
+    return record.name === 'Error' && (record.id !== undefined || record.cause !== undefined);
 }
 
 /** Bare MCP tool name from a span or tool-call name: `execute_tool apify-ai_search-actors` -> `search-actors`. */
@@ -273,7 +295,7 @@ function collectItems(generations: TraceObservation[]): Item[] {
         const step = calls.map<TurnToolCall>((c) => ({
             callId: c.callId,
             name: bareToolName(c.name),
-            arguments: c.arguments,
+            ...(c.arguments === undefined ? {} : { arguments: c.arguments }),
             isError: false,
             observationId,
         }));
@@ -336,29 +358,84 @@ export function generationsOf(observations: TraceObservation[]): TraceObservatio
     return observations.filter((o) => o.type === 'GENERATION').sort(byStartTime);
 }
 
+/**
+ * Split the trace's GENERATIONs into the turn's own and the rest.
+ *
+ * A live trace carries two: the turn's `chat us.anthropic.claude-sonnet-5` and
+ * a later `chat us.anthropic.claude-haiku-...` that Memory uses for the thread
+ * title and compaction. Taking every GENERATION let the memory one become the
+ * judged turn, with its summarisation prompt as the question and the generated
+ * title as the answer.
+ *
+ * The discriminator is the top-level `sessionId`: the turn's spans carry the
+ * thread id, the memory generation is exported with an empty one and with no
+ * thread metadata at all (confirmed on three staging traces, 2026-09-09).
+ * Fallbacks for a trace where no generation carries a session: the one that
+ * parents the TOOL spans, else the earliest.
+ */
+export function turnGenerationsOf(observations: TraceObservation[]): {
+    generations: TraceObservation[];
+    excluded: TraceObservation[];
+} {
+    const generations = generationsOf(observations);
+    const split = (kept: TraceObservation[]) => ({
+        generations: kept,
+        excluded: generations.filter((g) => !kept.includes(g)),
+    });
+
+    const withSession = generations.filter((g) => typeof g.sessionId === 'string' && g.sessionId.length > 0);
+    if (withSession.length > 0) return split(withSession);
+
+    const toolParents = new Set(observations.filter((o) => o.type === 'TOOL').map((o) => o.parentObservationId));
+    const toolCallers = generations.filter((g) => toolParents.has(g.id));
+    if (toolCallers.length > 0) return split(toolCallers);
+
+    return split(generations.slice(0, 1));
+}
+
 function attribute(metadata: Record<string, unknown> | null, key: string): unknown {
     return metadata?.[`attributes.${key}`];
 }
 
-/** One call per TOOL observation, in start-time order. */
+/** The attribute-bag copies of a call's payloads; the fallback when the span has no mapped `input`/`output`. */
+const TOOL_ARGUMENTS_ATTRIBUTE = 'gen_ai.tool.call.arguments';
+const TOOL_RESULT_ATTRIBUTE = 'gen_ai.tool.call.result';
+
+/** The model id a GENERATION was served by; the live field is `model`, the SDK documents `providedModelName`. */
+function modelOf(generation: TraceObservation): string | undefined {
+    const metadata = asRecord(parseMaybeJson(generation.metadata));
+    const model =
+        generation.model ||
+        generation.providedModelName ||
+        attribute(metadata, 'gen_ai.response.model') ||
+        attribute(metadata, 'gen_ai.request.model');
+    return typeof model === 'string' && model.length > 0 ? model : undefined;
+}
+
+/**
+ * One call per TOOL observation, in start-time order. Arguments and result
+ * come from the mapped `input`/`output` (the live shape), falling back to the
+ * attribute bag; a call with neither keeps no `arguments` at all, so the
+ * argument check can skip it instead of validating `undefined`.
+ */
 export function toolCallsOf(observations: TraceObservation[]): TurnToolCall[] {
     return observations
         .filter((o) => o.type === 'TOOL')
         .sort(byStartTime)
         .map((o) => {
             const metadata = asRecord(parseMaybeJson(o.metadata));
-            const result = parseMaybeJson(o.output);
+            const rawArguments = o.input ?? attribute(metadata, TOOL_ARGUMENTS_ATTRIBUTE);
+            const rawResult = o.output ?? attribute(metadata, TOOL_RESULT_ATTRIBUTE);
+            const result = parseMaybeJson(rawResult);
             const toolName = attribute(metadata, 'gen_ai.tool.name') ?? o.name ?? '';
             return {
                 callId: String(attribute(metadata, 'gen_ai.tool.call.id') ?? attribute(metadata, 'toolCallId') ?? o.id),
                 name: bareToolName(String(toolName)),
-                arguments: parseMaybeJson(o.input),
-                ...(o.output === undefined || o.output === null ? {} : { result }),
-                isError:
-                    o.level === 'ERROR' ||
-                    Boolean(o.statusMessage) ||
-                    attribute(metadata, 'success') === false ||
-                    isErrorOutput(result),
+                ...(rawArguments === undefined || rawArguments === null
+                    ? {}
+                    : { arguments: parseMaybeJson(rawArguments) }),
+                ...(rawResult === undefined || rawResult === null ? {} : { result }),
+                isError: o.level === 'ERROR' || Boolean(o.statusMessage) || isErrorOutput(result),
                 observationId: o.id,
             };
         });
@@ -366,7 +443,7 @@ export function toolCallsOf(observations: TraceObservation[]): TurnToolCall[] {
 
 /** Pure: the turn from one trace's observations. Throws when there is nothing to judge. */
 export function reconstructTurn(traceId: string, observations: TraceObservation[]): OnlineTurn {
-    const generations = generationsOf(observations);
+    const { generations, excluded } = turnGenerationsOf(observations);
     if (generations.length === 0) throw new TurnReconstructionError(traceId, 'no GENERATION observation');
 
     const items = collectItems(generations);
@@ -404,7 +481,7 @@ export function reconstructTurn(traceId: string, observations: TraceObservation[
     const toolCalls = toolCallsOf(observations);
     const steps = toolCalls.length > 0 ? toolCalls.map((call, i) => ({ index: i + 1, calls: [call] })) : fallbackSteps;
 
-    const model = generations[generations.length - 1].providedModelName ?? undefined;
+    const model = modelOf(generations[generations.length - 1]);
     const trace = traceMetadataOf(observations);
     return {
         traceId,
@@ -415,6 +492,7 @@ export function reconstructTurn(traceId: string, observations: TraceObservation[
         finalText,
         hasToolError: steps.some((s) => s.calls.some((c) => c.isError)),
         generationIds: generations.map((g) => g.id),
+        excludedGenerations: excluded.length,
         metadata: { ...trace.metadata, ...(model ? { model } : {}) },
         metadataFound: trace.found,
     };
@@ -432,6 +510,12 @@ interface ObservationsApi {
 const PAGE_LIMIT = 1000;
 
 /**
+ * The one metadata key this module reads that can exceed the endpoint's
+ * 200-character default truncation, so it is requested in full by name.
+ */
+const EXPANDED_METADATA_KEYS = 'attributes.mastra.metadata.langfuse';
+
+/**
  * Every observation of one trace: `GET /api/public/v2/observations?traceId=`
  * with the `io`, `metadata` and `model` field groups (the default `core,basic`
  * carries neither input/output nor the model name), following `meta.cursor`.
@@ -443,6 +527,7 @@ export async function fetchTraceObservations(langfuse: ObservationsApi, traceId:
         const page = (await langfuse.api.observations.getMany({
             traceId,
             fields: 'core,basic,io,metadata,model',
+            expandMetadata: EXPANDED_METADATA_KEYS,
             limit: PAGE_LIMIT,
             cursor,
         })) as { data?: TraceObservation[]; meta?: { cursor?: string } };

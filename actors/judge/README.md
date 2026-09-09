@@ -302,46 +302,94 @@ Each sampled trace is scored without re-running the agent, in four steps
 (`src/online-turn.ts`, `online-render.ts`, `online-schema.ts`, `online-judge.ts`).
 
 **Turn reconstruction.** `GET /api/public/v2/observations?traceId=` with the
-`io`, `metadata` and `model` field groups, paginated. The shape it reads is
-the one apify-ai-agent's exporter writes (Mastra 1.61 with
-`@mastra/otel-exporter`, read from the dist sources):
+`io`, `metadata` and `model` field groups, `expandMetadata` for the one
+metadata key that can exceed the endpoint's 200-character default truncation,
+paginated. The shape it reads is what apify-ai-agent's exporter writes (Mastra
+1.61 with `@mastra/otel-exporter` 1.3.9):
 
-- one `chat` GENERATION per `agent.stream()` call, covering the whole agentic
-  loop: `input` is the message array captured before the first step (system
-  prompt, memory, the user message) in the OTel GenAI shape
-  `{role, parts:[{type:'text', content}]}`, `output` is the final `{text}` as one
-  assistant text part, untruncated. No `tool_call` parts appear on it;
-- one TOOL observation (`mcp_tool_call` span) per tool call: `input` is the
-  arguments, `output` the result, `level: ERROR` plus `statusMessage` when the
-  call threw (which an MCP `isError` result does in the agent), the tool name
-  as the observation name and the model's call id under
+- the turn's `chat <model>` GENERATION, child of the root `invoke_agent` AGENT
+  span, covering the whole agentic loop: `input` is the message array captured
+  before the first step (system prompts, memory, the user message) as a JSON
+  string in the OTel GenAI shape `{role, parts:[{type:'text', content}]}`,
+  `output` is the final `{text}` as one assistant text part, untruncated. No
+  `tool_call` parts appear on it;
+- a SECOND `chat` GENERATION, also a child of the root, for Memory's thread
+  title and compaction (a haiku model). It is not part of the turn: its input
+  is a summarisation prompt whose user message is the transcript, and its
+  output is the title. It is excluded and counted as `excludedGenerations`;
+- one TOOL observation (`mcp_tool_call` span) per tool call, child of the turn
+  GENERATION: `input` is the arguments as a JSON string, `output` the result as
+  a JSON string, both untruncated, the namespaced tool key as the observation
+  name and under `attributes.gen_ai.tool.name`, the model's call id under
   `attributes.gen_ai.tool.call.id`;
 - trace metadata (`toolSchemaHash`, `outcome`, `steps`) serialised as the
   attribute `mastra.metadata.langfuse`, a JSON string.
 
 The prompt (last user message), the earlier conversation (the last 10 texts,
 shown as context only, with a count of what was dropped) and the final answer
-come from the GENERATION; the steps are the TOOL observations in `startTime`
-order, each citing its observation id, with the tool name stripped of the
-`apify-ai_` namespace. A call is an error when the observation has
-`level: ERROR`, a `statusMessage`, `attributes.success: false`, or an output
-carrying `isError: true` / an `error*` type. Parsing `tool_call` /
-`tool_call_response` parts out of GENERATION messages is kept only as a
-fallback for a trace with no TOOL observation. Trace metadata is read from
-every observation at three candidate locations in order (a top-level key, a
-nested `langfuse` object, the `attributes.mastra.metadata.langfuse` JSON
-string); when none yields anything the turn's outcome is unknown, its hash
-null, and the run counts it in `metadataMissing` and logs a warning. The
-`metadata["attributes.*"]` bag is read only for those three short values (tool
-name, call id, trace metadata), all under the 200-character truncation cap.
-The model id comes from `providedModelName`. A trace with no GENERATION or
-no user message cannot be reconstructed and counts as `failedToJudge`.
+come from the turn GENERATION; the steps are the TOOL observations in
+`startTime` order, each citing its observation id, with the tool name stripped
+of the `apify-ai_` namespace.
 
-**To confirm on the first live trace.** (a) the `chat` GENERATION output
-carries no `tool_call` parts; (b) TOOL observations have `input` and `output`
-populated; (c) how an MCP `isError` result surfaces (level, statusMessage,
-`attributes.success`, or `isError` in the output). And which of the three
-metadata locations is real: `metadataMissing` in OUTPUT answers it.
+**Which generation is the turn's.** The GENERATIONs whose top-level
+`sessionId` is non-empty: the turn's spans carry the thread id, Memory's
+title/compaction generation is exported with an empty one and no thread
+metadata at all. Fallbacks for a trace where none carries a session: the
+generation that parents the TOOL spans, else the earliest. Without this the
+memory generation could become the judged turn, making the title prompt the
+question, the generated title the answer, and its span id the one every
+comment cites.
+
+A call is an error when the observation has `level: ERROR`, a `statusMessage`,
+or an output carrying `isError: true`, an `error*` type, or a serialised error
+(`{name:'Error', id:'TOOL_EXECUTION_FAILED', cause}`, the live shape) - the
+last one so a tool that reports failure without throwing still counts.
+Arguments and result come from the mapped `input`/`output`, falling back to
+`attributes.gen_ai.tool.call.arguments` / `.result`; a call with neither keeps
+no arguments at all, and `argumentCorrectness` skips it instead of failing it
+(absent arguments are missing evidence, not wrong arguments). Parsing
+`tool_call` / `tool_call_response` parts out of GENERATION messages is kept
+only as a fallback for a trace with no TOOL observation. Trace metadata is
+read from every observation at three candidate locations in order (a top-level
+key, a nested `langfuse` object, the `attributes.mastra.metadata.langfuse` JSON
+string); when none yields anything the turn's outcome is unknown, its hash
+null, and the run counts it in `metadataMissing` and logs a warning. The model
+id comes from the `model` field the endpoint returns (the SDK documents it as
+`providedModelName`), then from `attributes.gen_ai.response.model`. A trace
+with no GENERATION or no user message cannot be reconstructed and counts as
+`failedToJudge`.
+
+**Confirmed live 2026-09-09** against staging Langfuse, on three traces with
+tool calls (`98ee3c06...`, `4d43c3b8...`, `88bceef8...`) plus eight ERROR-level
+TOOL observations. Verbatim rows are in `test/fixtures/live-trace.ts`.
+
+- The turn `chat` GENERATION output carries no `tool_call` parts: it is one
+  assistant text part.
+- Every trace carries TWO GENERATIONs, the turn's sonnet one and a later haiku
+  one for the thread title, and the empty-`sessionId` rule separated them on
+  all three.
+- TOOL observations have `input` and `output` populated and untruncated
+  (`{"keywords":"Google Maps reviews"}` and a 9443-character result), with
+  `attributes.gen_ai.tool.call.id` = `tooluse_...` and
+  `attributes.gen_ai.tool.name` = `apify-ai_search-actors`.
+- A failed tool call is `level: 'ERROR'` with an EMPTY `statusMessage`, and its
+  `output` is the serialised MastraError. There is no `attributes.error.*`, no
+  `exception.*` and no `attributes.success` anywhere, so the `success === false`
+  read was dropped.
+- `sessionId` and `userId` are top-level observation fields, and the model
+  arrives as `model`, not `providedModelName`.
+- `expandMetadata` is accepted by the endpoint and forwarded by the SDK.
+
+**Not yet verifiable.** The trace-contract metadata path
+(`attributes.mastra.metadata.langfuse`, and with it `outcome`,
+`toolSchemaHash` and the `apify-ai` tag the selection filters on) cannot be
+observed because apify-ai-agent's `feat/trace-contract` is undeployed: every
+current trace reconstructs with `metadataFound: false`. The attribute NAME is
+evidenced though - every other `tracingOptions.metadata.<key>` does arrive as
+`attributes.mastra.metadata.<key>` on the live root span (`userId`,
+`threadId`, `runId`, `resourceId`, `callerOrigin`). All three read paths are
+kept until the contract deploys, and `metadataMissing` in OUTPUT says which one
+turned out to be real.
 
 **Judge input.** Prompt, context, every tool call with arguments and result,
 the final answer and the recorded outcome. Each payload is capped on its own at
@@ -374,7 +422,10 @@ hashes the raw JSON schema, which is what the agent will hash once fixed
 Validation runs against the live schemas either way, and the comment says so.
 The criterion is
 omitted, with a reason, when the turn made no tool calls, when no called tool
-has a schema, or when `tools/list` failed for the batch. Failure comments
+has a schema, when no call recorded its arguments, or when `tools/list` failed
+for the batch. A call whose span recorded no arguments is skipped rather than
+validated: absent arguments are missing evidence, not wrong arguments, and
+validating nothing produced a bogus `/ must be object` failure. Failure comments
 name the tool, the span and the ajv path and message, never the values.
 
 **LLM criteria.** toolSelection, resultUtilization, errorRecovery,

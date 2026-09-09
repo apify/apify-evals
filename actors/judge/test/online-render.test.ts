@@ -23,6 +23,10 @@ describe('truncateHeadTail', () => {
         expect(out).not.toContain('M');
     });
 
+    it('returns the marker alone when the budget is smaller than the marker', () => {
+        expect(truncateHeadTail('x'.repeat(100), 5)).toBe('[... 100 chars omitted ...]');
+    });
+
     it('never exceeds the budget, and hits it exactly when the count keeps its digit width', () => {
         // 9000 - (4096 - 28) = 4932: same number of digits as 9000, so the marker sized for 9000 fits exactly.
         expect(truncateHeadTail('x'.repeat(9000)).length).toBe(PAYLOAD_CHAR_BUDGET);
@@ -44,7 +48,7 @@ const turn: OnlineTurn = {
             calls: [
                 {
                     callId: 'c1',
-                    name: 'apify-ai_search-actors',
+                    name: 'search-actors',
                     arguments: { query: 'flights' },
                     result: { actors: ['flights-scraper'] },
                     isError: false,
@@ -52,7 +56,7 @@ const turn: OnlineTurn = {
                 },
                 {
                     callId: 'c2',
-                    name: 'apify-ai_call-actor',
+                    name: 'call-actor',
                     arguments: { actor: 'x' },
                     result: 'timeout',
                     isError: true,
@@ -64,6 +68,7 @@ const turn: OnlineTurn = {
     finalText: 'Use flights-scraper.',
     hasToolError: true,
     generationIds: ['g1', 'g2'],
+    excludedGenerations: 0,
     metadata: { outcome: 'completed' },
     metadataFound: true,
 };
@@ -75,7 +80,7 @@ describe('renderTurnForJudge', () => {
         expect(text).toContain('## User request\nFind cheap flights');
         expect(text).toContain('(3 earlier messages not shown)\n[user] hello');
         expect(renderTurnForJudge({ ...turn, droppedPriorMessages: 0 })).not.toContain('not shown');
-        expect(text).toContain('tool call: apify-ai_search-actors (span g1, call c1)');
+        expect(text).toContain('tool call: search-actors (span g1, call c1)');
         expect(text).toContain('arguments: {"query":"flights"}');
         expect(text).toContain('result: {"actors":["flights-scraper"]}');
         expect(text).toContain('result [TOOL ERROR]: timeout');
@@ -110,5 +115,8 @@ describe('renderTurnForJudge', () => {
         expect(bare).not.toContain('Earlier conversation');
         const noResult = { ...turn, steps: [{ index: 1, calls: [{ ...turn.steps[0].calls[0], result: undefined }] }] };
         expect(renderTurnForJudge(noResult)).toContain('result: (none recorded)');
+        const { arguments: _dropped, ...withoutArguments } = turn.steps[0].calls[0];
+        const noArguments = { ...turn, steps: [{ index: 1, calls: [withoutArguments] }] };
+        expect(renderTurnForJudge(noArguments)).toContain('arguments: (none recorded)');
     });
 });

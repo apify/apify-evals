@@ -9,17 +9,31 @@ import {
     toolCallsOf,
     traceMetadataOf,
     type TraceObservation,
+    turnGenerationsOf,
     TurnReconstructionError,
 } from '../src/online-turn.js';
+import {
+    LIVE_FINAL_TEXT,
+    LIVE_PROMPT,
+    LIVE_TITLE,
+    LIVE_TRACE_ID,
+    liveErrorToolObservation,
+    liveTraceObservations,
+} from './fixtures/live-trace.js';
 
 /**
- * Fixtures follow what apify-ai-agent's exporter writes (Mastra 1.61 +
- * @mastra/otel-exporter): one `chat` GENERATION per agent.stream() whose input
- * is the pre-loop message array in OTel GenAI shape and whose output is the
- * final `{text}` converted to one assistant text part; one TOOL observation per
- * tool call with input = arguments, output = result; the trace metadata as the
+ * The synthetic fixtures below follow the shape confirmed against staging on
+ * 2026-09-09 (see `fixtures/live-trace.ts` for the verbatim rows): the turn's
+ * `chat` GENERATION whose input is the pre-loop message array in OTel GenAI
+ * shape and whose output is the final `{text}` as one assistant text part,
+ * carrying the thread id as `sessionId`; one TOOL observation per tool call
+ * with input = arguments, output = result and the call id under
+ * `attributes.gen_ai.tool.call.id`; the trace metadata as the
  * `attributes.mastra.metadata.langfuse` JSON string.
  */
+
+/** The thread id every span of a real turn carries; it is what marks a generation as the turn's own. */
+const SESSION = 'thread-1';
 const system = { role: 'system', parts: [{ type: 'text', content: 'You are Apify AI.' }] };
 const user = (content: string) => ({ role: 'user', parts: [{ type: 'text', content }] });
 const assistantText = (content: string) => ({ role: 'assistant', parts: [{ type: 'text', content }] });
@@ -31,9 +45,10 @@ function chat(id: string, startTime: string, input: unknown[], text: string): Tr
         type: 'GENERATION',
         name: 'chat',
         startTime,
+        sessionId: SESSION,
         input: JSON.stringify(input),
         output: JSON.stringify([assistantText(text)]),
-        providedModelName: 'anthropic.claude-sonnet-4-6',
+        model: 'anthropic.claude-sonnet-4-6',
     };
 }
 
@@ -50,9 +65,10 @@ function tool(
         type: 'TOOL',
         name,
         startTime,
+        sessionId: SESSION,
         input: JSON.stringify(args),
         output: result === undefined ? undefined : JSON.stringify(result),
-        metadata: { 'attributes.gen_ai.tool.call.id': `call-${id}`, 'attributes.success': !extra.level },
+        metadata: { 'attributes.gen_ai.tool.call.id': `call-${id}`, 'attributes.gen_ai.tool.name': `apify-ai_${name}` },
         ...extra,
     };
 }
@@ -112,6 +128,7 @@ describe('reconstructTurn from the real export shape', () => {
         expect(turn.priorMessages).toEqual([]);
         expect(turn.droppedPriorMessages).toBe(0);
         expect(turn.generationIds).toEqual(['g1']);
+        expect(turn.excludedGenerations).toBe(0);
     });
 
     it('builds one step per TOOL observation in start-time order, citing that observation', () => {
@@ -163,16 +180,45 @@ describe('reconstructTurn from the real export shape', () => {
 });
 
 describe('toolCallsOf', () => {
-    it('flags an errored span by level, statusMessage, success=false or isError in the output', () => {
+    it('flags an errored span by level, statusMessage, isError, or a serialised error in the output', () => {
         const byLevel = tool('e1', '1', 'search-actors', {}, undefined, { level: 'ERROR', statusMessage: 'MCP error' });
         const byStatus = tool('e2', '2', 'search-actors', {}, 'boom', { statusMessage: 'failed' });
         const byOutput = tool('e3', '3', 'search-actors', {}, { isError: true, content: [] });
-        const bySuccess = { ...tool('e4', '4', 'search-actors', {}, 'x'), metadata: { 'attributes.success': false } };
+        // The live payload of a failed MCP call, on a span the exporter left at level DEFAULT:
+        // a tool that reports failure without throwing must still count as an error.
+        const byPayload = tool('e4', '4', 'call-actor', {}, { name: 'Error', id: 'TOOL_EXECUTION_FAILED', cause: {} });
         const ok = tool('e5', '5', 'search-actors', {}, { content: [] });
-        const calls = toolCallsOf([byLevel, byStatus, byOutput, bySuccess, ok]);
+        const calls = toolCallsOf([byLevel, byStatus, byOutput, byPayload, ok]);
         expect(calls.map((c) => c.isError)).toEqual([true, true, true, true, false]);
         expect(calls[0]).not.toHaveProperty('result');
         expect(calls[1].result).toBe('boom');
+    });
+
+    it('reads arguments and result from the attribute bag when the span has no mapped input/output', () => {
+        const attributed: TraceObservation = {
+            id: 'a1',
+            type: 'TOOL',
+            name: 'apify-ai_call-actor',
+            startTime: '1',
+            metadata: {
+                'attributes.gen_ai.tool.call.id': 'tooluse_1',
+                'attributes.gen_ai.tool.call.arguments': '{"actor":"apify/rag-web-browser"}',
+                'attributes.gen_ai.tool.call.result': '{"ok":true}',
+            },
+        };
+        expect(toolCallsOf([attributed])[0]).toEqual({
+            callId: 'tooluse_1',
+            name: 'call-actor',
+            arguments: { actor: 'apify/rag-web-browser' },
+            result: { ok: true },
+            isError: false,
+            observationId: 'a1',
+        });
+    });
+
+    it('records no arguments at all when neither the input nor the attribute bag carried any', () => {
+        const bare: TraceObservation = { id: 'b1', type: 'TOOL', name: 'apify-ai_search-actors', startTime: '1' };
+        expect(toolCallsOf([bare])[0]).not.toHaveProperty('arguments');
     });
 
     it('takes the tool name from gen_ai.tool.name when present, else the observation name, stripping prefixes', () => {
@@ -208,6 +254,7 @@ describe('reconstructTurn: fallback to GENERATION message parts', () => {
         id,
         type: 'GENERATION',
         startTime,
+        sessionId: SESSION,
         input: JSON.stringify(input),
         output: JSON.stringify(output),
     });
@@ -405,9 +452,77 @@ describe('fetchTraceObservations', () => {
         expect(requests[0]).toEqual({
             traceId: 'trace-1',
             fields: 'core,basic,io,metadata,model',
+            expandMetadata: 'attributes.mastra.metadata.langfuse',
             limit: 1000,
             cursor: undefined,
         });
         expect(requests[1].cursor).toBe('next');
+    });
+});
+
+describe('turnGenerationsOf', () => {
+    it('keeps only the generations that carry a session, so a real trace ignores the memory generation', () => {
+        const { generations, excluded } = turnGenerationsOf(liveTraceObservations);
+        expect(generations.map((g) => g.name)).toEqual(['chat us.anthropic.claude-sonnet-5']);
+        expect(excluded.map((g) => g.name)).toEqual(['chat us.anthropic.claude-haiku-4-5-20251001-v1:0']);
+    });
+
+    it('falls back to the generation that parents the TOOL spans when nothing carries a session', () => {
+        const first: TraceObservation = { id: 'g1', type: 'GENERATION', startTime: '1' };
+        const second: TraceObservation = { id: 'g2', type: 'GENERATION', startTime: '2' };
+        const call: TraceObservation = { id: 't1', type: 'TOOL', startTime: '3', parentObservationId: 'g2' };
+        expect(turnGenerationsOf([first, second, call]).generations.map((g) => g.id)).toEqual(['g2']);
+        expect(turnGenerationsOf([first, second, call]).excluded.map((g) => g.id)).toEqual(['g1']);
+    });
+
+    it('falls back to the earliest generation when nothing carries a session and there is no tool call', () => {
+        const first: TraceObservation = { id: 'g1', type: 'GENERATION', startTime: '1' };
+        const second: TraceObservation = { id: 'g2', type: 'GENERATION', startTime: '2' };
+        expect(turnGenerationsOf([second, first]).generations.map((g) => g.id)).toEqual(['g1']);
+        expect(turnGenerationsOf([]).generations).toEqual([]);
+    });
+});
+
+describe('reconstructTurn on real staging observations', () => {
+    const turn = reconstructTurn(LIVE_TRACE_ID, liveTraceObservations);
+
+    it('judges the turn, not the thread-title generation that follows it', () => {
+        expect(turn.prompt).toBe(LIVE_PROMPT);
+        expect(turn.finalText).toBe(LIVE_FINAL_TEXT);
+        expect(turn.finalText).not.toBe(LIVE_TITLE);
+        expect(turn.generationIds).toEqual(['3b7c8647974abea2']);
+        expect(turn.excludedGenerations).toBe(1);
+        // The system prompts are neither the prompt nor context.
+        expect(turn.priorMessages).toEqual([]);
+    });
+
+    it('reads the call, its arguments and its result from the TOOL observation', () => {
+        expect(turn.steps).toHaveLength(1);
+        expect(turn.steps[0].calls[0]).toMatchObject({
+            callId: 'tooluse_zdCncYypAAoOJpXKvbeZa7',
+            name: 'search-actors',
+            arguments: { keywords: 'Google Maps reviews' },
+            isError: false,
+            observationId: '6f10b5aeb816f8fe',
+        });
+        expect(turn.hasToolError).toBe(false);
+    });
+
+    it('takes the model from the `model` field the endpoint returns, and finds no trace metadata yet', () => {
+        expect(turn.metadata.model).toBe('us.anthropic.claude-sonnet-5');
+        // apify-ai-agent `feat/trace-contract` is undeployed, so no observation carries
+        // `attributes.mastra.metadata.langfuse`; the run counts this as metadataMissing.
+        expect(turn.metadataFound).toBe(false);
+        expect(turn.metadata.outcome).toBeUndefined();
+        expect(turn.metadata.toolSchemaHash).toBeUndefined();
+    });
+
+    it('flags a real failed tool call and keeps its error payload as the result', () => {
+        const [call] = toolCallsOf([liveErrorToolObservation]);
+        expect(call.isError).toBe(true);
+        expect(call.name).toBe('call-actor');
+        // No gen_ai.tool.call.id in that exporter's bag, so the observation id is cited.
+        expect(call.callId).toBe(liveErrorToolObservation.id);
+        expect(call.result).toMatchObject({ name: 'Error', id: 'TOOL_EXECUTION_FAILED', domain: 'TOOL' });
     });
 });
