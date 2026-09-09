@@ -511,9 +511,15 @@ window's, see "Which day" below). Langfuse requires exactly one subject per
 score (two is a 400) and does not check that the run exists, so the copy
 survives the sweep. It reads back through `GET /api/public/v3/scores` with the
 `experimentId=<runId>` filter (`datasetRunId` and `datasetRunName` are
-rejected as unrecognised keys) and its subject is `{kind: 'experiment', id}`;
-the metrics API aggregates it as a run. All of this was verified live against
-langfuse.apify.dev on 2026-09-09. Its id carries the suffix
+rejected as unrecognised keys) and its subject is `{kind: 'experiment', id}`.
+The create, the replace-on-same-id, the one-subject rule and this read-back
+were verified live against langfuse.apify.dev on 2026-09-09. One inference
+remains untested: that the metrics API aggregates the copy by run. In
+`events_only` mode the working endpoint is `GET /api/public/v2/metrics`
+(`/api/public/metrics` is 404); its `scores-boolean` view accepts the
+`experimentId` / `datasetRunId` dimensions and does aggregate real
+experiment-subject scores by run, but whether scores under a run that does not
+exist as a dataset run are dropped by a join is the open question. Its id carries the suffix
 `-run`; with the trace copy's id it would be deduplicated away. Both copies
 are `dataType: BOOLEAN`, carry the verdict comment and the score metadata
 (`rubricName`, `rubricVersion`, `judgeModel`, `promptVersion`,
@@ -604,7 +610,7 @@ is NOT written and the run exits non-zero (`AllScoreWritesFailedError` via
 The judge-side twin is handled the same way: when every trace given to the
 judge failed to judge (`sampled - scoresSkipped > 0` and `judged === 0`, the
 signature of a systematic judge failure such as the model or the prompt being
-broken), nothing is rolled up, the checkpoint stays and the run fails with
+broken), nothing is rolled up, the checkpoint is NOT written and the run fails with
 `AllJudgementsFailedError`, so a broken judge holds the window instead of
 advancing past it with nothing scored. A failed rollup is handled the same way
 (logged, no checkpoint, non-zero exit). In every case the schedule shows a

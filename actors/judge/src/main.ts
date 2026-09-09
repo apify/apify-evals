@@ -170,7 +170,6 @@ if (mode === 'online') {
         date: selection.window?.start ?? now,
         sampleRate,
         maxItems,
-        scoresSkipped: skipped.length,
         coverage: {
             tracesInWindow: selection.tracesInWindow,
             completedTraces: selection.completedTraces,

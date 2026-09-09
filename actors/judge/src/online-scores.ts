@@ -578,8 +578,6 @@ export interface FinishOnlineRunOptions {
     sampleRate: number;
     maxItems: number;
     coverage: JudgeCounters;
-    /** Sampled traces the pre-filter dropped; `sampled - scoresSkipped` is what the judge was given. */
-    scoresSkipped: number;
 }
 
 export interface FinishOnlineRunResult extends Omit<WriteResult, 'written'> {
@@ -610,12 +608,11 @@ export async function finishOnlineRun(opts: FinishOnlineRunOptions): Promise<Fin
     const { written, scoresWritten, failedToWrite } = await writeOnlineScores({ verdicts, scores, date });
     const coverage: CoverageCounters = { ...opts.coverage, scoresWritten, failedToWrite };
 
-    const givenToJudge = coverage.sampled - opts.scoresSkipped;
-
     let rollupId: string | null = null;
     let error: unknown = null;
-    if (givenToJudge > 0 && coverage.judged === 0) {
-        error = new AllJudgementsFailedError(givenToJudge);
+    // judged + failedToJudge is what the judge was given (the pre-filtered rest never reaches it).
+    if (coverage.judged === 0 && coverage.failedToJudge > 0) {
+        error = new AllJudgementsFailedError(coverage.failedToJudge);
         log.error(String(error));
     } else if (verdicts.length > 0 && scoresWritten === 0) {
         error = new AllScoreWritesFailedError(verdicts.length);
