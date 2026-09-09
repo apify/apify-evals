@@ -23,9 +23,19 @@ import type { OnlineTurn, TurnToolCall } from './online-turn.js';
  * in the toolset, in the model's tool calls, and in the hash. The description
  * is `tool.description || ''` and the input schema is the raw JSON Schema the
  * server sent (`convertInputSchema` returns it unchanged unless wrapped in a
- * `jsonSchema` key, which the MCP SDK never does). Schemas are looked up by
- * that namespaced key; a call whose name lacks the prefix is looked up by bare
- * name as a fallback.
+ * `jsonSchema` key, which the MCP SDK never does). Turn reconstruction gives
+ * every call its bare MCP name (`search-actors`, from the TOOL observation), so
+ * schemas are looked up by `agentToolKey(name)` first and by the name as given
+ * second.
+ *
+ * Known agent-side defect (2026-09-09): the agent hashes Mastra Tool objects,
+ * whose `inputSchema` is a JSON-schema wrapper of functions, and
+ * stableStringify drops functions, so today every tool hashes as
+ * `{"~standard":{"jsonSchema":{},"vendor":"json-schema","version":1}}` and the
+ * production hash does not depend on schema content. This port hashes the RAW
+ * JSON schema, which is what the agent will hash once fixed; until then
+ * `schemaMatch` is false on every trace and validation still runs against the
+ * live schemas. The test pins the mismatch so it stays visible, not hidden.
  */
 
 /** The agent's MCP server name, and so the prefix of every tool key it hashes and calls. */
@@ -127,7 +137,7 @@ export interface ArgumentCorrectnessResult {
 }
 
 function findSchema(byKey: Map<string, ToolSchema>, call: TurnToolCall): ToolSchema | undefined {
-    return byKey.get(call.name) ?? byKey.get(agentToolKey(call.name));
+    return byKey.get(agentToolKey(call.name)) ?? byKey.get(call.name);
 }
 
 /** ajv error text without the instance data: paths and messages only, so the comment quotes no payload. */

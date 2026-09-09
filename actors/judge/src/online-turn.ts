@@ -3,17 +3,35 @@
  * and did in one production turn from the trace's observations, so the judge
  * can score it without re-running the agent.
  *
- * Source of truth is the GENERATION observations' mapped `input` / `output`:
- * apify-ai-agent's exporter writes the whole message array there in the OTel
- * GenAI shape (`{role, parts:[{type:'text'|'tool_call'|'tool_call_response'}]}`),
- * untruncated. The `metadata["attributes.*"]` bag is never read: Langfuse cuts
- * those values at 200 characters unless each key is named in `expandMetadata`.
+ * What the exporter actually writes (apify-ai-agent on Mastra 1.61 with
+ * `@mastra/otel-exporter`; read from the dist sources, see the README):
  *
- * Every GENERATION's input repeats the history so far (system prompt, memory,
- * the user message and the tool calls of earlier steps), so a multi-step turn
- * carries each message several times. Items are deduped by tool-call id, and
- * text messages by role plus content, keeping the first observation that
- * carried each one as its provenance.
+ * - ONE `chat` GENERATION per `agent.stream()` call, covering the whole agentic
+ *   loop. Its `input` is the message array captured before the first step
+ *   (system prompt, memory, the user message) in the OTel GenAI shape
+ *   `{role, parts:[{type:'text', content}]}`; its `output` is `{text}` turned
+ *   into a single assistant text part. No `tool_call` parts appear on it.
+ * - One TOOL observation (`mcp_tool_call` span) per tool call: `input` = the
+ *   arguments, `output` = the result, `.error()` on failure (Langfuse `level`
+ *   ERROR plus `statusMessage`), the tool name as `entityName` and the model's
+ *   call id under `attributes.toolCallId`.
+ * - Trace metadata (`toolSchemaHash`, `outcome`, `steps`) is set through
+ *   `tracingOptions.metadata.langfuse` and serialised as the attribute
+ *   `mastra.metadata.langfuse`, a JSON string.
+ *
+ * So the prompt, the earlier conversation and the final answer come from the
+ * GENERATION, and the steps from the TOOL observations ordered by start time.
+ * Parsing `tool_call` / `tool_call_response` parts out of GENERATION messages
+ * is kept only as a fallback for a trace with no TOOL observations.
+ *
+ * The `metadata["attributes.*"]` bag is read for exactly three short values
+ * (tool name, call id, the trace-metadata JSON), all well under the 200-char
+ * cap at which Langfuse truncates those values.
+ *
+ * A first live trace must confirm: (a) the chat GENERATION output carries no
+ * `tool_call` parts, (b) TOOL observations have `input`/`output` populated,
+ * (c) how an MCP `isError` result surfaces (level ERROR, `statusMessage`,
+ * `attributes.success=false` or `isError` in the output; all four are read).
  */
 
 /** The fields of an observation this module reads (a subset of Langfuse's ObservationV2). */
@@ -26,25 +44,27 @@ export interface TraceObservation {
     input?: unknown;
     output?: unknown;
     metadata?: unknown;
+    level?: string | null;
+    statusMessage?: string | null;
     providedModelName?: string | null;
 }
 
 export interface TurnToolCall {
-    /** Tool-call id from the model, the key that pairs a call with its result. */
+    /** The model's tool-call id when the span recorded one, else the observation id. */
     callId: string;
-    /** Tool name as the model called it (the Mastra-namespaced key, e.g. `apify-ai_search-actors`). */
+    /** Bare MCP tool name (`search-actors`); any `apify-ai_` namespace prefix is stripped. */
     name: string;
     /** Parsed arguments; a string when the recorded arguments were not JSON. */
     arguments: unknown;
     /** The tool result as recorded, a string when it was not JSON. Undefined when no result was recorded. */
     result?: unknown;
     isError: boolean;
-    /** GENERATION observation that first carried the call: the span id a score comment can cite. */
+    /** The TOOL observation (or, in the fallback, the GENERATION) that carried the call: the span id a comment cites. */
     observationId: string;
 }
 
 export interface TurnStep {
-    /** 1-based position of the assistant message that issued these calls. */
+    /** 1-based position in start-time order. */
     index: number;
     calls: TurnToolCall[];
 }
@@ -62,12 +82,17 @@ export interface TurnTraceMetadata {
     model?: string;
 }
 
+/** Most earlier messages kept as judge context; a long memory must not swamp the turn. */
+export const MAX_PRIOR_MESSAGES = 10;
+
 export interface OnlineTurn {
     traceId: string;
     /** The user message this turn answers: the last user message in the history. */
     prompt: string;
-    /** Earlier user/assistant text, context for the judge and not the subject of the verdict. */
+    /** The last MAX_PRIOR_MESSAGES earlier user/assistant texts: context for the judge, not the subject. */
     priorMessages: TurnMessage[];
+    /** Earlier messages beyond the cap, not shown to the judge. */
+    droppedPriorMessages: number;
     steps: TurnStep[];
     /** The assistant text after the last tool result; empty when the turn produced none. */
     finalText: string;
@@ -75,6 +100,8 @@ export interface OnlineTurn {
     /** GENERATION observation ids in start-time order; the last one is the turn-level span to cite. */
     generationIds: string[];
     metadata: TurnTraceMetadata;
+    /** False when no observation carried any trace metadata: the judge then cannot know the outcome or the hash. */
+    metadataFound: boolean;
 }
 
 export class TurnReconstructionError extends Error {
@@ -86,6 +113,9 @@ export class TurnReconstructionError extends Error {
         this.name = 'TurnReconstructionError';
     }
 }
+
+/** The agent's MCP server name: `@mastra/mcp` prefixes every tool key with it. */
+const AGENT_TOOL_PREFIX = 'apify-ai_';
 
 function parseMaybeJson(value: unknown): unknown {
     if (typeof value !== 'string') return value;
@@ -102,12 +132,25 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null;
 }
 
+function isErrorOutput(output: unknown): boolean {
+    const record = asRecord(output);
+    if (!record) return false;
+    return record.isError === true || (typeof record.type === 'string' && record.type.startsWith('error'));
+}
+
+/** Bare MCP tool name from a span or tool-call name: `execute_tool apify-ai_search-actors` -> `search-actors`. */
+export function bareToolName(name: string): string {
+    const withoutOperation = name.replace(/^execute_tool\s+/, '').replace(/^mcp_tool: '([^']+)'.*$/, '$1');
+    return withoutOperation.startsWith(AGENT_TOOL_PREFIX)
+        ? withoutOperation.slice(AGENT_TOOL_PREFIX.length)
+        : withoutOperation;
+}
+
 /**
  * One message part after normalising the two shapes the exporter produces:
  * GenAI parts (`tool_call` / `tool_call_response`, arguments and response as
  * JSON strings) and, for messages its converter did not recognise, Mastra's
- * own parts (`tool-call` / `tool-result` / `tool-error`). A `tool-error` is
- * what an MCP `isError` result becomes in the agent (`onToolError: 'throw'`).
+ * own parts (`tool-call` / `tool-result` / `tool-error`).
  */
 type Part =
     | { kind: 'text'; text: string }
@@ -137,18 +180,17 @@ function normalizePart(raw: unknown): Part {
             };
         case 'tool_call_response': {
             const result = parseMaybeJson(part.response);
-            return {
-                kind: 'result',
-                callId: String(part.id ?? ''),
-                result,
-                isError: asRecord(result)?.isError === true,
-            };
+            return { kind: 'result', callId: String(part.id ?? ''), result, isError: isErrorOutput(result) };
         }
         case 'tool-result': {
             const output = asRecord(part.output);
-            const isError = typeof output?.type === 'string' && output.type.startsWith('error');
             const result = output && 'value' in output ? output.value : part.output;
-            return { kind: 'result', callId: String(part.toolCallId ?? ''), result, isError };
+            return {
+                kind: 'result',
+                callId: String(part.toolCallId ?? ''),
+                result,
+                isError: isErrorOutput(part.output) || isErrorOutput(result),
+            };
         }
         case 'tool-error':
             return { kind: 'result', callId: String(part.toolCallId ?? ''), result: part.error, isError: true };
@@ -169,12 +211,14 @@ function messageParts(message: unknown): { role: string; parts: Part[] } | null 
 function messagesOf(io: unknown): unknown[] {
     const parsed = parseMaybeJson(io);
     if (Array.isArray(parsed)) return parsed;
-    if (typeof parsed === 'string' && parsed.length > 0)
+    if (typeof parsed === 'string' && parsed.length > 0) {
         return [{ role: 'assistant', parts: [{ type: 'text', content: parsed }] }];
+    }
     const record = asRecord(parsed);
     if (record && Array.isArray(record.messages)) return record.messages;
-    if (record && typeof record.text === 'string')
+    if (record && typeof record.text === 'string') {
         return [{ role: 'assistant', parts: [{ type: 'text', content: record.text }] }];
+    }
     return [];
 }
 
@@ -193,8 +237,8 @@ function textOf(parts: Part[]): string {
 
 /**
  * Walk the generations in start-time order and flatten input then output of
- * each into one deduped item list. Results are attached to their call by id
- * wherever they appear (the `tool` message of the next generation's input).
+ * each into one deduped item list: a multi-generation trace repeats the
+ * history in every input. Tool-call parts are collected too, for the fallback.
  */
 function collectItems(generations: TraceObservation[]): Item[] {
     const items: Item[] = [];
@@ -228,7 +272,7 @@ function collectItems(generations: TraceObservation[]): Item[] {
         if (calls.length === 0) return;
         const step = calls.map<TurnToolCall>((c) => ({
             callId: c.callId,
-            name: c.name,
+            name: bareToolName(c.name),
             arguments: c.arguments,
             isError: false,
             observationId,
@@ -246,36 +290,78 @@ function collectItems(generations: TraceObservation[]): Item[] {
 
 const TRACE_METADATA_KEYS = ['toolSchemaHash', 'outcome', 'steps'] as const;
 
+/** The attribute the exporter writes `tracingOptions.metadata.langfuse` to, as a JSON string. */
+const LANGFUSE_METADATA_ATTRIBUTE = 'attributes.mastra.metadata.langfuse';
+
 /**
- * Trace metadata as the agent writes it (`metadata.langfuse.*` becomes
- * `langfuse.trace.metadata.*`). Where it surfaces on an events-only instance
- * is not pinned, so both the top level and a nested `langfuse` object of
- * every observation's metadata are read; the first value found wins.
+ * Trace metadata as the agent writes it. Which of three places it surfaces on
+ * an events-only instance is unproven, so all are read from every observation,
+ * in order: a top-level key, a nested `langfuse` object, and the exporter's
+ * `attributes.mastra.metadata.langfuse` JSON string. First value found wins;
+ * `found` is false when none of them yielded anything, so the caller can count
+ * it and the first live run can tell which path is real.
  */
-export function traceMetadataOf(observations: TraceObservation[]): TurnTraceMetadata {
-    const found: Record<string, unknown> = {};
+export function traceMetadataOf(observations: TraceObservation[]): { metadata: TurnTraceMetadata; found: boolean } {
+    const values: Record<string, unknown> = {};
     for (const observation of observations) {
         const metadata = asRecord(parseMaybeJson(observation.metadata));
         if (!metadata) continue;
-        for (const source of [metadata, asRecord(metadata.langfuse)]) {
+        const sources = [
+            metadata,
+            asRecord(metadata.langfuse),
+            asRecord(parseMaybeJson(metadata[LANGFUSE_METADATA_ATTRIBUTE])),
+        ];
+        for (const source of sources) {
             if (!source) continue;
-            for (const key of TRACE_METADATA_KEYS)
-                if (found[key] === undefined && source[key] !== undefined) found[key] = source[key];
+            for (const key of TRACE_METADATA_KEYS) {
+                if (values[key] === undefined && source[key] !== undefined) values[key] = source[key];
+            }
         }
     }
-    const steps = found.steps === undefined ? undefined : Number(found.steps);
-    return {
-        ...(typeof found.toolSchemaHash === 'string' ? { toolSchemaHash: found.toolSchemaHash } : {}),
-        ...(found.outcome !== undefined ? { outcome: String(found.outcome) } : {}),
+    const steps = values.steps === undefined ? undefined : Number(values.steps);
+    const metadata: TurnTraceMetadata = {
+        ...(typeof values.toolSchemaHash === 'string' ? { toolSchemaHash: values.toolSchemaHash } : {}),
+        ...(values.outcome !== undefined ? { outcome: String(values.outcome) } : {}),
         ...(steps !== undefined && Number.isFinite(steps) ? { steps } : {}),
     };
+    return { metadata, found: Object.keys(metadata).length > 0 };
+}
+
+function byStartTime(a: TraceObservation, b: TraceObservation): number {
+    return a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id);
 }
 
 /** GENERATION observations, oldest first; ties broken by id so the order is stable. */
 export function generationsOf(observations: TraceObservation[]): TraceObservation[] {
+    return observations.filter((o) => o.type === 'GENERATION').sort(byStartTime);
+}
+
+function attribute(metadata: Record<string, unknown> | null, key: string): unknown {
+    return metadata?.[`attributes.${key}`];
+}
+
+/** One call per TOOL observation, in start-time order. */
+export function toolCallsOf(observations: TraceObservation[]): TurnToolCall[] {
     return observations
-        .filter((o) => o.type === 'GENERATION')
-        .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id));
+        .filter((o) => o.type === 'TOOL')
+        .sort(byStartTime)
+        .map((o) => {
+            const metadata = asRecord(parseMaybeJson(o.metadata));
+            const result = parseMaybeJson(o.output);
+            const toolName = attribute(metadata, 'gen_ai.tool.name') ?? o.name ?? '';
+            return {
+                callId: String(attribute(metadata, 'gen_ai.tool.call.id') ?? attribute(metadata, 'toolCallId') ?? o.id),
+                name: bareToolName(String(toolName)),
+                arguments: parseMaybeJson(o.input),
+                ...(o.output === undefined || o.output === null ? {} : { result }),
+                isError:
+                    o.level === 'ERROR' ||
+                    Boolean(o.statusMessage) ||
+                    attribute(metadata, 'success') === false ||
+                    isErrorOutput(result),
+                observationId: o.id,
+            };
+        });
 }
 
 /** Pure: the turn from one trace's observations. Throws when there is nothing to judge. */
@@ -295,32 +381,42 @@ export function reconstructTurn(traceId: string, observations: TraceObservation[
     if (promptIndex === -1) throw new TurnReconstructionError(traceId, 'no user message in any generation');
     const promptItem = items[promptIndex] as Extract<Item, { kind: 'text' }>;
 
-    const priorMessages = items
+    const allPrior = items
         .slice(0, promptIndex)
         .filter((item): item is Extract<Item, { kind: 'text' }> => item.kind === 'text')
         .map(({ role, text }) => ({ role, text }));
+    const priorMessages = allPrior.slice(-MAX_PRIOR_MESSAGES);
 
-    const steps: TurnStep[] = [];
+    const fallbackSteps: TurnStep[] = [];
     let finalText = '';
     for (const item of items.slice(promptIndex + 1)) {
         if (item.kind === 'calls') {
-            steps.push({ index: steps.length + 1, calls: item.calls });
+            fallbackSteps.push({ index: fallbackSteps.length + 1, calls: item.calls });
             finalText = '';
         } else if (item.role === 'assistant') {
             finalText = item.text;
         }
     }
 
+    // The exporter files tool calls as TOOL observations; the GENERATION carries
+    // no tool_call parts. The message-part steps are only for a trace that
+    // somehow has none (see the module comment, point (a)).
+    const toolCalls = toolCallsOf(observations);
+    const steps = toolCalls.length > 0 ? toolCalls.map((call, i) => ({ index: i + 1, calls: [call] })) : fallbackSteps;
+
     const model = generations[generations.length - 1].providedModelName ?? undefined;
+    const trace = traceMetadataOf(observations);
     return {
         traceId,
         prompt: promptItem.text,
         priorMessages,
+        droppedPriorMessages: allPrior.length - priorMessages.length,
         steps,
         finalText,
         hasToolError: steps.some((s) => s.calls.some((c) => c.isError)),
         generationIds: generations.map((g) => g.id),
-        metadata: { ...traceMetadataOf(observations), ...(model ? { model } : {}) },
+        metadata: { ...trace.metadata, ...(model ? { model } : {}) },
+        metadataFound: trace.found,
     };
 }
 

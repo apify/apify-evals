@@ -1,40 +1,59 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    bareToolName,
     fetchTraceObservations,
     generationsOf,
+    MAX_PRIOR_MESSAGES,
     reconstructTurn,
+    toolCallsOf,
     traceMetadataOf,
     type TraceObservation,
     TurnReconstructionError,
 } from '../src/online-turn.js';
 
-/** Messages in the OTel GenAI shape apify-ai-agent's exporter writes to Langfuse `input`/`output`. */
+/**
+ * Fixtures follow what apify-ai-agent's exporter writes (Mastra 1.61 +
+ * @mastra/otel-exporter): one `chat` GENERATION per agent.stream() whose input
+ * is the pre-loop message array in OTel GenAI shape and whose output is the
+ * final `{text}` converted to one assistant text part; one TOOL observation per
+ * tool call with input = arguments, output = result; the trace metadata as the
+ * `attributes.mastra.metadata.langfuse` JSON string.
+ */
 const system = { role: 'system', parts: [{ type: 'text', content: 'You are Apify AI.' }] };
 const user = (content: string) => ({ role: 'user', parts: [{ type: 'text', content }] });
 const assistantText = (content: string) => ({ role: 'assistant', parts: [{ type: 'text', content }] });
-const toolCall = (id: string, name: string, args: unknown, preamble?: string) => ({
-    role: 'assistant',
-    parts: [
-        ...(preamble ? [{ type: 'text', content: preamble }] : []),
-        { type: 'tool_call', id, name, arguments: JSON.stringify(args) },
-    ],
-});
-const toolResult = (id: string, name: string, response: unknown) => ({
-    role: 'tool',
-    parts: [{ type: 'tool_call_response', id, name, response: JSON.stringify(response) }],
-});
 
-/** Langfuse returns io as raw JSON strings; the fixture does the same. */
-function generation(id: string, startTime: string, input: unknown[], output: unknown[]): TraceObservation {
+/** Langfuse returns io as raw JSON strings; the fixtures do the same. */
+function chat(id: string, startTime: string, input: unknown[], text: string): TraceObservation {
     return {
         id,
         type: 'GENERATION',
         name: 'chat',
         startTime,
         input: JSON.stringify(input),
-        output: JSON.stringify(output),
+        output: JSON.stringify([assistantText(text)]),
         providedModelName: 'anthropic.claude-sonnet-4-6',
+    };
+}
+
+function tool(
+    id: string,
+    startTime: string,
+    name: string,
+    args: unknown,
+    result: unknown,
+    extra: Partial<TraceObservation> = {},
+): TraceObservation {
+    return {
+        id,
+        type: 'TOOL',
+        name,
+        startTime,
+        input: JSON.stringify(args),
+        output: result === undefined ? undefined : JSON.stringify(result),
+        metadata: { 'attributes.gen_ai.tool.call.id': `call-${id}`, 'attributes.success': !extra.level },
+        ...extra,
     };
 }
 
@@ -43,54 +62,87 @@ const completion: TraceObservation = {
     type: 'EVENT',
     name: 'apify-ai.turn-complete',
     startTime: '2026-09-08T10:00:09.000Z',
-    metadata: JSON.stringify({ completed: 'true', outcome: 'completed', steps: 2, toolSchemaHash: 'sha256:abc' }),
+    metadata: {
+        'attributes.mastra.metadata.langfuse': JSON.stringify({ completed: 'true', outcome: 'completed', steps: 2 }),
+    },
+};
+const root: TraceObservation = {
+    id: 'root',
+    type: 'AGENT',
+    name: 'invoke_agent',
+    startTime: '2026-09-08T10:00:00.000Z',
+    metadata: {
+        'attributes.mastra.metadata.langfuse': JSON.stringify({ source: 'apify-ai', toolSchemaHash: 'sha256:abc' }),
+    },
 };
 
-const call1 = toolCall('c1', 'apify-ai_search-actors', { query: 'flights', limit: 5 }, 'Let me search.');
-const result1 = toolResult('c1', 'apify-ai_search-actors', { actors: [{ name: 'flights-scraper' }] });
+const history = [system, user('Find cheap flights')];
+const search = tool(
+    't1',
+    '2026-09-08T10:00:02.000Z',
+    'search-actors',
+    { query: 'flights', limit: 5 },
+    {
+        actors: [{ name: 'flights-scraper' }],
+    },
+);
+const details = tool(
+    't2',
+    '2026-09-08T10:00:04.000Z',
+    'fetch-actor-details',
+    { actor: 'flights-scraper' },
+    { readme: '...' },
+);
 
-/** One tool-calling step then the answer: two GENERATIONs. */
-const singleStep: TraceObservation[] = [
+/** Two tool calls then the answer, returned by Langfuse in no particular order. */
+const twoCalls: TraceObservation[] = [
     completion,
-    generation(
-        'g2',
-        '2026-09-08T10:00:05.000Z',
-        [system, user('Find cheap flights'), call1, result1],
-        [assistantText('Use flights-scraper.')],
-    ),
-    generation('g1', '2026-09-08T10:00:00.000Z', [system, user('Find cheap flights')], [call1]),
+    details,
+    chat('g1', '2026-09-08T10:00:00.500Z', history, 'Use flights-scraper.'),
+    search,
+    root,
 ];
 
-describe('reconstructTurn: single step', () => {
-    const turn = reconstructTurn('t1', singleStep);
+describe('reconstructTurn from the real export shape', () => {
+    const turn = reconstructTurn('t1', twoCalls);
 
-    it('takes the user message as the prompt and the last assistant text as the final answer', () => {
+    it('takes the prompt from the GENERATION input and the answer from its output', () => {
         expect(turn.prompt).toBe('Find cheap flights');
         expect(turn.finalText).toBe('Use flights-scraper.');
         expect(turn.priorMessages).toEqual([]);
+        expect(turn.droppedPriorMessages).toBe(0);
+        expect(turn.generationIds).toEqual(['g1']);
     });
 
-    it('pairs the call with its result, parses both, and cites the span that carried the call', () => {
-        expect(turn.steps).toHaveLength(1);
-        expect(turn.steps[0].calls).toEqual([
-            {
-                callId: 'c1',
-                name: 'apify-ai_search-actors',
-                arguments: { query: 'flights', limit: 5 },
-                result: { actors: [{ name: 'flights-scraper' }] },
-                isError: false,
-                observationId: 'g1',
-            },
+    it('builds one step per TOOL observation in start-time order, citing that observation', () => {
+        expect(turn.steps.map((s) => s.index)).toEqual([1, 2]);
+        expect(turn.steps.map((s) => s.calls)).toEqual([
+            [
+                {
+                    callId: 'call-t1',
+                    name: 'search-actors',
+                    arguments: { query: 'flights', limit: 5 },
+                    result: { actors: [{ name: 'flights-scraper' }] },
+                    isError: false,
+                    observationId: 't1',
+                },
+            ],
+            [
+                {
+                    callId: 'call-t2',
+                    name: 'fetch-actor-details',
+                    arguments: { actor: 'flights-scraper' },
+                    result: { readme: '...' },
+                    isError: false,
+                    observationId: 't2',
+                },
+            ],
         ]);
         expect(turn.hasToolError).toBe(false);
     });
 
-    it('orders generations by startTime whatever order Langfuse returned', () => {
-        expect(turn.generationIds).toEqual(['g1', 'g2']);
-        expect(generationsOf(singleStep).map((g) => g.id)).toEqual(['g1', 'g2']);
-    });
-
-    it('reads trace metadata from whichever observation carries it, plus the model', () => {
+    it('reads trace metadata from the exporter attribute across observations, plus the model', () => {
+        expect(turn.metadataFound).toBe(true);
         expect(turn.metadata).toEqual({
             toolSchemaHash: 'sha256:abc',
             outcome: 'completed',
@@ -99,141 +151,235 @@ describe('reconstructTurn: single step', () => {
         });
     });
 
-    it('does not mistake the preamble before a call for the final answer', () => {
-        const ended = reconstructTurn('t2', [singleStep[2]]);
+    it('keeps the last user message as the prompt and caps earlier text as context', () => {
+        const long = Array.from({ length: 14 }, (_, i) => (i % 2 === 0 ? user(`q${i}`) : assistantText(`a${i}`)));
+        const observations = [chat('g1', '2026-09-08T10:00:00.000Z', [system, ...long, user('now')], 'ok')];
+        const withMemory = reconstructTurn('t2', observations);
+        expect(withMemory.prompt).toBe('now');
+        expect(withMemory.priorMessages).toHaveLength(MAX_PRIOR_MESSAGES);
+        expect(withMemory.priorMessages[0]).toEqual({ role: 'user', text: 'q4' });
+        expect(withMemory.droppedPriorMessages).toBe(4);
+    });
+});
+
+describe('toolCallsOf', () => {
+    it('flags an errored span by level, statusMessage, success=false or isError in the output', () => {
+        const byLevel = tool('e1', '1', 'search-actors', {}, undefined, { level: 'ERROR', statusMessage: 'MCP error' });
+        const byStatus = tool('e2', '2', 'search-actors', {}, 'boom', { statusMessage: 'failed' });
+        const byOutput = tool('e3', '3', 'search-actors', {}, { isError: true, content: [] });
+        const bySuccess = { ...tool('e4', '4', 'search-actors', {}, 'x'), metadata: { 'attributes.success': false } };
+        const ok = tool('e5', '5', 'search-actors', {}, { content: [] });
+        const calls = toolCallsOf([byLevel, byStatus, byOutput, bySuccess, ok]);
+        expect(calls.map((c) => c.isError)).toEqual([true, true, true, true, false]);
+        expect(calls[0]).not.toHaveProperty('result');
+        expect(calls[1].result).toBe('boom');
+    });
+
+    it('takes the tool name from gen_ai.tool.name when present, else the observation name, stripping prefixes', () => {
+        const named = { ...tool('n1', '1', 'execute_tool apify-ai_call-actor', {}, {}), metadata: {} };
+        const attributed = {
+            ...tool('n2', '2', 'whatever', {}, {}),
+            metadata: { 'attributes.gen_ai.tool.name': 'apify-ai_search-actors' },
+        };
+        expect(toolCallsOf([named, attributed]).map((c) => c.name)).toEqual(['call-actor', 'search-actors']);
+        expect(toolCallsOf([named])[0].callId).toBe('n1');
+        expect(bareToolName("mcp_tool: 'search-actors' on 'apify-ai'")).toBe('search-actors');
+        expect(bareToolName('search-actors')).toBe('search-actors');
+    });
+});
+
+describe('reconstructTurn: fallback to GENERATION message parts', () => {
+    const call = {
+        role: 'assistant',
+        parts: [{ type: 'tool_call', id: 'c1', name: 'apify-ai_search-actors', arguments: '{"query":"flights"}' }],
+    };
+    const result = (response: unknown) => ({
+        role: 'tool',
+        parts: [
+            {
+                type: 'tool_call_response',
+                id: 'c1',
+                name: 'apify-ai_search-actors',
+                response: JSON.stringify(response),
+            },
+        ],
+    });
+    const generation = (id: string, startTime: string, input: unknown[], output: unknown[]): TraceObservation => ({
+        id,
+        type: 'GENERATION',
+        startTime,
+        input: JSON.stringify(input),
+        output: JSON.stringify(output),
+    });
+
+    it('is used only when the trace has no TOOL observation, and dedupes the repeated history', () => {
+        const turn = reconstructTurn('f1', [
+            generation('g1', '1', [...history], [call]),
+            generation('g2', '2', [...history, call, result({ ok: true })], [assistantText('Done.')]),
+        ]);
+        expect(turn.steps).toHaveLength(1);
+        expect(turn.steps[0].calls[0]).toEqual({
+            callId: 'c1',
+            name: 'search-actors',
+            arguments: { query: 'flights' },
+            result: { ok: true },
+            isError: false,
+            observationId: 'g1',
+        });
+        expect(turn.finalText).toBe('Done.');
+        expect(turn.generationIds).toEqual(['g1', 'g2']);
+        expect(turn.metadataFound).toBe(false);
+        expect(turn.metadata).toEqual({});
+
+        const withTool = reconstructTurn('f2', [generation('g1', '1', history, [call]), search]);
+        expect(withTool.steps.flatMap((s) => s.calls.map((c) => c.observationId))).toEqual(['t1']);
+    });
+
+    it('flags errors in GenAI responses (isError, error-typed output) and Mastra tool-error / tool-result parts', () => {
+        const genAi = reconstructTurn('f3', [
+            generation('g1', '1', history, [call]),
+            generation('g2', '2', [...history, call, result({ type: 'error-text', value: 'x' })], [assistantText('.')]),
+        ]);
+        expect(genAi.hasToolError).toBe(true);
+        const mastra = reconstructTurn('f4', [
+            generation('g1', '1', history, [
+                {
+                    role: 'assistant',
+                    content: [
+                        { type: 'tool-call', toolCallId: 'c9', toolName: 'apify-ai_call-actor', input: { actor: 'x' } },
+                    ],
+                },
+            ]),
+            generation(
+                'g2',
+                '2',
+                [
+                    ...history,
+                    {
+                        role: 'tool',
+                        content: [
+                            {
+                                type: 'tool-error',
+                                toolCallId: 'c9',
+                                toolName: 'apify-ai_call-actor',
+                                input: {},
+                                error: 'timeout',
+                            },
+                        ],
+                    },
+                ],
+                [assistantText('.')],
+            ),
+        ]);
+        expect(mastra.steps[0].calls[0]).toMatchObject({
+            callId: 'c9',
+            name: 'call-actor',
+            result: 'timeout',
+            isError: true,
+        });
+        const errorTyped = reconstructTurn('f5', [
+            generation('g1', '1', history, [
+                {
+                    role: 'assistant',
+                    content: [{ type: 'tool-call', toolCallId: 'c8', toolName: 'call-actor', input: {} }],
+                },
+            ]),
+            generation(
+                'g2',
+                '2',
+                [
+                    ...history,
+                    {
+                        role: 'tool',
+                        content: [
+                            {
+                                type: 'tool-result',
+                                toolCallId: 'c8',
+                                toolName: 'call-actor',
+                                output: { type: 'error-json', value: { m: 1 } },
+                            },
+                        ],
+                    },
+                ],
+                [assistantText('.')],
+            ),
+        ]);
+        expect(errorTyped.steps[0].calls[0]).toMatchObject({ result: { m: 1 }, isError: true });
+    });
+
+    it('does not mistake an assistant preamble before a call for the final answer', () => {
+        const preamble = { role: 'assistant', parts: [{ type: 'text', content: 'Let me search.' }, ...call.parts] };
+        const ended = reconstructTurn('f6', [generation('g1', '1', history, [preamble])]);
         expect(ended.steps).toHaveLength(1);
         expect(ended.finalText).toBe('');
     });
 });
 
-describe('reconstructTurn: multi-step', () => {
-    const call2 = toolCall('c2', 'apify-ai_fetch-actor-details', { actor: 'flights-scraper' });
-    const result2 = toolResult('c2', 'apify-ai_fetch-actor-details', { readme: '...' });
-    const history = [system, user('Earlier question'), assistantText('Earlier answer'), user('Find cheap flights')];
-    const observations: TraceObservation[] = [
-        generation('g1', '2026-09-08T10:00:00.000Z', history, [call1]),
-        generation('g2', '2026-09-08T10:00:03.000Z', [...history, call1, result1], [call2]),
-        generation(
-            'g3',
-            '2026-09-08T10:00:06.000Z',
-            [...history, call1, result1, call2, result2],
-            [assistantText('Done.')],
-        ),
-    ];
-    const turn = reconstructTurn('t3', observations);
-
-    it('yields one step per tool-calling assistant message, each call once', () => {
-        expect(turn.steps.map((s) => s.index)).toEqual([1, 2]);
-        expect(turn.steps.flatMap((s) => s.calls.map((c) => c.callId))).toEqual(['c1', 'c2']);
-        expect(turn.steps[1].calls[0]).toMatchObject({ observationId: 'g2', result: { readme: '...' } });
+describe('reconstructTurn: refusals and tolerance', () => {
+    it('throws when the trace has no GENERATION or no user message', () => {
+        expect(() => reconstructTurn('r1', [completion, search])).toThrow(TurnReconstructionError);
+        expect(() => reconstructTurn('r1', [completion])).toThrow(/no GENERATION/);
+        expect(() => reconstructTurn('r2', [chat('g1', '1', [system], 'hi')])).toThrow(/no user message/);
     });
 
-    it('dedupes the repeated history: the prompt is the last user message, earlier text is context', () => {
-        expect(turn.prompt).toBe('Find cheap flights');
-        expect(turn.priorMessages).toEqual([
-            { role: 'user', text: 'Earlier question' },
-            { role: 'assistant', text: 'Earlier answer' },
-        ]);
-        expect(turn.finalText).toBe('Done.');
-        expect(turn.generationIds).toEqual(['g1', 'g2', 'g3']);
-    });
-});
-
-describe('reconstructTurn: tool errors', () => {
-    it('flags an MCP isError result', () => {
-        const errored = toolResult('c1', 'apify-ai_search-actors', { isError: true, content: [{ text: 'boom' }] });
-        const turn = reconstructTurn('t4', [
-            generation('g1', '2026-09-08T10:00:00.000Z', [user('q')], [call1]),
-            generation('g2', '2026-09-08T10:00:01.000Z', [user('q'), call1, errored], [assistantText('Sorry.')]),
-        ]);
-        expect(turn.steps[0].calls[0].isError).toBe(true);
-        expect(turn.hasToolError).toBe(true);
+    it('accepts a raw `{text}` output and a non-JSON output as the assistant text', () => {
+        const raw = { ...chat('g1', '1', history, ''), output: JSON.stringify({ text: 'from object' }) };
+        expect(reconstructTurn('r3', [raw]).finalText).toBe('from object');
+        expect(reconstructTurn('r4', [{ ...raw, output: 'plain' }]).finalText).toBe('plain');
     });
 
-    it("flags a Mastra tool-error part, which the exporter's converter passes through unchanged", () => {
-        const raw = {
-            role: 'tool',
-            content: [
-                {
-                    type: 'tool-error',
-                    toolCallId: 'c1',
-                    toolName: 'apify-ai_search-actors',
-                    input: {},
-                    error: 'timeout',
-                },
-            ],
-        };
-        const turn = reconstructTurn('t5', [
-            generation('g1', '2026-09-08T10:00:00.000Z', [user('q')], [call1]),
-            generation('g2', '2026-09-08T10:00:01.000Z', [user('q'), call1, raw], [assistantText('Sorry.')]),
-        ]);
-        expect(turn.steps[0].calls[0]).toMatchObject({ isError: true, result: 'timeout' });
-        expect(turn.hasToolError).toBe(true);
-    });
-
-    it('accepts Mastra-shaped tool-call and error-typed tool-result parts too', () => {
-        const mastraCall = {
-            role: 'assistant',
-            content: [{ type: 'tool-call', toolCallId: 'c9', toolName: 'apify-ai_call-actor', input: { actor: 'x' } }],
-        };
-        const mastraResult = {
-            role: 'tool',
-            content: [
-                {
-                    type: 'tool-result',
-                    toolCallId: 'c9',
-                    toolName: 'apify-ai_call-actor',
-                    output: { type: 'error-text', value: 'failed' },
-                },
-            ],
-        };
-        const turn = reconstructTurn('t6', [
-            generation('g1', '2026-09-08T10:00:00.000Z', [user('q')], [mastraCall]),
-            generation('g2', '2026-09-08T10:00:01.000Z', [user('q'), mastraCall, mastraResult], [assistantText('.')]),
-        ]);
-        expect(turn.steps[0].calls[0]).toMatchObject({
-            callId: 'c9',
-            arguments: { actor: 'x' },
-            result: 'failed',
-            isError: true,
-        });
-    });
-});
-
-describe('reconstructTurn: refusals', () => {
-    it('throws when the trace has no GENERATION', () => {
-        expect(() => reconstructTurn('t7', [completion])).toThrow(TurnReconstructionError);
-        expect(() => reconstructTurn('t7', [completion])).toThrow(/no GENERATION/);
-    });
-
-    it('throws when no user message can be found', () => {
-        const noUser = generation('g1', '2026-09-08T10:00:00.000Z', [system], [assistantText('hi')]);
-        expect(() => reconstructTurn('t8', [noUser])).toThrow(/no user message/);
-    });
-
-    it('tolerates a non-JSON output by treating it as the assistant text', () => {
-        const turn = reconstructTurn('t9', [
-            {
-                id: 'g1',
-                type: 'GENERATION',
-                startTime: '2026-09-08T10:00:00.000Z',
-                input: JSON.stringify([user('q')]),
-                output: 'plain',
-            },
-        ]);
-        expect(turn.finalText).toBe('plain');
+    it('orders generations by startTime whatever order Langfuse returned', () => {
+        const a = chat('g2', '2026-09-08T10:00:05.000Z', history, 'later');
+        const b = chat('g1', '2026-09-08T10:00:00.000Z', history, 'earlier');
+        expect(generationsOf([a, b]).map((g) => g.id)).toEqual(['g1', 'g2']);
+        expect(reconstructTurn('r5', [a, b]).finalText).toBe('later');
     });
 });
 
 describe('traceMetadataOf', () => {
-    it('reads top-level and nested langfuse keys, string or object metadata, first value wins', () => {
-        const observations: TraceObservation[] = [
+    const expected = { toolSchemaHash: 'sha256:1', outcome: 'aborted', steps: 3 };
+
+    it('reads a top-level key', () => {
+        const obs: TraceObservation[] = [{ id: 'a', type: 'SPAN', startTime: '1', metadata: JSON.stringify(expected) }];
+        expect(traceMetadataOf(obs)).toEqual({ metadata: expected, found: true });
+    });
+
+    it('reads a nested langfuse object', () => {
+        const obs: TraceObservation[] = [{ id: 'a', type: 'SPAN', startTime: '1', metadata: { langfuse: expected } }];
+        expect(traceMetadataOf(obs)).toEqual({ metadata: expected, found: true });
+    });
+
+    it('reads the attributes.mastra.metadata.langfuse JSON string', () => {
+        const obs: TraceObservation[] = [
+            {
+                id: 'a',
+                type: 'SPAN',
+                startTime: '1',
+                metadata: { 'attributes.mastra.metadata.langfuse': JSON.stringify(expected) },
+            },
+        ];
+        expect(traceMetadataOf(obs)).toEqual({ metadata: expected, found: true });
+    });
+
+    it('merges across observations, first value wins, and reports when nothing was found', () => {
+        const obs: TraceObservation[] = [
             { id: 'a', type: 'SPAN', startTime: '1', metadata: { langfuse: { toolSchemaHash: 'sha256:1' } } },
             { id: 'b', type: 'EVENT', startTime: '2', metadata: JSON.stringify({ outcome: 'aborted', steps: '3' }) },
-            { id: 'c', type: 'EVENT', startTime: '3', metadata: { outcome: 'completed' } },
+            {
+                id: 'c',
+                type: 'EVENT',
+                startTime: '3',
+                metadata: { 'attributes.mastra.metadata.langfuse': '{"outcome":"completed"}' },
+            },
         ];
-        expect(traceMetadataOf(observations)).toEqual({ toolSchemaHash: 'sha256:1', outcome: 'aborted', steps: 3 });
-        expect(traceMetadataOf([{ id: 'd', type: 'SPAN', startTime: '1', metadata: 'not json' }])).toEqual({});
+        expect(traceMetadataOf(obs)).toEqual({ metadata: expected, found: true });
+        expect(traceMetadataOf([{ id: 'd', type: 'SPAN', startTime: '1', metadata: 'not json' }])).toEqual({
+            metadata: {},
+            found: false,
+        });
+        expect(
+            traceMetadataOf([{ id: 'e', type: 'SPAN', startTime: '1', metadata: { callerOrigin: 'console' } }]).found,
+        ).toBe(false);
     });
 });
 

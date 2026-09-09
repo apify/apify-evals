@@ -68,7 +68,7 @@ if (mode === 'online') {
      * before scoring, a process death mid-batch loses the window's sample.
      */
     async function judgeOnline(traceIds: string[]) {
-        if (traceIds.length === 0) return { judged: 0, failedToJudge: 0, verdicts: [] };
+        if (traceIds.length === 0) return { judged: 0, failedToJudge: 0, metadataMissing: 0, verdicts: [] };
         const prompt = await resolveOrSeedPrompt(langfuse, {
             name: ONLINE_JUDGE_PROMPT_NAME,
             label: promptLabel,
@@ -82,18 +82,18 @@ if (mode === 'online') {
                 log.warning(`MCP tools/list failed, argumentCorrectness will be omitted: ${err}`);
                 return null;
             });
-        log.info(
-            `Judging ${traceIds.length} traces: model ${judgeModel}, prompt v${prompt.version}, live toolset ${schemas?.hash}`,
-        );
+        const toolset = schemas ? `live toolset ${schemas.hash}` : 'no live toolset (argumentCorrectness omitted)';
+        log.info(`Judging ${traceIds.length} traces: model ${judgeModel}, prompt v${prompt.version}, ${toolset}`);
 
-        const verdicts: Awaited<ReturnType<typeof judgeOnlineTrace>>[] = [];
+        const verdicts: Awaited<ReturnType<typeof judgeOnlineTrace>>['verdicts'][] = [];
         let failedToJudge = 0;
+        let metadataMissing = 0;
         let next = 0;
         async function onlineWorker() {
             while (next < traceIds.length) {
                 const traceId = traceIds[next++];
                 try {
-                    const v = await judgeOnlineTrace({
+                    const { verdicts: v, traceMetadataFound } = await judgeOnlineTrace({
                         langfuse,
                         traceId,
                         apifyToken: apifyToken as string,
@@ -103,6 +103,7 @@ if (mode === 'online') {
                         schemas,
                     });
                     verdicts.push(v);
+                    if (!traceMetadataFound) metadataMissing++;
                     const holistic = v.scores.find((s) => s.name === 'agent_judge');
                     log.info(
                         `${traceId}: judged, agent_judge=${holistic && 'value' in holistic ? holistic.value : 'n/a'}`,
@@ -115,7 +116,14 @@ if (mode === 'online') {
             }
         }
         await Promise.all(Array.from({ length: Math.min(concurrency, traceIds.length) }, onlineWorker));
-        return { judged: verdicts.length, failedToJudge, verdicts };
+        // Which of the three metadata locations is real is unproven; a batch where
+        // none yielded anything says the reader, not the traces, is wrong.
+        if (metadataMissing > 0) {
+            log.warning(
+                `${metadataMissing} of ${verdicts.length} judged traces carried no trace metadata (outcome, toolSchemaHash)`,
+            );
+        }
+        return { judged: verdicts.length, failedToJudge, metadataMissing, verdicts };
     }
 
     const selection = await selectTraces({
@@ -129,7 +137,7 @@ if (mode === 'online') {
         runId: Actor.getEnv().actorRunId,
         environment,
     });
-    const { judged, failedToJudge } = await judgeOnline(selection.sampledTraceIds);
+    const { judged, failedToJudge, metadataMissing } = await judgeOnline(selection.sampledTraceIds);
     const summary = {
         mode,
         environment,
@@ -143,6 +151,7 @@ if (mode === 'online') {
         sampled: selection.sampled,
         judged,
         failedToJudge,
+        metadataMissing,
         sampledTraceIds: selection.sampledTraceIds,
     };
     log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
