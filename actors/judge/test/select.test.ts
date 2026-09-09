@@ -112,10 +112,26 @@ describe('filters', () => {
         ]);
     });
 
-    it('completedFilter adds only the span name, never a metadata condition', () => {
-        const extra = completedFilter(window).slice(3);
-        expect(extra).toEqual([{ type: 'string', column: 'name', operator: '=', value: 'apify-ai.turn-complete' }]);
+    it('completedFilter is the window bounds plus the span name, with no tag or metadata condition', () => {
+        expect(completedFilter(window)).toEqual([
+            { type: 'datetime', column: 'startTime', operator: '>=', value: '2026-09-08T11:00:00.000Z' },
+            { type: 'datetime', column: 'startTime', operator: '<', value: '2026-09-08T12:00:00.000Z' },
+            { type: 'string', column: 'name', operator: '=', value: 'apify-ai.turn-complete' },
+        ]);
+        // The tag lives only on the root span and matches per observation, so
+        // tag AND name can never return a row (live-verified 2026-09-09).
+        expect(completedFilter(window).some((c) => c.column === 'traceTags')).toBe(false);
         expect(completedFilter(window).some((c) => c.column === 'metadata')).toBe(false);
+    });
+
+    it('every filter the module builds carries both window bounds, because filter replaces the query params', () => {
+        for (const filter of [traceFilter(window), completedFilter(window)]) {
+            const bounds = filter.filter((c) => c.type === 'datetime' && c.column === 'startTime');
+            expect(bounds).toEqual([
+                { type: 'datetime', column: 'startTime', operator: '>=', value: window.start.toISOString() },
+                { type: 'datetime', column: 'startTime', operator: '<', value: window.end.toISOString() },
+            ]);
+        }
     });
 });
 
@@ -204,7 +220,7 @@ describe('sampleTraceIds', () => {
 describe('selectTraces', () => {
     it('counts, samples only completed traces, and checkpoints the upper bound', async () => {
         const all = ['a', 'b', 'c', 'd', 'e'];
-        const completed = ['a', 'c', 'e', 'zzz-no-other-span'];
+        const completed = ['a', 'c', 'e'];
         const { fetchPage } = fakeFetcher(all, completed);
         const { store, writes } = memoryCheckpoints();
 
@@ -224,9 +240,75 @@ describe('selectTraces', () => {
         expect(s.sampledTraceIds.length).toBe(2);
         for (const id of s.sampledTraceIds) expect(['a', 'c', 'e']).toContain(id);
         expect(s.checkpointWritten).toBe(true);
-        expect(writes).toEqual([
-            { upperBound: safeUpperBound(NOW).toISOString(), runId: 'run-1', writtenAt: NOW.toISOString() },
-        ]);
+        const expected = {
+            upperBound: safeUpperBound(NOW).toISOString(),
+            runId: 'run-1',
+            writtenAt: NOW.toISOString(),
+        };
+        expect(s.checkpoint).toEqual(expected);
+        expect(writes).toEqual([expected]);
+    });
+
+    it('keeps a completed trace whose root span is outside the window (no intersection)', async () => {
+        // Live 2026-09-07: the tag query and a name query over the same day
+        // shared only 1 of 3 trace ids, so intersecting them would drop turns
+        // that started before the window and completed inside it.
+        const { fetchPage } = fakeFetcher(['root-only'], ['completed-elsewhere']);
+        const { store } = memoryCheckpoints();
+
+        const s = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            rng: Math.random,
+            fetchPage,
+            checkpoints: store,
+            runId: null,
+        });
+
+        expect(s.tracesInWindow).toBe(1);
+        expect(s.completedTraces).toBe(1);
+        expect(s.sampledTraceIds).toEqual(['completed-elsewhere']);
+    });
+
+    it('leaves the checkpoint unwritten when the window has traffic but no completion span', async () => {
+        const { fetchPage } = fakeFetcher(['a', 'b'], []);
+        const { store, writes } = memoryCheckpoints();
+
+        const s = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            rng: Math.random,
+            fetchPage,
+            checkpoints: store,
+            runId: 'run-1',
+        });
+
+        expect(s.tracesInWindow).toBe(2);
+        expect(s.completedTraces).toBe(0);
+        expect(s.sampledTraceIds).toEqual([]);
+        expect(s.checkpoint).toBeNull();
+        expect(s.checkpointWritten).toBe(false);
+        expect(writes).toEqual([]);
+    });
+
+    it('still advances the checkpoint over a genuinely empty window', async () => {
+        const { fetchPage } = fakeFetcher([], []);
+        const { store, writes } = memoryCheckpoints();
+
+        const s = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            rng: Math.random,
+            fetchPage,
+            checkpoints: store,
+            runId: null,
+        });
+
+        expect(s.checkpointWritten).toBe(true);
+        expect(writes.length).toBe(1);
     });
 
     it('returns zero counts and does not move the checkpoint on an empty window', async () => {
@@ -244,7 +326,7 @@ describe('selectTraces', () => {
             runId: null,
         });
 
-        expect(s).toMatchObject({ window: null, tracesInWindow: 0, completedTraces: 0, sampled: 0 });
+        expect(s).toMatchObject({ window: null, tracesInWindow: 0, completedTraces: 0, sampled: 0, checkpoint: null });
         expect(calls).toEqual([]);
         expect(writes).toEqual([]);
     });
@@ -296,6 +378,7 @@ describe('selectTraces', () => {
         expect(reads).toBe(0);
         expect(writes).toEqual([]);
         expect(s.checkpointWritten).toBe(false);
+        expect(s.checkpoint).toBeNull();
         expect(s.sampledTraceIds).toEqual(['a']);
         expect(calls[0].filter[0].value).toBe('2026-09-01T00:00:00.000Z');
     });
