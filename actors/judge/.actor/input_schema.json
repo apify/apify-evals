@@ -36,14 +36,14 @@
         "windowStart": {
             "title": "Window start override (online)",
             "type": "string",
-            "description": "ISO 8601. Replaces the checkpoint (or now-24h) lower bound. Setting either override skips the checkpoint entirely: it is neither read nor written, so backfills and debugging never move production.",
+            "description": "ISO 8601 with an explicit offset, e.g. 2026-09-01T00:00:00Z (a string without one parses as the Actor's local time). Replaces the checkpoint (or now-24h) lower bound. Setting either override skips the checkpoint entirely: it is neither read nor written, so backfills and debugging never move production.",
             "editor": "textfield",
             "nullable": true
         },
         "windowEnd": {
             "title": "Window end override (online)",
             "type": "string",
-            "description": "ISO 8601, exclusive. Replaces the computed upper bound (now minus the agent request timeout minus export lag). Same checkpoint rule as windowStart.",
+            "description": "ISO 8601 with an explicit offset (Z), exclusive. Replaces the computed upper bound (now minus the agent request timeout minus export lag). Same checkpoint rule as windowStart.",
             "editor": "textfield",
             "nullable": true
         },

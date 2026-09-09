@@ -247,6 +247,15 @@ export async function writeOnlineScores({
     return { scoresWritten: written.length, failedToWrite, written };
 }
 
+export class AllJudgementsFailedError extends Error {
+    constructor(readonly traces: number) {
+        super(
+            `Every one of the ${traces} traces to judge failed to judge; checkpoint not written so the window is retried`,
+        );
+        this.name = 'AllJudgementsFailedError';
+    }
+}
+
 export class AllScoreWritesFailedError extends Error {
     constructor(readonly traces: number) {
         super(
@@ -506,7 +515,6 @@ export function rollupItemRequest(rollup: Rollup): CreateDatasetItemRequest {
 
 export interface RollupApi {
     datasets: {
-        get(datasetName: string): Promise<unknown>;
         create(request: { name: string; description?: string }): Promise<unknown>;
     };
     datasetItems: {
@@ -515,20 +523,20 @@ export interface RollupApi {
     };
 }
 
-const isNotFound = (err: unknown) => (err as { statusCode?: number })?.statusCode === 404;
+/** The client's `NotFoundError` is a `LangfuseAPIError` carrying `statusCode: 404`; pinned by a test against the real class. */
+export const isNotFound = (err: unknown) => (err as { statusCode?: number })?.statusCode === 404;
 
-/** `datasets.create` is not documented as idempotent by name, so look first and create only on 404. */
+/**
+ * `POST /api/public/v2/datasets` is idempotent by name in practice (verified
+ * live 2026-09-09: an existing name returns the same dataset id with its
+ * createdAt preserved), so it is called on every run. No public API deletes a
+ * dataset, so this one is permanent once created.
+ */
 async function ensureRollupDataset(api: RollupApi): Promise<void> {
-    try {
-        await api.datasets.get(ROLLUP_DATASET_NAME);
-    } catch (err) {
-        if (!isNotFound(err)) throw err;
-        log.info(`Creating dataset ${ROLLUP_DATASET_NAME}`);
-        await api.datasets.create({
-            name: ROLLUP_DATASET_NAME,
-            description: 'Daily rollups of the online Apify AI judge (ai-team#270); one item per UTC day.',
-        });
-    }
+    await api.datasets.create({
+        name: ROLLUP_DATASET_NAME,
+        description: 'Daily rollups of the online Apify AI judge (ai-team#270); one item per UTC day.',
+    });
 }
 
 async function existingRollup(api: RollupApi, id: string): Promise<unknown> {
@@ -541,11 +549,10 @@ async function existingRollup(api: RollupApi, id: string): Promise<unknown> {
 }
 
 /**
- * Merge the run into the day's item and upsert it (dataset items upsert on id,
- * per the API docs). Dataset items and datasets live in Postgres, not in the
- * events store, so they are expected to work in `events_only` mode where the
- * dataset-RUN lookups are refused; that expectation is unverified against a
- * live instance, and a failure here fails the run (see main.ts).
+ * Merge the run into the day's item and upsert it: a dataset item POST with an
+ * existing id replaces the whole document (verified live 2026-09-09, as are
+ * datasets and dataset items working in `events_only` mode, where only the
+ * dataset-RUN lookups are refused). A failure here fails the run (see main.ts).
  */
 export async function upsertDailyRollup({ api, rollup }: { api: RollupApi; rollup: Rollup }): Promise<{ id: string }> {
     await ensureRollupDataset(api);
@@ -571,11 +578,13 @@ export interface FinishOnlineRunOptions {
     sampleRate: number;
     maxItems: number;
     coverage: JudgeCounters;
+    /** Sampled traces the pre-filter dropped; `sampled - scoresSkipped` is what the judge was given. */
+    scoresSkipped: number;
 }
 
 export interface FinishOnlineRunResult extends Omit<WriteResult, 'written'> {
     rollupItemId: string | null;
-    /** Non-null when every write failed or the rollup failed; the caller fails the run with it. */
+    /** Non-null when every judgement failed, every write failed or the rollup failed; the caller fails the run with it. */
     error: unknown;
     checkpointWritten: boolean;
 }
@@ -584,7 +593,10 @@ export interface FinishOnlineRunResult extends Omit<WriteResult, 'written'> {
  * Scores first, rollup second, checkpoint last. The checkpoint moves only when
  * the rollup succeeded and at least one trace was written: a batch whose
  * writes ALL failed (Langfuse down, subject rejected) must not look like
- * success, or the window and its LLM spend are silently lost. Either failure
+ * success, or the window and its LLM spend are silently lost. Its twin on the
+ * judge side is a batch where every trace given to the judge failed to judge
+ * (model down, prompt broken): same treatment, since the window would
+ * otherwise advance with nothing scored. Any of these failures
  * leaves the window to be retried, which is safe because every score id
  * dedups and `skipAlreadyJudged()` spends no LLM calls on the traces already
  * written. A failed score write for SOME traces does not hold the checkpoint
@@ -598,9 +610,14 @@ export async function finishOnlineRun(opts: FinishOnlineRunOptions): Promise<Fin
     const { written, scoresWritten, failedToWrite } = await writeOnlineScores({ verdicts, scores, date });
     const coverage: CoverageCounters = { ...opts.coverage, scoresWritten, failedToWrite };
 
+    const givenToJudge = coverage.sampled - opts.scoresSkipped;
+
     let rollupId: string | null = null;
     let error: unknown = null;
-    if (verdicts.length > 0 && scoresWritten === 0) {
+    if (givenToJudge > 0 && coverage.judged === 0) {
+        error = new AllJudgementsFailedError(givenToJudge);
+        log.error(String(error));
+    } else if (verdicts.length > 0 && scoresWritten === 0) {
         error = new AllScoreWritesFailedError(verdicts.length);
         log.error(String(error));
     } else if (coverage.sampled > 0 || coverage.judged > 0) {
