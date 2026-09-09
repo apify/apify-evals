@@ -7,6 +7,7 @@ interface Input {
     maxItems?: number;
     windowStart?: string;
     windowEnd?: string;
+    environment?: string;
     judgeModel?: string;
     promptLabel?: string;
     force?: boolean;
@@ -53,7 +54,9 @@ async function judgeOnline(_traceIds: string[]): Promise<{ judged: number; faile
 }
 
 if (mode === 'online') {
-    const { actorCheckpointStore, langfuseObservationFetcher, selectTraces } = await import('./select.js');
+    const { actorCheckpointStore, DEFAULT_ENVIRONMENT, langfuseObservationFetcher, selectTraces } =
+        await import('./select.js');
+    const environment = input.environment ?? DEFAULT_ENVIRONMENT;
     const selection = await selectTraces({
         now: new Date(),
         sampleRate,
@@ -63,14 +66,17 @@ if (mode === 'online') {
         fetchPage: langfuseObservationFetcher(new LangfuseClient()),
         checkpoints: actorCheckpointStore(),
         runId: Actor.getEnv().actorRunId,
+        environment,
     });
     const { judged, failedToJudge } = await judgeOnline(selection.sampledTraceIds);
     const summary = {
         mode,
+        environment,
         window: selection.window
             ? { start: selection.window.start.toISOString(), end: selection.window.end.toISOString() }
             : null,
         checkpointWritten: selection.checkpointWritten,
+        isGateBroken: selection.isGateBroken,
         tracesInWindow: selection.tracesInWindow,
         completedTraces: selection.completedTraces,
         sampled: selection.sampled,
@@ -80,6 +86,15 @@ if (mode === 'online') {
     };
     log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
     await Actor.setValue('OUTPUT', summary);
+    // Fail the run on a broken completion gate, after OUTPUT is written: a
+    // SUCCEEDED run selecting nothing forever is invisible, while an Apify
+    // run-status alert already covers a FAILED one (#271 needs no extra monitor).
+    if (selection.isGateBroken) {
+        await Actor.fail(
+            `Completion gate broken: ${selection.tracesInWindow} traces in the window, none completed. ` +
+                'The checkpoint was not moved; see OUTPUT.',
+        );
+    }
     // Actor.exit() ends the process; the datasetRun flow below never runs in this mode.
     await Actor.exit();
 }
