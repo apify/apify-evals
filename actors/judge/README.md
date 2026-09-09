@@ -111,6 +111,13 @@ the annotation UI. That is why the schema is fixed here, before anything
 writes a score, and why the create script never creates a config whose name
 already exists, even when the existing one looks wrong.
 
+Verified live against the Apify AI Agent project on 2026-09-09: `GET
+/api/public/score-configs` is served in `events_only` mode, and the project has
+zero score configs, so the first run of the script creates all seven with no
+conflicts. Scores written without a config are accepted (BOOLEAN values read
+back as JSON `true` / `false`), which is why the configs exist for the UI and
+the `avg` views, not as a precondition for writing.
+
 `scripts/create-score-configs.ts` is idempotent: it lists the project's score
 configs (`GET /api/public/score-configs`, paginated), creates only the missing
 ones (`POST /api/public/score-configs`, `dataType: BOOLEAN`) and prints a
