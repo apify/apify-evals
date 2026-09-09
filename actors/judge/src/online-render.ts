@@ -23,7 +23,9 @@ function omissionMarker(omitted: number): string {
  * Keep the head and the tail of a long payload, with an explicit marker in
  * between: the head shows what the payload is, the tail whether it ended well
  * (a trailing error, a truncated JSON, a pagination hint). The result never
- * exceeds `budget` characters, marker included.
+ * exceeds `budget` characters, marker included, except for a budget smaller
+ * than the marker itself, where the marker alone comes back: at that size,
+ * saying how much was dropped matters more than the budget.
  */
 export function truncateHeadTail(text: string, budget: number = PAYLOAD_CHAR_BUDGET): string {
     if (text.length <= budget) return text;

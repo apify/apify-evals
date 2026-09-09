@@ -193,6 +193,9 @@ function argumentCorrectnessScore(check: ArgumentCorrectnessResult, spanId: stri
             ? ['live schemas used; a mismatch is expected until the agent hash covers the raw JSON schema']
             : []),
         ...(check.unvalidatedTools.length > 0 ? [`no schema for: ${check.unvalidatedTools.join(', ')}`] : []),
+        ...(check.callsWithoutArguments.length > 0
+            ? [`no arguments recorded for: ${check.callsWithoutArguments.join(', ')}`]
+            : []),
         ...(failures.length > 0 ? [`failures: ${failures.join(' | ')}`] : []),
         `span ${failures.length > 0 ? check.validated.find((v) => v.valid === false)?.observationId : spanId}`,
     ];
@@ -301,6 +304,9 @@ export async function judgeOnlineTrace(opts: JudgeOnlineTraceOptions): Promise<O
     const { langfuse, traceId, apifyToken, judgeModel, promptTemplate, promptVersion, schemas } = opts;
     const observations = await fetchTraceObservations(langfuse, traceId);
     const turn = reconstructTurn(traceId, observations);
+    if (turn.excludedGenerations > 0) {
+        log.debug(`${traceId}: ${turn.excludedGenerations} generation(s) excluded as not part of the turn`);
+    }
 
     const argumentCheck: ArgumentCorrectnessResult = schemas
         ? checkArgumentCorrectness(turn, schemas)
@@ -311,6 +317,7 @@ export async function judgeOnlineTrace(opts: JudgeOnlineTraceOptions): Promise<O
               liveHash: '',
               validated: [],
               unvalidatedTools: [],
+              callsWithoutArguments: [],
           };
     if (argumentCheck.schemaMatch === false) {
         log.warning(
