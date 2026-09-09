@@ -81,7 +81,7 @@ configs share:
 | `resultUtilization`   | The answer is faithful to the retrieved data: nothing invented, nothing important ignored.    |
 | `taskCompletion`      | The user got what they asked for, grounded in retrieved data. Honest failure still fails.     |
 | `errorRecovery`       | Errors were noticed, adapted to and reported plainly. Not scored when no tool error occurred. |
-| `planEfficiency`      | The step count is proportionate: no loops, duplicated work or detours.                        |
+| `planEfficiency`      | The number of tool calls is proportionate: no loops, duplicated work or detours.              |
 
 The holistic verdict is a separate judgment over the whole turn (#269). It is
 not a computed AND over the criteria and, unlike the offline `judge.overall`,
@@ -331,6 +331,13 @@ come from the turn GENERATION; the steps are the TOOL observations in
 `startTime` order, each citing its observation id, with the tool name stripped
 of the `apify-ai_` namespace.
 
+**One TOOL observation is one step.** The export carries no link from a tool
+call back to the model step that requested it, so N calls the model issued in
+parallel within one model step appear as N steps, and the step count is a count
+of tool calls rather than of model turns. `planEfficiency` is worded that way.
+Calls that share a start millisecond are ordered by observation id, which is
+stable but arbitrary.
+
 **Which generation is the turn's.** The GENERATIONs whose top-level
 `sessionId` is non-empty: the turn's spans carry the thread id, Memory's
 title/compaction generation is exported with an empty one and no thread
@@ -342,8 +349,11 @@ comment cites.
 
 A call is an error when the observation has `level: ERROR`, a `statusMessage`,
 or an output carrying `isError: true`, an `error*` type, or a serialised error
-(`{name:'Error', id:'TOOL_EXECUTION_FAILED', cause}`, the live shape) - the
-last one so a tool that reports failure without throwing still counts.
+(`{name:'Error', domain, category, id:'TOOL_EXECUTION_FAILED', cause}`, the live
+shape) - the last one so a tool that reports failure without throwing still
+counts. That last read demands `name`, `domain`, `category` and an `id` or
+`cause` together, all of which the eight live MastraErrors carry, so a scraped
+record that happens to hold `name` and `id` is not mistaken for a failure.
 Arguments and result come from the mapped `input`/`output`, falling back to
 `attributes.gen_ai.tool.call.arguments` / `.result`; a call with neither keeps
 no arguments at all, and `argumentCorrectness` skips it instead of failing it
@@ -361,15 +371,20 @@ with no GENERATION or no user message cannot be reconstructed and counts as
 
 **Confirmed live 2026-09-09** against staging Langfuse, on three traces with
 tool calls (`98ee3c06...`, `4d43c3b8...`, `88bceef8...`) plus eight ERROR-level
-TOOL observations. Verbatim rows are in `test/fixtures/live-trace.ts`.
+TOOL observations. The rows are in `test/fixtures/live-trace.ts` as the endpoint
+returned them, except that long string payloads are cut at a
+`[... trimmed for the fixture ...]` marker and the error row drops the
+`resourceAttributes.process.*` / `.host.*` families; the fixture's own docstrings
+list every departure.
 
 - The turn `chat` GENERATION output carries no `tool_call` parts: it is one
   assistant text part.
-- Every trace carries TWO GENERATIONs, the turn's sonnet one and a later haiku
-  one for the thread title, and the empty-`sessionId` rule separated them on
-  all three.
+- A trace carries one or two GENERATIONs: the turn's sonnet one always, and a
+  later haiku one for the thread title when Memory names or compacts the thread
+  (three of the four traces sampled from 2026-09-04 have only the turn's). The
+  empty-`sessionId` rule separated them wherever both were present.
 - TOOL observations have `input` and `output` populated and untruncated
-  (`{"keywords":"Google Maps reviews"}` and a 9443-character result), with
+  (`{"keywords":"Google Maps reviews"}` and a 9441-character result), with
   `attributes.gen_ai.tool.call.id` = `tooluse_...` and
   `attributes.gen_ai.tool.name` = `apify-ai_search-actors`.
 - A failed tool call is `level: 'ERROR'` with an EMPTY `statusMessage`, and its
