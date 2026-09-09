@@ -186,12 +186,32 @@ describe('toolCallsOf', () => {
         const byOutput = tool('e3', '3', 'search-actors', {}, { isError: true, content: [] });
         // The live payload of a failed MCP call, on a span the exporter left at level DEFAULT:
         // a tool that reports failure without throwing must still count as an error.
-        const byPayload = tool('e4', '4', 'call-actor', {}, { name: 'Error', id: 'TOOL_EXECUTION_FAILED', cause: {} });
+        const byPayload = tool(
+            'e4',
+            '4',
+            'call-actor',
+            {},
+            {
+                name: 'Error',
+                cause: { message: 'Input validation failed', domain: 'MCP', category: 'THIRD_PARTY' },
+                id: 'TOOL_EXECUTION_FAILED',
+                domain: 'TOOL',
+                category: 'USER',
+                details: { errorMessage: '...' },
+            },
+        );
         const ok = tool('e5', '5', 'search-actors', {}, { content: [] });
         const calls = toolCallsOf([byLevel, byStatus, byOutput, byPayload, ok]);
         expect(calls.map((c) => c.isError)).toEqual([true, true, true, true, false]);
         expect(calls[0]).not.toHaveProperty('result');
         expect(calls[1].result).toBe('boom');
+    });
+
+    it('does not read a scraped record that merely has name and id as a failed call', () => {
+        // A tool result is user-controlled: without domain and category, which every
+        // live MastraError carries, this is data the agent fetched, not an error.
+        const record = tool('s1', '1', 'get-dataset-items', {}, { name: 'Error', id: 42 });
+        expect(toolCallsOf([record])[0].isError).toBe(false);
     });
 
     it('reads arguments and result from the attribute bag when the span has no mapped input/output', () => {
@@ -515,6 +535,38 @@ describe('reconstructTurn on real staging observations', () => {
         expect(turn.metadataFound).toBe(false);
         expect(turn.metadata.outcome).toBeUndefined();
         expect(turn.metadata.toolSchemaHash).toBeUndefined();
+    });
+
+    it('keeps the live TOOL result shape, so a change in what search-actors returns shows up here', () => {
+        const [call] = toolCallsOf(liveTraceObservations);
+        // The fixture trims the actor list, not the envelope: the judge is shown the
+        // real top-level keys, so a rename upstream fails this test.
+        expect(Object.keys(call.result as Record<string, unknown>)).toEqual([
+            'actors',
+            'query',
+            'count',
+            'userTier',
+            'instructions',
+        ]);
+        const result = call.result as { actors: unknown[]; count: number };
+        expect(result.count).toBe(5);
+        expect(Object.keys(result.actors[0] as Record<string, unknown>)).toEqual([
+            'title',
+            'url',
+            'id',
+            'fullName',
+            'pictureUrl',
+            'developer',
+            'description',
+            'categories',
+            'pricing',
+            'stats',
+            'rating',
+            'isDeprecated',
+            'inputFields',
+        ]);
+        // The other four actors are one trim marker, so the trimming is visible in the data.
+        expect(result.actors[1]).toMatch(/trimmed for the fixture/);
     });
 
     it('flags a real failed tool call and keeps its error payload as the result', () => {

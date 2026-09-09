@@ -101,8 +101,8 @@ export const ONLINE_RUBRIC: Rubric = {
             description:
                 'The path from request to answer was reasonably direct: no pointless repetition, no redundant ' +
                 'fetches of data already in hand, no detours unrelated to the task. Extra calls that reduce risk ' +
-                '(checking an input schema before a paid run) are fine. PASS when the step count is proportionate ' +
-                'to the task; FAIL on loops, duplicated work or wandering.',
+                '(checking an input schema before a paid run) are fine. PASS when the number of tool calls is ' +
+                'proportionate to the task; FAIL on loops, duplicated work or wandering.',
         },
     ],
 };

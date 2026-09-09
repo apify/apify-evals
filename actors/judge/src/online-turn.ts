@@ -148,16 +148,26 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  *
  * The live shape (staging, 2026-09-09) is a serialised MastraError on the
  * span's `output`: `{name:'Error', cause:{...}, id:'TOOL_EXECUTION_FAILED',
- * domain:'TOOL', category:'USER'}`. It is matched here and not only by span
- * `level`, because a tool that reports failure without throwing leaves the
- * span at level DEFAULT with that same payload.
+ * domain:'TOOL', category:'USER', details:{...}}`. It is matched here and not
+ * only by span `level`, because a tool that reports failure without throwing
+ * leaves the span at level DEFAULT with that same payload.
+ *
+ * `name`, `domain`, `category` and an `id` or `cause` are all required: a tool
+ * result is user-controlled data, and all eight live MastraErrors carry every
+ * one of them, so demanding the full set keeps a scraped record that merely
+ * happens to have `name` and `id` from being read as a failure.
  */
 function isErrorOutput(output: unknown): boolean {
     const record = asRecord(output);
     if (!record) return false;
     if (record.isError === true) return true;
     if (typeof record.type === 'string' && record.type.startsWith('error')) return true;
-    return record.name === 'Error' && (record.id !== undefined || record.cause !== undefined);
+    return (
+        record.name === 'Error' &&
+        record.domain !== undefined &&
+        record.category !== undefined &&
+        (record.id !== undefined || record.cause !== undefined)
+    );
 }
 
 /** Bare MCP tool name from a span or tool-call name: `execute_tool apify-ai_search-actors` -> `search-actors`. */
@@ -349,6 +359,8 @@ export function traceMetadataOf(observations: TraceObservation[]): { metadata: T
     return { metadata, found: Object.keys(metadata).length > 0 };
 }
 
+// Ties (parallel tool calls share a millisecond) fall back to the id, which is
+// stable but arbitrary: the export carries nothing that recovers the real order.
 function byStartTime(a: TraceObservation, b: TraceObservation): number {
     return a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id);
 }
@@ -478,6 +490,12 @@ export function reconstructTurn(traceId: string, observations: TraceObservation[
     // The exporter files tool calls as TOOL observations; the GENERATION carries
     // no tool_call parts. The message-part steps are only for a trace that
     // somehow has none (see the module comment, point (a)).
+    //
+    // One TOOL observation becomes one step, so N tool calls the model issued in
+    // parallel within a single model step count as N steps here. The export
+    // carries no grouping back to the model step that requested them, so this is
+    // a count of tool calls, not of model turns, and `planEfficiency` is worded
+    // that way.
     const toolCalls = toolCallsOf(observations);
     const steps = toolCalls.length > 0 ? toolCalls.map((call, i) => ({ index: i + 1, calls: [call] })) : fallbackSteps;
 
