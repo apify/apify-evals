@@ -552,7 +552,7 @@ describe('finishOnlineRun', () => {
         runId: 'r1',
         writtenAt: NOW.toISOString(),
     };
-    const base = { date: NOW, sampleRate: 0.2, maxItems: 100, coverage: judgeCoverage, scoresSkipped: 0, checkpoint };
+    const base = { date: NOW, sampleRate: 0.2, maxItems: 100, coverage: judgeCoverage, checkpoint };
 
     it('writes scores, then the rollup, then the checkpoint', async () => {
         const order: string[] = [];
@@ -666,7 +666,6 @@ describe('finishOnlineRun', () => {
         const result = await finishOnlineRun({
             ...base,
             coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 3 },
-            scoresSkipped: 2,
             verdicts: [],
             scores: api,
             rollupApi: rollupApi.api,
@@ -681,7 +680,7 @@ describe('finishOnlineRun', () => {
         expect(writes).toEqual([]);
     });
 
-    it('everything pre-filtered (sampled === scoresSkipped, judged 0) is not a judge failure', async () => {
+    it('everything pre-filtered (judged 0, failedToJudge 0) is not a judge failure', async () => {
         const { api } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
         const { store, writes } = memoryCheckpoints();
@@ -689,7 +688,6 @@ describe('finishOnlineRun', () => {
         const result = await finishOnlineRun({
             ...base,
             coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 0 },
-            scoresSkipped: 5,
             verdicts: [],
             scores: api,
             rollupApi: rollupApi.api,
@@ -728,7 +726,6 @@ describe('finishOnlineRun', () => {
             ...base,
             checkpoint: null,
             coverage: { ...judgeCoverage, judged: 0, failedToJudge: 0 },
-            scoresSkipped: judgeCoverage.sampled,
             verdicts: [],
             scores: api,
             rollupApi: rollupApi.api,
