@@ -146,15 +146,20 @@ export function onlineRunId(date: Date): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The two requests for one score. `CreateScoreRequest` has no timestamp field
- * and the SDK's ingestion path stamps its own, so neither copy can be pinned
- * to the trace's time: both carry the write time. Langfuse dedups on id plus
- * name plus calendar date of the score, so a re-run on the same UTC day is a
- * no-op at the server too, and a cross-day re-run is stopped only by the
- * pre-filter in `skipAlreadyJudged()`. `source` is left at its default, API:
- * the request type accepts API or ANNOTATION, and EVAL is refused.
+ * The two requests for one score. `date` is the WINDOW START, which keys the
+ * run copy's `datasetRunId`: a backfill of last week then lands on last week's
+ * day, not on today's. `CreateScoreRequest` has no timestamp field and the
+ * SDK's ingestion path stamps its own, so neither copy can be pinned to the
+ * trace's time: both carry the write time. Langfuse's scores table is a
+ * ReplacingMergeTree ordered by (project, toDate(timestamp), name, id), so a
+ * same-day write with the same id REPLACES the row (idempotent for identical
+ * content; under `force` it overwrites the verdict), while a write on a later
+ * UTC day with the same id is a second row. The pre-filter in
+ * `skipAlreadyJudged()` is what stops that; the partial-write retry path
+ * (`orderedRequests`) is the one exception. `source` is left at its default,
+ * API: the request type accepts API or ANNOTATION, and EVAL is refused.
  */
-export function scoreRequests(score: PendingScore, now: Date): { trace: CreateScoreRequest; run: CreateScoreRequest } {
+export function scoreRequests(score: PendingScore, date: Date): { trace: CreateScoreRequest; run: CreateScoreRequest } {
     const key = { traceId: score.traceId, scoreName: score.name, version: score.version };
     const common = {
         name: score.name,
@@ -172,7 +177,7 @@ export function scoreRequests(score: PendingScore, now: Date): { trace: CreateSc
         run: {
             ...common,
             id: onlineScoreId(key, 'run'),
-            datasetRunId: onlineRunId(now),
+            datasetRunId: onlineRunId(date),
             // No evidence here: the archival copy outlives the trace's retention, and evidence may quote the user.
             metadata: score.metadata,
         },
@@ -183,19 +188,22 @@ export function scoreRequests(score: PendingScore, now: Date): { trace: CreateSc
  * Every request for one trace, in write order: criteria first (trace copy
  * then run copy), the holistic run copy, and the holistic trace copy LAST. The
  * holistic trace copy is what `skipAlreadyJudged()` looks for, so a trace whose
- * writes died halfway is not marked done; the retry rewrites everything and
- * the id dedup makes the repeats harmless.
+ * writes died halfway is not marked done; the retry rewrites everything and,
+ * on the same UTC day, the id replaces the rows already there. A retry after
+ * UTC midnight is the one case that leaves a second row per criterion (the
+ * dedup key includes toDate(timestamp)); its run copies still land under the
+ * window's day because the run id is keyed on the window start.
  */
-export function orderedRequests(scores: PendingScore[], now: Date): CreateScoreRequest[] {
+export function orderedRequests(scores: PendingScore[], date: Date): CreateScoreRequest[] {
     const holistic = scores.find((s) => s.name === HOLISTIC_SCORE_NAME);
     const criteria = scores.filter((s) => s.name !== HOLISTIC_SCORE_NAME);
     const out: CreateScoreRequest[] = [];
     for (const score of criteria) {
-        const { trace, run } = scoreRequests(score, now);
+        const { trace, run } = scoreRequests(score, date);
         out.push(trace, run);
     }
     if (holistic) {
-        const { trace, run } = scoreRequests(holistic, now);
+        const { trace, run } = scoreRequests(holistic, date);
         out.push(run, trace);
     }
     return out;
@@ -210,30 +218,42 @@ export interface WriteResult {
     scoresWritten: number;
     /** Traces with at least one failed write; the run goes on and the trace is retried next window. */
     failedToWrite: number;
+    /** The verdicts behind `scoresWritten`: only these go into the rollup. */
+    written: OnlineVerdicts[];
 }
 
 /** Write every trace's scores; one trace's failure is counted, logged and skipped, never fatal to the batch. */
 export async function writeOnlineScores({
     verdicts,
     scores,
-    now,
+    date,
 }: {
     verdicts: OnlineVerdicts[];
     scores: ScoresApi;
-    now: Date;
+    /** The window start; keys the run copies' `datasetRunId`. */
+    date: Date;
 }): Promise<WriteResult> {
-    let scoresWritten = 0;
+    const written: OnlineVerdicts[] = [];
     let failedToWrite = 0;
     for (const v of verdicts) {
         try {
-            for (const request of orderedRequests(pendingScores(v), now)) await scores.create(request);
-            scoresWritten++;
+            for (const request of orderedRequests(pendingScores(v), date)) await scores.create(request);
+            written.push(v);
         } catch (err) {
             failedToWrite++;
             log.error(`${v.traceId}: score write failed: ${err}`);
         }
     }
-    return { scoresWritten, failedToWrite };
+    return { scoresWritten: written.length, failedToWrite, written };
+}
+
+export class AllScoreWritesFailedError extends Error {
+    constructor(readonly traces: number) {
+        super(
+            `Every score write failed for all ${traces} judged traces; checkpoint not written so the window is retried`,
+        );
+        this.name = 'AllScoreWritesFailedError';
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +375,13 @@ export interface CoverageCounters {
     sampled: number;
     judged: number;
     failedToJudge: number;
+    /** Traces whose scores reached Langfuse; the rollup's n counts only these. */
+    scoresWritten: number;
+    failedToWrite: number;
 }
+
+/** What the caller knows before the writes; `finishOnlineRun()` fills in the write counters. */
+export type JudgeCounters = Omit<CoverageCounters, 'scoresWritten' | 'failedToWrite'>;
 
 export interface Rollup {
     date: string;
@@ -377,7 +403,7 @@ function passRates(passes: Record<string, number>, n: Record<string, number>): R
     return Object.fromEntries(ONLINE_SCORE_NAMES.map((name) => [name, n[name] > 0 ? passes[name] / n[name] : null]));
 }
 
-/** One run's batch as a rollup; pure, from the verdicts that were judged this run. */
+/** One run's batch as a rollup; pure, from the verdicts whose scores were WRITTEN this run. `date` is the window start. */
 export function computeRollup({
     date,
     verdicts,
@@ -433,13 +459,18 @@ const sumCoverage = (a: CoverageCounters, b: CoverageCounters): CoverageCounters
     sampled: a.sampled + b.sampled,
     judged: a.judged + b.judged,
     failedToJudge: a.failedToJudge + b.failedToJudge,
+    scoresWritten: a.scoresWritten + b.scoresWritten,
+    failedToWrite: a.failedToWrite + b.failedToWrite,
 });
 
 /**
  * Several judge runs on one UTC day share one item, so counts are summed and
  * the rates recomputed; `sampleRate` and `maxItems` are the latest run's. An
  * existing item that is not a rollup (hand-edited, older shape) is replaced,
- * with a warning, rather than trusted.
+ * with a warning, rather than trusted. A retry over the SAME window (after a
+ * failed rollup or failed writes) sums its `tracesInWindow`, `completedTraces`
+ * and `sampled` a second time; `n` and `passes` stay exact because the retry
+ * only writes traces the pre-filter did not skip.
  */
 export function mergeRollup(existing: unknown, fresh: Rollup): Rollup {
     if (existing === null || existing === undefined) return fresh;
@@ -535,43 +566,54 @@ export interface FinishOnlineRunOptions {
     checkpoints: CheckpointStore;
     /** From `selectTraces()`; null under a window override or an empty window, and then nothing is written. */
     checkpoint: Checkpoint | null;
-    now: Date;
+    /** The window start: keys the run copies and the rollup item on the day the traffic is from. */
+    date: Date;
     sampleRate: number;
     maxItems: number;
-    coverage: CoverageCounters;
+    coverage: JudgeCounters;
 }
 
-export interface FinishOnlineRunResult extends WriteResult {
+export interface FinishOnlineRunResult extends Omit<WriteResult, 'written'> {
     rollupItemId: string | null;
-    /** Non-null when the rollup failed; the caller fails the run with it. */
-    rollupError: unknown;
+    /** Non-null when every write failed or the rollup failed; the caller fails the run with it. */
+    error: unknown;
     checkpointWritten: boolean;
 }
 
 /**
  * Scores first, rollup second, checkpoint last. The checkpoint moves only when
- * the rollup succeeded: a failed rollup leaves the window to be retried, which
- * is safe because every score id dedups and `skipAlreadyJudged()` spends no
- * LLM calls on the traces already written. A failed score write for ONE trace
- * does not hold the checkpoint back: it is one sampled item of many, counted
- * in `failedToWrite`, and holding the whole window for it would re-sample and
- * re-judge the rest of the window for nothing.
+ * the rollup succeeded and at least one trace was written: a batch whose
+ * writes ALL failed (Langfuse down, subject rejected) must not look like
+ * success, or the window and its LLM spend are silently lost. Either failure
+ * leaves the window to be retried, which is safe because every score id
+ * dedups and `skipAlreadyJudged()` spends no LLM calls on the traces already
+ * written. A failed score write for SOME traces does not hold the checkpoint
+ * back: each is one sampled item of many, counted in `failedToWrite` and in
+ * the rollup's coverage, and holding the whole window for it would re-sample
+ * and re-judge the rest of the window for nothing. The rollup is skipped when
+ * the run sampled and judged nothing (an empty window has nothing to record).
  */
 export async function finishOnlineRun(opts: FinishOnlineRunOptions): Promise<FinishOnlineRunResult> {
-    const { verdicts, scores, rollupApi, checkpoints, checkpoint, now, sampleRate, maxItems, coverage } = opts;
-    const written = await writeOnlineScores({ verdicts, scores, now });
+    const { verdicts, scores, rollupApi, checkpoints, checkpoint, date, sampleRate, maxItems } = opts;
+    const { written, scoresWritten, failedToWrite } = await writeOnlineScores({ verdicts, scores, date });
+    const coverage: CoverageCounters = { ...opts.coverage, scoresWritten, failedToWrite };
 
     let rollupId: string | null = null;
-    let rollupError: unknown = null;
-    try {
-        const rollup = computeRollup({ date: now, verdicts, sampleRate, maxItems, coverage });
-        rollupId = (await upsertDailyRollup({ api: rollupApi, rollup })).id;
-    } catch (err) {
-        rollupError = err;
-        log.error(`Daily rollup failed, checkpoint not written so the window is retried: ${err}`);
+    let error: unknown = null;
+    if (verdicts.length > 0 && scoresWritten === 0) {
+        error = new AllScoreWritesFailedError(verdicts.length);
+        log.error(String(error));
+    } else if (coverage.sampled > 0 || coverage.judged > 0) {
+        try {
+            const rollup = computeRollup({ date, verdicts: written, sampleRate, maxItems, coverage });
+            rollupId = (await upsertDailyRollup({ api: rollupApi, rollup })).id;
+        } catch (err) {
+            error = err;
+            log.error(`Daily rollup failed, checkpoint not written so the window is retried: ${err}`);
+        }
     }
 
-    const checkpointWritten = checkpoint !== null && rollupError === null;
+    const checkpointWritten = checkpoint !== null && error === null;
     if (checkpointWritten && checkpoint) await checkpoints.write(checkpoint);
-    return { ...written, rollupItemId: rollupId, rollupError, checkpointWritten };
+    return { scoresWritten, failedToWrite, rollupItemId: rollupId, error, checkpointWritten };
 }
