@@ -36,15 +36,24 @@ Project: the Langfuse project the judge writes to. UI path: project > **Alerts**
 | **Filters**     | score name `=` `agent_judge`. Add nothing else at first. If the filter UI offers a score `source` column, do NOT restrict it: the judge writes with `source: API` (#270). Do not filter on Boolean value, that would collapse the average to 1 or 0. |
 
 Note on double counting: #270 writes each verdict twice, once attached to the
-trace (timestamp pinned to the trace's own timestamp) and once to the invented
-dataset run `apify-ai-online-YYYY-MM-DD` (timestamp is the write time). Both
+trace and once to the invented dataset run `apify-ai-online-YYYY-MM-DD`. Both
 copies carry the same value, so the pass rate is unchanged; only the count is
-doubled. If the alert UI can distinguish trace-attached from run-attached
-scores, prefer the run-attached copy: its write-time timestamp keeps a whole
-daily batch inside one window, while the trace-pinned copy of a 24 h window is
-spread across the previous day and partly ages out of a 1-day lookback. Verify
-in the UI which columns the `Scores (boolean)` filter exposes; this is the one
-part of the configuration the docs do not spell out.
+doubled. Neither copy is pinned to the trace's own time: `CreateScoreRequest`
+has no timestamp field and the SDK's ingestion path stamps its own, so BOTH
+carry the write time, and a whole daily batch lands within a minute or two of
+itself whichever copy the alert counts. Timing is therefore not a reason to
+prefer either. If the alert UI can distinguish trace-attached from
+run-attached scores, still prefer the run-attached copy, for retention: the
+trace copy dies with its trace in the 30-day sweep while the run copy survives
+it, so older windows stay readable. Verify in the UI which columns the
+`Scores (boolean)` filter exposes; this is the one part of the configuration
+the docs do not spell out.
+
+Note on day labels: run ids and rollup items are keyed on the UTC date of the
+WINDOW START, not of the write, so the run copy for D-1 is written at about
+06:0x on D (the 06:00 run's window is `[D-1 ~05:27, D ~05:27)`). The alert
+filters on score name over a rolling window and never on the run id, so this
+matters only when someone goes looking for a given day's batch by name.
 
 ### 2. Alert conditions
 
@@ -77,7 +86,7 @@ editor offers one, hourly is enough: the data changes once a day.
 | **No-data handling** | `Notify after sustained NO_DATA`, set the delay to 6 h (or the nearest offered value; the docs list no values). This is the "silently dead Actor" case: the judge did not run, or ran and sampled nothing, so no `agent_judge` score landed in the 1-day window. The default `Treat missing data as 0` would also fire, but as an `ALERT` reading "pass rate 0", which is a lie about the agent; `NO_DATA` names the actual problem. The 6 h delay keeps a slow or late run (the schedule allows 2 h, and the platform may delay a tick) from paging; a run that is 6 h late is a dead run. `Show severity NO_DATA` records but never notifies, so it does not satisfy the issue. See the flicker note below before changing either setting. |
 | **Renotify**         | `Off`. One Slack message per severity transition (breach and recovery) is enough for a daily signal; repeated pings would be noise while the same day's sample stays below the line.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-Daily NO_DATA flicker: the data arrives once a day, so a 1-day window empties out every morning. The trace-pinned copies of yesterday's batch (timestamps up to 05:27 UTC) have all aged out of the window by about 05:27, and the run-attached copies (written at roughly 06:0x) leave at about 06:0x the next day, minutes before the next run writes new ones. Every day there is a short NO_DATA gap of minutes to at most about an hour if the run is slow. That gap is why the sustained delay must stay well above it (do not go below roughly 2 h) and why `Treat missing data as 0` is wrong here: it would fire an `ALERT` every morning.
+Daily NO_DATA flicker: the data arrives once a day, so a 1-day window empties out every morning. Both copies carry the write time (see the note above), so the whole batch for D-1 enters the window at about 06:0x on D and the whole batch leaves it at about 06:0x on D+1, minutes before the next run writes new verdicts. Every day there is a short NO_DATA gap of minutes, or at most about an hour if the run is slow. That gap is why the sustained delay must stay well above it (do not go below roughly 2 h) and why `Treat missing data as 0` is wrong here: it would fire an `ALERT` every morning.
 
 No-data has a backstop outside Langfuse, documented in
 `../schedule/README.md`: the Apify run-status alert (`FAILED`, `TIMED-OUT`,

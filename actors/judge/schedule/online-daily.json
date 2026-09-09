@@ -14,7 +14,7 @@
             "type": "RUN_ACTOR",
             "actorId": "<ACTOR_ID of eval-judge, see schedule/README.md>",
             "runInput": {
-                "body": "{\"mode\":\"online\",\"sampleRate\":0.2,\"maxItems\":100,\"judgeModel\":\"deepseek/deepseek-v4-flash\",\"promptLabel\":\"production\",\"concurrency\":4}",
+                "body": "{\"mode\":\"online\",\"environment\":\"prod\",\"sampleRate\":0.2,\"maxItems\":100,\"judgeModel\":\"deepseek/deepseek-v4-flash\",\"promptLabel\":\"production\",\"concurrency\":4}",
                 "contentType": "application/json; charset=utf-8"
             },
             "runOptions": {

@@ -625,15 +625,6 @@ judged and written, the rollup gains one run, the checkpoint moves. Same
 window after a prompt, impl or model bump: everything is judged again and the
 new scores land beside the old ones under new ids.
 
-## v1 scope notes
-
-- Judges by dataset-run id only; traceIds/filter inputs are planned.
-- Judges from the span's conversation JSON; fetching the full session log via
-  the span's `fullLogUrl` pointer is future work.
-- The halo-audit mode (isolated per-dimension calls with a disagreement
-  threshold) from the design record is not built yet.
-- Deploy: `scripts/deploy.sh judge` from the repo root (monorepo build).
-
 ## Schedule and alerting (online mode)
 
 [ai-team#271](https://github.com/apify/ai-team/issues/271). Neither artifact is
@@ -652,3 +643,12 @@ neither exists in Apify or Langfuse yet.
   Langfuse automation. Thresholds are loose on purpose until a baseline exists.
   The planned second alert on `agent_judge_argumentCorrectness` is described
   there too.
+
+## v1 scope notes
+
+- Judges by dataset-run id only; traceIds/filter inputs are planned.
+- Judges from the span's conversation JSON; fetching the full session log via
+  the span's `fullLogUrl` pointer is future work.
+- The halo-audit mode (isolated per-dimension calls with a disagreement
+  threshold) from the design record is not built yet.
+- Deploy: `scripts/deploy.sh judge` from the repo root (monorepo build).
