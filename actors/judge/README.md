@@ -504,8 +504,8 @@ rubric change stays visible. The id builder is pure and unit-tested.
 **Two copies.** The trace copy (`traceId` subject) is what the trace view and
 score tables show; it is deleted with the trace by the 30-day retention sweep.
 The archival copy is the same score with `datasetRunId: 'apify-ai-online-YYYY-MM-DD'`
-(UTC date of the write) as its only subject, no `traceId`, no dataset, no
-items: Langfuse requires exactly one subject per score and does not check that
+as its only subject, no `traceId`, no dataset, no items (the date is the
+window's, see "Which day" below): Langfuse requires exactly one subject per score and does not check that
 the run exists, so the copy survives the sweep, reads back as an experiment
 subject and is aggregated by the metrics API. Its id carries the suffix
 `-run`; with the trace copy's id it would be deduplicated away. Both copies
@@ -520,10 +520,29 @@ not set: `CreateScoreRequest` accepts `API` (the default) or `ANNOTATION`, and
 **Timestamp caveat.** `CreateScoreRequest` has no timestamp field, and the
 SDK's batched ingestion path (`langfuse.score.create`) stamps the event with
 `new Date()` itself, so neither copy can be pinned to the trace's own time:
-both carry the write time. Langfuse deduplicates scores on id plus name plus
-the score's calendar date, so a same-day re-write is a no-op at the server as
-well; a re-write on a later day would create a second score, and only the
-pre-filter below prevents it.
+both carry the write time. Langfuse's scores table is a ReplacingMergeTree
+ordered by `(project, toDate(timestamp), name, id)`, so a same-day write with
+the same id REPLACES the existing row: idempotent when the content is the
+same, and under `force` it overwrites the verdict in place rather than adding
+one. A write on a later UTC day with the same id is a second row. The
+pre-filter below is what prevents that; the one path it does not cover is a
+trace whose writes died halfway and is retried after UTC midnight: that trace
+then has two rows per criterion (one per day), and its run copies land under
+the window's run id either way, because the run id is keyed on the window,
+not on the write time. Rare, partial-write path only.
+
+**Which day.** Run ids (`apify-ai-online-YYYY-MM-DD`) and rollup items
+(`rollup-YYYY-MM-DD`) are keyed on the UTC date of the WINDOW START, not of
+the write, so a backfill of last week (`windowStart`/`windowEnd` overrides)
+lands on last week's days and does not inflate today's counters. For the
+checkpoint-driven daily run this shifts the label by one day relative to the
+write: a run at about 06:00 UTC on day D has the window
+`[D-1 ~05:27, D 05:27)`, so its run copies and rollup are keyed `D-1` and are
+written at about 06:0x on day D. A monitor (#271) that expects "the run copy
+for today written at ~06:0x" must read it as "the run copy for D-1 written at
+~06:0x on D". The window start, not `now`, was chosen because the label should
+name the traffic being judged, and a backfill that lands on today would make
+today's pass rate a mix of two weeks.
 
 **Idempotency.** Before judging, the sampled trace ids are checked against
 `GET /api/public/v3/scores` (`name=agent_judge`, `fields=details,subject`, in
@@ -531,37 +550,50 @@ chunks of 50 trace ids): a trace whose holistic score has the same
 `promptVersion`, `judgeImplVersion` and `judgeModel` in its metadata is
 skipped and counted in `scoresSkipped`, so a re-run over the same window
 spends nothing on the LLM and writes nothing. `force: true` judges and writes
-everything anyway (same-day repeats still dedup by id). The holistic trace copy
-is written LAST for each trace: a trace whose writes died halfway carries no
-marker, so the next run redoes it, and the id dedup makes the repeats harmless.
+everything anyway (a same-day repeat replaces the rows in place, see the
+timestamp caveat). The holistic trace copy is written LAST for each trace: a
+trace whose writes died halfway carries no marker, so the next run redoes it,
+and on the same day the ids replace the rows already there.
 
-**Daily rollup.** One dataset item per UTC day, `rollup-YYYY-MM-DD` in the
-dataset `apify-ai-online-rollups` (created on first use via `datasets.get`
+**Daily rollup.** One dataset item per UTC day of the window start,
+`rollup-YYYY-MM-DD` in the dataset `apify-ai-online-rollups` (created on first use via `datasets.get`
 then `datasets.create` on 404; `datasets.create` is not documented as
 idempotent by name, so it is never called blindly). Dataset items upsert on
 their id (documented in `CreateDatasetItemRequest`). `input` is
 `{date, sampleRate, maxItems}`; `metadata` is the rollup: `passes` and `n` per
-score name (omitted criteria are not counted), `passRate` (`passes / n`, null
-when n is 0; the same number `avg` gives over the day's scores), the coverage
-counters `{tracesInWindow, completedTraces, sampled, judged, failedToJudge}`
-and `runs`. Several runs on one day merge: the existing item is read
-(`datasetItems.get`, 404 means none), counts and coverage are summed and the
-rates recomputed; an existing item that is not a rollup is replaced with a
-warning. The arithmetic (`computeRollup`, `mergeRollup`) is pure and tested.
+score name, counted over the traces whose scores were actually WRITTEN
+(omitted criteria are not counted), `passRate` (`passes / n`, null when n is 0;
+the same number `avg` gives over the day's scores), the coverage counters
+`{tracesInWindow, completedTraces, sampled, judged, failedToJudge,
+scoresWritten, failedToWrite}` and `runs`. `judged` minus `scoresWritten` is
+the number of verdicts that never reached Langfuse. Several runs on one day
+merge: the existing item is read (`datasetItems.get`, 404 means none), counts
+and coverage are summed and the rates recomputed; an existing item that is not
+a rollup is replaced with a warning. A run that sampled and judged nothing
+(empty window, or no completed traces) writes no rollup, so `runs` counts only
+runs that had work. A retry over the SAME window (after a failed rollup or an
+all-failed batch) sums `tracesInWindow`, `completedTraces` and `sampled` a
+second time; `n` and `passes` stay exact because the retry writes only traces
+the pre-filter did not skip. The arithmetic (`computeRollup`, `mergeRollup`)
+is pure and tested.
 Risk: datasets and dataset items live in Postgres, not in the events store, so
 they are expected to work in `events_only` mode where the dataset-RUN lookups
 are refused; this is not verified against the live instance.
 
 **Ordering and failure.** `finishOnlineRun()`: scores, then rollup, then
-checkpoint. A failed score write for one trace is logged, counted in
-`failedToWrite` and does not stop the batch or hold the checkpoint back (it is
-one sampled item of many; holding the window would re-sample and re-judge the
-rest for nothing). A failed rollup is logged, the checkpoint is NOT written and
-the run exits non-zero (`Actor.fail`), so the schedule shows a failed run and
-the window is retried; the retry is safe because of the pre-filter and the id
-dedup. Note that the retry's rollup covers only the traces judged in the
-retry: the scores are the source of truth, the rollup a convenience for
-alerting.
+checkpoint. A failed score write for SOME traces is logged, counted in
+`failedToWrite` (OUTPUT and rollup coverage) and does not stop the batch or
+hold the checkpoint back: each is one sampled item of many, and holding the
+window would re-sample and re-judge the rest for nothing; the rollup counts
+only the traces that were written. A batch whose writes ALL failed (Langfuse
+down, subject rejected) is a failure, not a success: no rollup, the checkpoint
+is NOT written and the run exits non-zero (`AllScoreWritesFailedError` via
+`Actor.fail`), otherwise the window and its LLM spend would be lost silently.
+A failed rollup is handled the same way (logged, no checkpoint, non-zero
+exit), so the schedule shows a failed run and the window is retried; the retry
+is safe because of the pre-filter and the id replacement. Note that the
+retry's rollup covers only the traces written in the retry: the scores are the
+source of truth, the rollup a convenience for alerting.
 
 **What a re-run does.** Same window, same versions: selection samples again,
 the pre-filter drops every already-judged trace, new picks (if any) are

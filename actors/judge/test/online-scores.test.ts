@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { JUDGE_IMPL_VERSION } from '../src/core.js';
 import type { OnlineVerdicts } from '../src/online-judge.js';
 import {
+    AllScoreWritesFailedError,
     computeRollup,
     type CreateDatasetItemRequest,
     type CreateScoreRequest,
@@ -224,6 +225,11 @@ describe('scoreRequests', () => {
         expect(run).not.toHaveProperty('source');
     });
 
+    it('keys the run copy on the date given (the window start), not on today', () => {
+        const backfill = scoreRequests(pending, new Date('2026-09-01T05:27:00.000Z')).run;
+        expect(backfill.datasetRunId).toBe('apify-ai-online-2026-09-01');
+    });
+
     it('does not add evidence when the score has none', () => {
         const noEvidence = { ...pending, evidence: undefined };
         expect(scoreRequests(noEvidence, NOW).trace.metadata).toEqual(pending.metadata);
@@ -250,9 +256,10 @@ describe('writeOnlineScores', () => {
     it('writes two copies per scored criterion and none for omitted ones', async () => {
         const { api, requests } = fakeScoresApi();
         const verdicts = [verdictsFor('t1', { agent_judge_errorRecovery: 'omitted' }), verdictsFor('t2')];
-        const result = await writeOnlineScores({ verdicts, scores: api, now: NOW });
+        const result = await writeOnlineScores({ verdicts, scores: api, date: NOW });
 
-        expect(result).toEqual({ scoresWritten: 2, failedToWrite: 0 });
+        expect(result).toMatchObject({ scoresWritten: 2, failedToWrite: 0 });
+        expect(result.written).toEqual(verdicts);
         expect(requests.length).toBe((ONLINE_SCORE_NAMES.length - 1) * 2 + ONLINE_SCORE_NAMES.length * 2);
         expect(requests.filter((r) => r.name === 'agent_judge_errorRecovery').map((r) => r.traceId)).toEqual([
             't2',
@@ -266,16 +273,17 @@ describe('writeOnlineScores', () => {
         const result = await writeOnlineScores({
             verdicts: [verdictsFor('bad'), verdictsFor('good')],
             scores: api,
-            now: NOW,
+            date: NOW,
         });
-        expect(result).toEqual({ scoresWritten: 1, failedToWrite: 1 });
+        expect(result).toMatchObject({ scoresWritten: 1, failedToWrite: 1 });
+        expect(result.written.map((v) => v.traceId)).toEqual(['good']);
         expect(requests.every((r) => r.id?.startsWith('good-'))).toBe(true);
     });
 
     it('a trace whose writes die halfway has no holistic trace copy, so the pre-filter will retry it', async () => {
         let count = 0;
         const { api, requests } = fakeScoresApi(() => ++count === 5);
-        await writeOnlineScores({ verdicts: [verdictsFor('t1')], scores: api, now: NOW });
+        await writeOnlineScores({ verdicts: [verdictsFor('t1')], scores: api, date: NOW });
         expect(requests.some((r) => r.name === HOLISTIC_SCORE_NAME && r.traceId === 't1')).toBe(false);
     });
 });
@@ -298,6 +306,22 @@ describe('idempotency', () => {
             { name: HOLISTIC_SCORE_NAME, traceId: null, metadata: {} },
         ];
         expect([...judgedUnderVersion(scores, version)]).toEqual(['same']);
+    });
+
+    it('round trip: the trace copy the writer produces is what the reader recognises', () => {
+        const [holistic, criterion] = pendingScores(verdictsFor('rt'));
+        const asRead = (r: CreateScoreRequest): ExistingOnlineScore => ({
+            name: r.name,
+            traceId: r.traceId ?? null,
+            metadata: r.metadata,
+        });
+        expect(holistic.name).toBe(HOLISTIC_SCORE_NAME);
+        expect(judgedUnderVersion([asRead(scoreRequests(holistic, NOW).trace)], version).has('rt')).toBe(true);
+        // The run copy has no trace subject and a criterion is not the marker: neither counts.
+        expect(judgedUnderVersion([asRead(scoreRequests(holistic, NOW).run)], version).size).toBe(0);
+        expect(judgedUnderVersion([asRead(scoreRequests(criterion, NOW).trace)], version).size).toBe(0);
+        const bumped = { ...version, promptVersion: version.promptVersion + 1 };
+        expect(judgedUnderVersion([asRead(scoreRequests(holistic, NOW).trace)], bumped).size).toBe(0);
     });
 
     it('promptVersion matches across number and string metadata', () => {
@@ -384,7 +408,8 @@ describe('langfuseOnlineScoreReader', () => {
     });
 });
 
-const coverage = { tracesInWindow: 40, completedTraces: 30, sampled: 6, judged: 4, failedToJudge: 2 };
+const judgeCoverage = { tracesInWindow: 40, completedTraces: 30, sampled: 6, judged: 4, failedToJudge: 2 };
+const coverage = { ...judgeCoverage, scoresWritten: 4, failedToWrite: 0 };
 
 describe('computeRollup', () => {
     it('pass rate per score name, omitted criteria excluded from n', () => {
@@ -454,6 +479,8 @@ describe('mergeRollup', () => {
             sampled: 12,
             judged: 8,
             failedToJudge: 4,
+            scoresWritten: 8,
+            failedToWrite: 0,
         });
         expect(merged.sampleRate).toBe(0.5);
         expect(merged.maxItems).toBe(10);
@@ -518,7 +545,7 @@ describe('finishOnlineRun', () => {
         runId: 'r1',
         writtenAt: NOW.toISOString(),
     };
-    const base = { now: NOW, sampleRate: 0.2, maxItems: 100, coverage, checkpoint };
+    const base = { date: NOW, sampleRate: 0.2, maxItems: 100, coverage: judgeCoverage, checkpoint };
 
     it('writes scores, then the rollup, then the checkpoint', async () => {
         const order: string[] = [];
@@ -547,8 +574,11 @@ describe('finishOnlineRun', () => {
             scoresWritten: 1,
             failedToWrite: 0,
             rollupItemId: 'rollup-2026-09-09',
-            rollupError: null,
+            error: null,
             checkpointWritten: true,
+        });
+        expect(rollupApi.items[0].metadata).toMatchObject({
+            coverage: { ...judgeCoverage, scoresWritten: 1, failedToWrite: 0 },
         });
         expect(writes).toEqual([checkpoint]);
         expect(order[order.length - 1]).toBe('checkpoint');
@@ -571,7 +601,7 @@ describe('finishOnlineRun', () => {
 
         expect(result.scoresWritten).toBe(1);
         expect(result.rollupItemId).toBeNull();
-        expect(String(result.rollupError)).toContain('langfuse down');
+        expect(String(result.error)).toContain('langfuse down');
         expect(result.checkpointWritten).toBe(false);
         expect(writes).toEqual([]);
     });
@@ -589,7 +619,54 @@ describe('finishOnlineRun', () => {
             checkpoints: store,
         });
 
-        expect(result).toMatchObject({ scoresWritten: 1, failedToWrite: 1, checkpointWritten: true });
+        expect(result).toMatchObject({ scoresWritten: 1, failedToWrite: 1, checkpointWritten: true, error: null });
+        expect(writes).toEqual([checkpoint]);
+        // Only the written trace is rolled up; the coverage shows the discrepancy.
+        const rollup = rollupApi.items[0].metadata as Rollup;
+        expect(rollup.n[HOLISTIC_SCORE_NAME]).toBe(1);
+        expect(rollup.coverage).toMatchObject({ judged: 4, scoresWritten: 1, failedToWrite: 1 });
+    });
+
+    it('a batch whose writes all fail is a failure: no rollup, no checkpoint, an error for Actor.fail', async () => {
+        const { api } = fakeScoresApi(() => true);
+        const rollupApi = fakeRollupApi();
+        const { store, writes } = memoryCheckpoints();
+
+        const result = await finishOnlineRun({
+            ...base,
+            verdicts: [verdictsFor('a'), verdictsFor('b')],
+            scores: api,
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        expect(result).toMatchObject({
+            scoresWritten: 0,
+            failedToWrite: 2,
+            rollupItemId: null,
+            checkpointWritten: false,
+        });
+        expect(result.error).toBeInstanceOf(AllScoreWritesFailedError);
+        expect(rollupApi.calls).toEqual([]);
+        expect(writes).toEqual([]);
+    });
+
+    it('skips the rollup when nothing was sampled or judged, but still moves the checkpoint', async () => {
+        const { api } = fakeScoresApi();
+        const rollupApi = fakeRollupApi();
+        const { store, writes } = memoryCheckpoints();
+
+        const result = await finishOnlineRun({
+            ...base,
+            coverage: { tracesInWindow: 3, completedTraces: 0, sampled: 0, judged: 0, failedToJudge: 0 },
+            verdicts: [],
+            scores: api,
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        expect(result).toMatchObject({ rollupItemId: null, error: null, checkpointWritten: true });
+        expect(rollupApi.calls).toEqual([]);
         expect(writes).toEqual([checkpoint]);
     });
 
@@ -609,7 +686,7 @@ describe('finishOnlineRun', () => {
 
         expect(result.checkpointWritten).toBe(false);
         expect(writes).toEqual([]);
-        // The rollup is still written: an empty batch records its coverage.
+        // Everything was skipped by the pre-filter (sampled > 0, judged 0): the rollup still records the coverage.
         expect(result.rollupItemId).toBe('rollup-2026-09-09');
     });
 });

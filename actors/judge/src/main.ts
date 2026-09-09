@@ -156,8 +156,10 @@ if (mode === 'online') {
 
     // 3. Judge, then 4. write both copies of every score, 5. roll the batch up
     // into the day's dataset item and 6. move the checkpoint, in that order;
-    // finishOnlineRun() documents why a rollup failure holds the checkpoint back
-    // and a single trace's write failure does not.
+    // finishOnlineRun() documents why a rollup failure or an all-failed batch
+    // holds the checkpoint back and a single trace's write failure does not.
+    // Run copies and the rollup are keyed on the window START day (the day the
+    // traffic is from), so a backfill lands on its own day.
     const { judged, failedToJudge, metadataMissing, verdicts } = await judgeOnline(toJudge, prompt);
     const finished = await finishOnlineRun({
         verdicts,
@@ -165,7 +167,7 @@ if (mode === 'online') {
         rollupApi: langfuse.api,
         checkpoints,
         checkpoint: selection.checkpoint,
-        now,
+        date: selection.window?.start ?? now,
         sampleRate,
         maxItems,
         coverage: {
@@ -209,8 +211,8 @@ if (mode === 'online') {
                 'The checkpoint was not moved; see OUTPUT.',
         );
     }
-    // A failed rollup exits non-zero so the schedule shows a failed run and the window is retried.
-    if (finished.rollupError !== null) await Actor.fail(`Daily rollup failed: ${finished.rollupError}`);
+    // A failed rollup or an all-failed batch exits non-zero so the schedule shows a failed run and the window is retried.
+    if (finished.error !== null) await Actor.fail(`Online run incomplete: ${finished.error}`);
     await Actor.exit();
 }
 // Type narrowing only: the datasetRun guard above already threw when it was missing.
