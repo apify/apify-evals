@@ -153,16 +153,22 @@ the checkpoint alone.
 key-value store under `ONLINE_CHECKPOINT` as
 `{upperBound, runId, writtenAt}` after selection succeeds, so the next run
 starts where this one stopped and a missed run backfills. A run that fails
-before selection completes does not move it. Setting `windowStart` or
+before selection completes does not move it, and neither does a run whose
+completion gate looks broken (see below). Setting `windowStart` or
 `windowEnd` skips the checkpoint entirely (neither read nor written), so a
-backfill or debugging run never rewinds production. #270 must move the write
-behind the score-write step, otherwise a process death during scoring loses
-the window's sample.
+backfill or debugging run never rewinds production. `selectTraces()` returns
+the record it would write as `checkpoint` (null when it wrote nothing); #270
+must stop writing it inside selection and write that record behind the
+score-write step, otherwise a process death during scoring loses the window's
+sample.
 
 **Selection.** Two paged queries against
 `GET /api/public/v2/observations` (the instance runs Langfuse v4 in
-`events_only` mode, so there is no trace API), each with `fromStartTime` /
-`toStartTime` set to the window and the same bounds repeated in `filter`:
+`events_only` mode, so there is no trace API). Both bounds of the window are
+always inside `filter`, because a `startTime` condition there REPLACES the
+`fromStartTime` / `toStartTime` query params rather than intersecting with
+them (live-verified: a `<`-only filter returned rows from two weeks before
+`fromStartTime`). The coverage query is
 
 ```json
 [
@@ -172,21 +178,50 @@ the window's sample.
 ]
 ```
 
-gives `tracesInWindow` (distinct trace ids). Appending
+and the selection query is
 
 ```json
-[{ "type": "string", "column": "name", "operator": "=", "value": "apify-ai.turn-complete" }]
+[
+    { "type": "datetime", "column": "startTime", "operator": ">=", "value": "<window.start>" },
+    { "type": "datetime", "column": "startTime", "operator": "<", "value": "<window.end>" },
+    { "type": "string", "column": "name", "operator": "=", "value": "apify-ai.turn-complete" }
+]
 ```
 
-gives `completedTraces`: traces carrying the completion signal. A trace
-without it is not finished and is never judged. The agent's
-`completed: 'true'` trace metadata is deliberately not part of the filter:
+The selection query carries no tag condition: `traceTags` matches PER
+OBSERVATION and the tag sits only on the root AGENT span, so tag AND
+completion-span name returns zero rows forever. The span name is unique to
+this service, which is the whole selectivity that is needed. The agent's
+`completed: 'true'` trace metadata is deliberately not in the filter either:
 it is set on every span of that name, so it adds no selectivity, and whether
 trace metadata is matchable on the observation `metadata` column is unproven.
-A window with traces but zero completed ones is logged as a warning: it means
-the gate broke (name or tag drift), not that nothing finished. The completed ids are
-Fisher-Yates shuffled, `ceil(sampleRate * n)` are taken, then the result is
-truncated to `maxItems`; shuffling first keeps a capped sample unbiased.
+
+The two counters are independent, not nested:
+
+- `tracesInWindow` is a coverage counter: distinct traces whose ROOT span
+  starts in the window. It can legitimately differ from `completedTraces` in
+  both directions, so a gap is not loss. A turn whose root started before the
+  window but completed inside it appears only in `completedTraces`; a turn
+  whose root started at the end of the window but completes after it appears
+  only in `tracesInWindow`.
+- `completedTraces` is the selection: traces whose completion span starts in
+  the window. The completion span's own start time is the selection key, and
+  the two id sets are deliberately NOT intersected, since intersecting them
+  would drop every turn of the first kind.
+
+A trace with no completion signal is not finished and is never judged. The
+completed ids are Fisher-Yates shuffled, `ceil(sampleRate * n)` are taken,
+then the result is truncated to `maxItems`; shuffling first keeps a capped
+sample unbiased.
+
+**Broken gate.** `tracesInWindow > 0` with `completedTraces == 0` is the
+signature of the trace contract not being deployed, or of the completion span
+name drifting, not of unfinished traffic. Selecting nothing is correct, but
+advancing the checkpoint over such a window would burn it silently and every
+run after it, so selection logs a warning AND returns `checkpoint: null`:
+nothing writes the checkpoint and the next run retries the same window. Both
+counters are in the run's OUTPUT, so the state is visible without reading the
+log.
 
 **Inputs.** `sampleRate` (default 0.2), `maxItems` (default 100: about a
 dollar of judge calls and well under the run timeout at concurrency 4 on a
@@ -195,6 +230,38 @@ busy day), `windowStart` / `windowEnd` (ISO 8601 overrides, see above).
 
 **OUTPUT.** `{mode, window, checkpointWritten, tracesInWindow, completedTraces,
 sampled, judged, failedToJudge, sampledTraceIds}`.
+
+### Verified live 2026-09-09
+
+Checked against `langfuse.apify.dev` (project "Apify AI Agent") on
+`GET /api/public/v2/observations`, read-only:
+
+- `arrayOptions traceTags any of [...]` matches per OBSERVATION, and the tag is
+  present only on the root AGENT span
+  (`metadata["attributes.langfuse.trace.tags"]`). Over 14 days the tag filter
+  never returned a non-root row.
+- Consequently a tag AND child-span-name filter returns 0 rows even when the
+  trace has both: on 2026-09-07, tag `user` gave 3 rows (all AGENT, 3 traces),
+  name `apify-ai_search-actors` gave 3 rows (all TOOL, 3 traces), and the two
+  together gave 0. The two id sets shared only 1 of 3 traces, which is also
+  why the sets are not intersected.
+- A `startTime` condition inside `filter` replaces `fromStartTime` /
+  `toStartTime` entirely; they are ignored, not intersected. The `datetime`
+  operators `>=`, `>`, `<`, `<=` behave as named with the expected
+  inclusive/exclusive semantics; `=` and `!=` are a 400.
+- `limit=1000` is the exact maximum (1001 is a 400), and `meta.cursor`
+  pagination works and is null on the last page.
+- `traceTags` is not a response field under any `fields` value; only `traceId`
+  is needed and it is in `core`.
+
+Still waiting on the trace contract deploy (`feat/trace-contract` in
+apify-ai-agent is unmerged): the `apify-ai` trace tag and the
+`apify-ai.turn-complete` span name both return 0 rows today, so the coverage
+query and the selection query cannot be exercised against real values yet,
+only their mechanism. Until then an online run reports
+`tracesInWindow: 0, completedTraces: 0` on production traffic, which is the
+empty-window case and not the broken-gate case, so the checkpoint advances
+normally.
 
 ## v1 scope notes
 
