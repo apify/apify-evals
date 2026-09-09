@@ -50,9 +50,11 @@
         "environment": {
             "title": "Langfuse environment (online)",
             "type": "string",
-            "description": "Only traces from this Langfuse environment are selected. The same service emits the same span names from dev, staging and prod into one project, so without this they would be scored as one population. apify-ai-agent sets it from its own environment setting: prod, staging or dev. Use \"staging\" to backfill staging traffic.",
+            "description": "Only traces from this Langfuse environment are selected. The same service emits the same span names from dev, staging and prod into one project, so without this they would be scored as one population. apify-ai-agent sets it from its own environment setting: prod, staging or dev. Use \"staging\" to backfill staging traffic. An enum, because an unknown value returns zero rows without an error and would silently advance the checkpoint.",
             "default": "prod",
-            "editor": "textfield"
+            "editor": "select",
+            "enum": ["prod", "staging", "dev"],
+            "enumTitles": ["prod", "staging", "dev"]
         },
         "judgeModel": {
             "title": "Judge model (OpenRouter id)",
