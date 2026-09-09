@@ -77,6 +77,49 @@ describe('toolSchemaHash (port of the agent algorithm)', () => {
     });
 });
 
+describe('toolSchemaHash on Mastra Tool objects (the agent-side defect)', () => {
+    /**
+     * What `createTool()` makes of an MCP tool: `inputSchema` is a JSON-schema
+     * wrapper whose payload is functions. apify-ai-agent hashes these objects,
+     * stableStringify drops the functions, and every tool collapses to the same
+     * schema-free shape. Pinned here so the production mismatch stays visible
+     * until the agent hashes the raw JSON schema (fix pending on the agent side).
+     */
+    const wrapped = (description: string, jsonSchema: unknown) => ({
+        id: 'x',
+        description,
+        inputSchema: {
+            '~standard': {
+                version: 1,
+                vendor: 'json-schema',
+                validate: () => ({ value: jsonSchema }),
+                jsonSchema: { input: () => jsonSchema, output: () => jsonSchema },
+            },
+        },
+        execute: async () => undefined,
+    });
+
+    it('does not depend on the schema content, so it cannot equal the raw-schema hash', () => {
+        const asAgent = {
+            'apify-ai_search-actors': wrapped(
+                'Search the Apify Store',
+                AGENT_TOOLSET['apify-ai_search-actors'].inputSchema,
+            ),
+            'apify-ai_call-actor': wrapped('', AGENT_TOOLSET['apify-ai_call-actor'].inputSchema),
+            'apify-ai_fetch-actor-details': wrapped(
+                'Fetch details',
+                AGENT_TOOLSET['apify-ai_fetch-actor-details'].inputSchema,
+            ),
+        };
+        expect(stableStringify(asAgent['apify-ai_call-actor'].inputSchema)).toBe(
+            '{"~standard":{"jsonSchema":{},"vendor":"json-schema","version":1}}',
+        );
+        expect(toolSchemaHash(asAgent)).not.toBe(AGENT_HASH);
+        const otherSchema = { ...asAgent, 'apify-ai_call-actor': wrapped('', { type: 'string' }) };
+        expect(toolSchemaHash(otherSchema)).toBe(toolSchemaHash(asAgent));
+    });
+});
+
 describe('toolSchemaSetFromMcp', () => {
     const mcpTools = [
         {
@@ -123,11 +166,13 @@ function turnWith(calls: TurnToolCall[], traceHash?: string): OnlineTurn {
         traceId: 't',
         prompt: 'p',
         priorMessages: [],
+        droppedPriorMessages: 0,
         steps: calls.length > 0 ? [{ index: 1, calls }] : [],
         finalText: '',
         hasToolError: false,
         generationIds: ['g1'],
         metadata: traceHash ? { toolSchemaHash: traceHash } : {},
+        metadataFound: Boolean(traceHash),
     };
 }
 
@@ -189,8 +234,13 @@ describe('checkArgumentCorrectness', () => {
         expect(result.validated[0].errors[0]).toContain("must have required property 'actor'");
     });
 
-    it('reports schemaMatch null when the trace carries no hash, and falls back to the bare tool name', () => {
-        const result = checkArgumentCorrectness(turnWith([call('search-actors', { query: 'x' })]), schemas);
-        expect(result).toMatchObject({ verdict: 'pass', schemaMatch: null });
+    it('reports schemaMatch null when the trace carries no hash, and accepts bare or namespaced tool names', () => {
+        const bare = checkArgumentCorrectness(turnWith([call('search-actors', { query: 'x' })]), schemas);
+        expect(bare).toMatchObject({ verdict: 'pass', schemaMatch: null });
+        const namespaced = checkArgumentCorrectness(
+            turnWith([call('apify-ai_search-actors', { query: 'x' })]),
+            schemas,
+        );
+        expect(namespaced.verdict).toBe('pass');
     });
 });

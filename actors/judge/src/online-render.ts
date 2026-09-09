@@ -62,7 +62,9 @@ export function renderTurnForJudge(turn: OnlineTurn, budget: number = PAYLOAD_CH
 
     if (turn.priorMessages.length > 0) {
         const prior = turn.priorMessages.map((m) => `[${m.role}] ${truncateHeadTail(m.text, budget)}`).join('\n');
-        sections.push(`## Earlier conversation (context only, not the subject of the verdict)\n${prior}`);
+        const dropped =
+            turn.droppedPriorMessages > 0 ? `(${turn.droppedPriorMessages} earlier messages not shown)\n` : '';
+        sections.push(`## Earlier conversation (context only, not the subject of the verdict)\n${dropped}${prior}`);
     }
 
     if (turn.steps.length === 0) {

@@ -37,6 +37,7 @@ const turn: OnlineTurn = {
     traceId: 't1',
     prompt: 'Find cheap flights',
     priorMessages: [{ role: 'user', text: 'hello' }],
+    droppedPriorMessages: 3,
     steps: [
         {
             index: 1,
@@ -64,6 +65,7 @@ const turn: OnlineTurn = {
     hasToolError: true,
     generationIds: ['g1', 'g2'],
     metadata: { outcome: 'completed' },
+    metadataFound: true,
 };
 
 describe('renderTurnForJudge', () => {
@@ -71,7 +73,8 @@ describe('renderTurnForJudge', () => {
 
     it('shows the prompt, the context, every call with arguments AND result, the answer and the outcome', () => {
         expect(text).toContain('## User request\nFind cheap flights');
-        expect(text).toContain('[user] hello');
+        expect(text).toContain('(3 earlier messages not shown)\n[user] hello');
+        expect(renderTurnForJudge({ ...turn, droppedPriorMessages: 0 })).not.toContain('not shown');
         expect(text).toContain('tool call: apify-ai_search-actors (span g1, call c1)');
         expect(text).toContain('arguments: {"query":"flights"}');
         expect(text).toContain('result: {"actors":["flights-scraper"]}');
