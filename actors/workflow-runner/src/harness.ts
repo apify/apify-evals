@@ -73,7 +73,7 @@ export interface SessionContext {
 
 /** One assistant turn or one tool result, with its arrival time, used to
  * rebuild the session as child observations (generations + tool spans). */
-type TimelineEvent =
+export type TimelineEvent =
     | {
           kind: 'assistant';
           t: number;
@@ -83,7 +83,7 @@ type TimelineEvent =
       }
     | { kind: 'tool_result'; t: number; toolUseId: string; content: string; isError: boolean };
 
-interface AdapterResult {
+export interface AdapterResult {
     output: string;
     conversation: ConversationEntry[];
     timeline: TimelineEvent[];
