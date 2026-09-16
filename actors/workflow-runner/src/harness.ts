@@ -21,6 +21,16 @@ import { propagateAttributes, startActiveObservation, startObservation } from '@
 import { trace } from '@opentelemetry/api';
 import { log } from 'apify';
 
+import {
+    capToolInput,
+    EXIT_GRACE_MS,
+    killProcessTree,
+    MAX_MCP_RESTARTS,
+    MAX_STDOUT_BYTES,
+    STDERR_CAP,
+    TEXT_BLOCK_CAP,
+    TOOL_RESULT_CAP,
+} from './adapters/shared.js';
 import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
 import {
     enrichFromApify,
@@ -96,15 +106,9 @@ export interface AdapterResult {
 
 export const DEFAULT_MAX_TURNS = 6;
 const OPENROUTER_PROXY_URL = 'https://openrouter.apify.actor/api';
-const MAX_STDOUT_BYTES = 10 * 1024 * 1024;
-const TEXT_BLOCK_CAP = 4000;
-const TOOL_INPUT_CAP = 2000;
-const TOOL_RESULT_CAP = 2000;
-const STDERR_CAP = 2000;
 /** Child tool observations carry more of the result than the judge-facing
  * conversation JSON: the trace is where a human reads what the Actor returned. */
 const CHILD_OUTPUT_CAP = 20_000;
-const EXIT_GRACE_MS = 1000;
 
 function readFileSafe(path: string): string | null {
     try {
@@ -112,13 +116,6 @@ function readFileSafe(path: string): string | null {
     } catch {
         return null;
     }
-}
-
-/** Keep tool inputs small on the span (spec D10): objects pass through when
- * compact, oversized ones become a truncated JSON string preview. */
-function capToolInput(input: unknown): unknown {
-    const json = JSON.stringify(input ?? null);
-    return json.length <= TOOL_INPUT_CAP ? input : json.slice(0, TOOL_INPUT_CAP);
 }
 
 interface ParsedSession {
@@ -170,7 +167,8 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
         if (ev.type === 'assistant') {
             const last = timeline[timeline.length - 1];
             const msgId = ev.message?.id ?? null;
-            let turn = last?.kind === 'assistant' && msgId && (last as { msgId?: string }).msgId === msgId ? last : null;
+            let turn =
+                last?.kind === 'assistant' && msgId && (last as { msgId?: string }).msgId === msgId ? last : null;
             if (!turn) {
                 turn = { kind: 'assistant', t, text: [], toolUses: [], usage: null };
                 (turn as { msgId?: string }).msgId = msgId;
@@ -227,7 +225,18 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
             numTurns = ev.num_turns ?? null;
         }
     }
-    return { conversation, timeline, mcpServers, mcpToolCount, finalResult, subtype, isError, usage, costUsd, numTurns };
+    return {
+        conversation,
+        timeline,
+        mcpServers,
+        mcpToolCount,
+        finalResult,
+        subtype,
+        isError,
+        usage,
+        costUsd,
+        numTurns,
+    };
 }
 
 /** The `system/init` event lists the MCP servers and every tool the agent has. */
@@ -327,8 +336,6 @@ function buildClaudeEnv(opts: {
     };
 }
 
-const MAX_MCP_RESTARTS = 1;
-
 /**
  * Claude Code sometimes reports the MCP server as connected while exposing
  * none of its tools; the agent then answers "I have no tools" and the
@@ -352,7 +359,10 @@ async function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<
     }
 }
 
-function runClaudeCodeOnce(ctx: SessionContext & { prompt: string }, abortOnMissingMcp: boolean): Promise<AdapterResult> {
+function runClaudeCodeOnce(
+    ctx: SessionContext & { prompt: string },
+    abortOnMissingMcp: boolean,
+): Promise<AdapterResult> {
     const { prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
@@ -417,17 +427,7 @@ function runClaudeCodeOnce(ctx: SessionContext & { prompt: string }, abortOnMiss
                   }, 1000)
                 : null;
 
-        const killTree = () => {
-            try {
-                process.kill(-(child.pid as number), 'SIGKILL');
-            } catch {
-                try {
-                    child.kill('SIGKILL');
-                } catch {
-                    /* already gone */
-                }
-            }
-        };
+        const killTree = () => killProcessTree(child);
         const killer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -451,8 +451,18 @@ function runClaudeCodeOnce(ctx: SessionContext & { prompt: string }, abortOnMiss
                 /* best effort */
             }
 
-            const { conversation, timeline, mcpServers, mcpToolCount, finalResult, subtype, isError, usage, costUsd, numTurns } =
-                parseSessionOutput(out, lineTimes);
+            const {
+                conversation,
+                timeline,
+                mcpServers,
+                mcpToolCount,
+                finalResult,
+                subtype,
+                isError,
+                usage,
+                costUsd,
+                numTurns,
+            } = parseSessionOutput(out, lineTimes);
 
             // Agent exhausted turns or hit our timeout: an eval result, not breakage.
             const ranOutOfTurns = subtype === 'error_max_turns';
@@ -550,17 +560,26 @@ async function collectEvidence(
     const calls: RawToolCall[] = [];
     const results: RawToolResult[] = [];
     for (const e of r.timeline) {
-        if (e.kind === 'assistant') for (const tu of e.toolUses) calls.push({ id: tu.id, name: tu.name, input: tu.input });
+        if (e.kind === 'assistant')
+            for (const tu of e.toolUses) calls.push({ id: tu.id, name: tu.name, input: tu.input });
         else results.push({ toolUseId: e.toolUseId, content: e.content, isError: e.isError });
     }
     const extracted = extractFromTools(calls, results);
     const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead);
 
     let reference = null;
-    const refSpec = meta.reference as { actor?: string; input: unknown; maxSecs?: number; cacheKey?: string } | undefined;
+    const refSpec = meta.reference as
+        | { actor?: string; input: unknown; maxSecs?: number; cacheKey?: string }
+        | undefined;
     if (refSpec?.input !== undefined) {
         const actor = refSpec.actor ?? (meta.subject as { id?: string } | undefined)?.id ?? meta.actor;
-        if (actor) reference = await ctx.references.run({ actor, input: refSpec.input, maxSecs: refSpec.maxSecs, cacheKey: refSpec.cacheKey });
+        if (actor)
+            reference = await ctx.references.run({
+                actor,
+                input: refSpec.input,
+                maxSecs: refSpec.maxSecs,
+                cacheKey: refSpec.cacheKey,
+            });
     }
 
     const m = r.metrics as {
@@ -615,7 +634,11 @@ async function writeCheckScores(
             log.info(`check.${c.id} not applicable: ${c.comment}`);
             continue;
         }
-        await write(`check.${c.id}`, c.value, `${c.passed ? 'PASS' : 'FAIL'}${c.severity === 'warn' ? ' (warn)' : ''}: ${c.comment}`);
+        await write(
+            `check.${c.id}`,
+            c.value,
+            `${c.passed ? 'PASS' : 'FAIL'}${c.severity === 'warn' ? ' (warn)' : ''}: ${c.comment}`,
+        );
     }
     const gating = checks.filter((c) => c.applicable && c.severity === 'fail');
     const failed = gating.filter((c) => !c.passed);
@@ -705,7 +728,9 @@ function emitTimeline(
                 if (p.name === 'call-actor' || p.name === 'get-actor-run') {
                     const m = e.content.match(/"runId"\s*:\s*"([A-Za-z0-9]{17})"/);
                     if (m) links.apifyRunUrl = `https://console.apify.com/actors/runs/${m[1]}`;
-                    const d = e.content.match(/"datasets"\s*:\s*\{\s*"default"\s*:\s*\{\s*"id"\s*:\s*"([A-Za-z0-9]{17})"/);
+                    const d = e.content.match(
+                        /"datasets"\s*:\s*\{\s*"default"\s*:\s*\{\s*"id"\s*:\s*"([A-Za-z0-9]{17})"/,
+                    );
                     if (d) links.datasetUrl = `https://console.apify.com/storage/datasets/${d[1]}`;
                 }
                 p.obs.update({
@@ -753,90 +778,97 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     // the compare view and the run aggregates read.
     const rootSpanId = trace.getActiveSpan()?.spanContext().spanId ?? null;
 
-    const runInSpan = () => startActiveObservation(
-        'agent',
-        async (span) => {
-            const r = await adapter({ ...ctx, prompt });
-            emitTimeline(span, r.timeline, r.startedAt, prompt, harness.model);
+    const runInSpan = () =>
+        startActiveObservation(
+            'agent',
+            async (span) => {
+                const r = await adapter({ ...ctx, prompt });
+                emitTimeline(span, r.timeline, r.startedAt, prompt, harness.model);
 
-            const traceId = span.otelSpan.spanContext().traceId;
-            const logRef = await ctx.artifactStore.putLog(traceId, r.rawStdout);
+                const traceId = span.otelSpan.spanContext().traceId;
+                const logRef = await ctx.artifactStore.putLog(traceId, r.rawStdout);
 
-            // Evidence: what the agent actually did, from full tool results,
-            // enriched from the Apify API, frozen as an artifact. Checks run
-            // here so the judge (and any re-judge) reads results, not live data.
-            const evidence = await collectEvidence(ctx, meta, prompt, r);
-            const checks = runChecks((meta.checks ?? []) as DeterministicCheck[], evidence);
-            const infra = infraStatus(evidence);
-            const evidenceRef = await ctx.artifactStore
-                .putJson(`evidence-${traceId}`, { evidence, checks, infra })
-                .catch((err) => {
-                    log.warning(`evidence artifact failed: ${err}`);
-                    return null;
-                });
-            if (rootSpanId) {
-                await writeCheckScores(ctx, traceId, rootSpanId, checks, infra);
-            } else {
-                log.warning('no active experiment span; check scores not written');
-            }
+                // Evidence: what the agent actually did, from full tool results,
+                // enriched from the Apify API, frozen as an artifact. Checks run
+                // here so the judge (and any re-judge) reads results, not live data.
+                const evidence = await collectEvidence(ctx, meta, prompt, r);
+                const checks = runChecks((meta.checks ?? []) as DeterministicCheck[], evidence);
+                const infra = infraStatus(evidence);
+                const evidenceRef = await ctx.artifactStore
+                    .putJson(`evidence-${traceId}`, { evidence, checks, infra })
+                    .catch((err) => {
+                        log.warning(`evidence artifact failed: ${err}`);
+                        return null;
+                    });
+                if (rootSpanId) {
+                    await writeCheckScores(ctx, traceId, rootSpanId, checks, infra);
+                } else {
+                    log.warning('no active experiment span; check scores not written');
+                }
 
-            const tools = item.metadata?.tools;
-            let snapshotRef = null;
-            if (Array.isArray(tools) && tools.length > 0) {
-                snapshotRef = await ctx.snapshots.get(tools).catch((err) => {
-                    log.warning(`tool-schema snapshot failed (judge will mark schema-validity n/a): ${err}`);
-                    return null;
-                });
-            }
+                const tools = item.metadata?.tools;
+                let snapshotRef = null;
+                if (Array.isArray(tools) && tools.length > 0) {
+                    snapshotRef = await ctx.snapshots.get(tools).catch((err) => {
+                        log.warning(`tool-schema snapshot failed (judge will mark schema-validity n/a): ${err}`);
+                        return null;
+                    });
+                }
 
-            // finalResult first: the collapsed preview in the trace reads the answer.
-            const output: AgentSpanOutput = {
-                finalResult: r.output,
-                contractVersion: CONTRACT_VERSION,
-                conversation: r.conversation,
-            };
-            const metadata: AgentSpanMetadata = {
-                ...(r.metrics as object),
-                harness: harness.kind,
-                model: harness.model,
-                harnessBroke: r.harnessBroke,
-                fullLogUrl: logRef.url,
-                fullLogHash: logRef.hash,
-                ...(snapshotRef ? { toolSchemaSnapshotUrl: snapshotRef.url, toolSchemaHash: snapshotRef.hash } : {}),
-                // Item identity for the judge's per-actor scoreboard.
-                ...(item.id ? { itemId: String(item.id) } : {}),
-                ...(meta.title ? { itemTitle: String(meta.title) } : {}),
-                ...(meta.actor ? { itemActor: String(meta.actor) } : {}),
-                ...(meta.team ? { itemTeam: String(meta.team) } : {}),
-                ...(meta.skill ? { itemSkill: String(meta.skill) } : {}),
-                ...(meta.profile ? { itemProfile: String(meta.profile) } : {}),
-                ...(meta.owner ? { itemOwner: String(meta.owner) } : {}),
-                ...((meta.subject as { id?: string } | undefined)?.id ? { itemSubject: String((meta.subject as { id: string }).id) } : {}),
-                // Evidence pointers and the deterministic verdicts, for the judge.
-                ...(evidenceRef ? { evidenceUrl: evidenceRef.url, evidenceHash: evidenceRef.hash } : {}),
-                actorRuns: summarizeRuns(evidence),
-                actorRunsCostUsd: evidence.actorRuns.reduce((acc, run) => acc + (run.costUsd ?? 0), 0),
-                toolsUsed: [...new Set(evidence.toolCalls.map((c) => c.tool.replace(/^mcp__[^_]+__/, '')))],
-                checksPassed: checks.filter((c) => c.applicable && c.passed).length,
-                checksTotal: checks.filter((c) => c.applicable).length,
-                infraOk: infra.ok,
-                infraReasons: infra.reasons,
-            };
+                // finalResult first: the collapsed preview in the trace reads the answer.
+                const output: AgentSpanOutput = {
+                    finalResult: r.output,
+                    contractVersion: CONTRACT_VERSION,
+                    conversation: r.conversation,
+                };
+                const metadata: AgentSpanMetadata = {
+                    ...(r.metrics as object),
+                    harness: harness.kind,
+                    model: harness.model,
+                    harnessBroke: r.harnessBroke,
+                    fullLogUrl: logRef.url,
+                    fullLogHash: logRef.hash,
+                    ...(snapshotRef
+                        ? { toolSchemaSnapshotUrl: snapshotRef.url, toolSchemaHash: snapshotRef.hash }
+                        : {}),
+                    // Item identity for the judge's per-actor scoreboard.
+                    ...(item.id ? { itemId: String(item.id) } : {}),
+                    ...(meta.title ? { itemTitle: String(meta.title) } : {}),
+                    ...(meta.actor ? { itemActor: String(meta.actor) } : {}),
+                    ...(meta.team ? { itemTeam: String(meta.team) } : {}),
+                    ...(meta.skill ? { itemSkill: String(meta.skill) } : {}),
+                    ...(meta.profile ? { itemProfile: String(meta.profile) } : {}),
+                    ...(meta.owner ? { itemOwner: String(meta.owner) } : {}),
+                    ...((meta.subject as { id?: string } | undefined)?.id
+                        ? { itemSubject: String((meta.subject as { id: string }).id) }
+                        : {}),
+                    // Evidence pointers and the deterministic verdicts, for the judge.
+                    ...(evidenceRef ? { evidenceUrl: evidenceRef.url, evidenceHash: evidenceRef.hash } : {}),
+                    actorRuns: summarizeRuns(evidence),
+                    actorRunsCostUsd: evidence.actorRuns.reduce((acc, run) => acc + (run.costUsd ?? 0), 0),
+                    toolsUsed: [...new Set(evidence.toolCalls.map((c) => c.tool.replace(/^mcp__[^_]+__/, '')))],
+                    checksPassed: checks.filter((c) => c.applicable && c.passed).length,
+                    checksTotal: checks.filter((c) => c.applicable).length,
+                    infraOk: infra.ok,
+                    infraReasons: infra.reasons,
+                };
 
-            // Emit-side contract enforcement: an invalid span is a runner bug.
-            if (!validateAgentSpanOutput(output)) {
-                throw new Error(`contract violation (output): ${JSON.stringify(validateAgentSpanOutput.errors)}`);
-            }
-            if (!validateAgentSpanMetadata(metadata)) {
-                throw new Error(`contract violation (metadata): ${JSON.stringify(validateAgentSpanMetadata.errors)}`);
-            }
+                // Emit-side contract enforcement: an invalid span is a runner bug.
+                if (!validateAgentSpanOutput(output)) {
+                    throw new Error(`contract violation (output): ${JSON.stringify(validateAgentSpanOutput.errors)}`);
+                }
+                if (!validateAgentSpanMetadata(metadata)) {
+                    throw new Error(
+                        `contract violation (metadata): ${JSON.stringify(validateAgentSpanMetadata.errors)}`,
+                    );
+                }
 
-            span.update({ input: prompt, output, metadata });
-            if (r.harnessBroke) throw new Error(`Harness broke: ${r.stderr || 'no output'}`);
-            return { output: r.output };
-        },
-        { asType: 'agent' },
-    );
+                span.update({ input: prompt, output, metadata });
+                if (r.harnessBroke) throw new Error(`Harness broke: ${r.stderr || 'no output'}`);
+                return { output: r.output };
+            },
+            { asType: 'agent' },
+        );
 
     // Langfuse dashboards can group scores only by a fixed set of trace
     // attributes (tags group by the whole array, not per tag; a score's
