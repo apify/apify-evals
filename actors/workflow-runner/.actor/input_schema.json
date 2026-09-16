@@ -97,7 +97,7 @@
         "perItemTimeoutSecs": {
             "title": "Per-scenario timeout (seconds)",
             "type": "integer",
-            "description": "A session past this is killed; the scenario becomes inconclusive (infrastructure), not a failure.",
+            "description": "A session past this is killed; the scenario becomes inconclusive (infrastructure), not a failure. A scenario's own timeoutSecs overrides this.",
             "default": 300,
             "minimum": 30
         },
