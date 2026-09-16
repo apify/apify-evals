@@ -116,6 +116,7 @@ const { LangfuseClient } = await import('@langfuse/client');
 const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
+const { CODEX_PROVIDER } = await import('./adapters/codex.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
 const { postDigest } = await import('./notify.js');
@@ -151,7 +152,13 @@ const langfuse = new LangfuseClient();
 const artifactStore = await ArtifactStore.open(artifactStoreId);
 const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
 const references = new ReferenceRunner();
-const writeScore = async (score: { traceId: string; observationId: string; name: string; value: number; comment: string }) => {
+const writeScore = async (score: {
+    traceId: string;
+    observationId: string;
+    name: string;
+    value: number;
+    comment: string;
+}) => {
     await langfuse.api.scores.create({ ...score, dataType: 'NUMERIC' });
 };
 
@@ -231,13 +238,24 @@ if (!skipPreflight) {
     }
     if (useOpenRouterProxy) {
         try {
-            const res = await fetch(`${OPENROUTER_PROXY_URL}/v1/chat/completions`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${apifyToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: models[0], max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
-                signal: AbortSignal.timeout(20_000),
-            });
-            if (!res.ok) problems.push(`LLM proxy HTTP ${res.status} for model ${models[0]}: ${(await res.text()).slice(0, 200)}`);
+            const codex = baseHarness.kind === 'codex';
+            const res = await fetch(
+                codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
+                {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${apifyToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(
+                        codex
+                            ? { model: models[0], input: 'ping', max_output_tokens: 16 }
+                            : { model: models[0], max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] },
+                    ),
+                    signal: AbortSignal.timeout(20_000),
+                },
+            );
+            if (!res.ok)
+                problems.push(
+                    `LLM proxy HTTP ${res.status} for model ${models[0]}: ${(await res.text()).slice(0, 200)}`,
+                );
         } catch (err) {
             problems.push(`LLM proxy unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
         }
@@ -281,6 +299,7 @@ for (const model of models) {
     const harness = { ...baseHarness, model };
     const shortModel = model.replace(/^[^/]+\//, '');
     const nameParts = [datasetName, shortModel];
+    if (harness.kind !== 'claude-code') nameParts.push(harness.kind);
     if (!fullScope) nameParts.push(scope);
     if (safeRepeats > 1) nameParts.push(`×${safeRepeats}`);
     nameParts.push(stamp);
@@ -385,7 +404,9 @@ for (const model of models) {
                 judgeError = `judge run ${judgeRun.id} ended with ${judgeRun.status}`;
                 log.error(judgeError);
             } else {
-                const record = await Actor.apifyClient.keyValueStore(judgeRun.defaultKeyValueStoreId).getRecord('OUTPUT');
+                const record = await Actor.apifyClient
+                    .keyValueStore(judgeRun.defaultKeyValueStoreId)
+                    .getRecord('OUTPUT');
                 judgeOutput = (record?.value ?? null) as JudgeOutput | null;
             }
         } catch (err) {
@@ -490,7 +511,9 @@ if (input.notify ?? trigger === 'schedule') {
     for (const s of summaries) {
         if (!s.judge || !s.judgeDatasetId) continue;
         try {
-            const judgeItems = (await Actor.apifyClient.dataset(s.judgeDatasetId).listItems({ clean: true, limit: 1000 })).items as {
+            const judgeItems = (
+                await Actor.apifyClient.dataset(s.judgeDatasetId).listItems({ clean: true, limit: 1000 })
+            ).items as {
                 title?: string;
                 itemOwner?: string;
                 itemTeam?: string;
@@ -505,7 +528,11 @@ if (input.notify ?? trigger === 'schedule') {
             let previousPassRate: number | null = null;
             if (fullScope) {
                 try {
-                    const page = (await langfuse.api.scoresV3.getManyV3({ name: 'pass_rate', limit: 10, fields: 'subject' })) as unknown as {
+                    const page = (await langfuse.api.scoresV3.getManyV3({
+                        name: 'pass_rate',
+                        limit: 10,
+                        fields: 'subject',
+                    })) as unknown as {
                         data?: { value?: unknown; subject?: { id?: string } }[];
                     };
                     const prev = (page.data ?? []).find((sc) => sc.subject?.id && sc.subject.id !== s.datasetRunId);

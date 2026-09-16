@@ -15,7 +15,7 @@
         "model": {
             "title": "Model",
             "type": "string",
-            "description": "The model the agent runs on (OpenRouter id via the Apify proxy; no API key needed). Every model runs inside the Claude Code harness.",
+            "description": "The model the agent runs on (OpenRouter id via the Apify proxy; no API key needed). The harness override selects Claude Code (default) or Codex.",
             "editor": "select",
             "default": "anthropic/claude-haiku-4.5",
             "enum": [
@@ -159,7 +159,7 @@
         "harness": {
             "title": "Harness override (JSON)",
             "type": "object",
-            "description": "{kind, model, maxTurns}. kind picks the adapter (claude-code only for now).",
+            "description": "{kind, model, maxTurns}. kind selects claude-code (default) or codex. Example: {\"kind\":\"codex\",\"model\":\"openai/gpt-5-mini\",\"maxTurns\":12}. Codex uses MCP only, disables shell tools, and stops after maxTurns completed tool-call rounds; scenario metadata.maxTurns takes precedence.",
             "editor": "json",
             "nullable": true
         },
@@ -169,10 +169,7 @@
             "description": "Named key-value store for full agent logs, evidence snapshots and tool-schema snapshots. Leave empty to use the store from the Actor environment (ARTIFACT_STORE_ID).",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
-            "resourcePermissions": [
-                "READ",
-                "WRITE"
-            ],
+            "resourcePermissions": ["READ", "WRITE"],
             "nullable": true
         },
         "langfuseBaseUrl": {
@@ -199,7 +196,5 @@
             "nullable": true
         }
     },
-    "required": [
-        "datasetName"
-    ]
+    "required": ["datasetName"]
 }

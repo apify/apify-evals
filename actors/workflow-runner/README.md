@@ -10,16 +10,16 @@ whether a change they made actually helped.
 
 ### Where to look
 
-| Question | Open |
-| --- | --- |
-| How are my Actors doing? What should I fix first? | Your team dashboard: [Google](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw1c13000rtm077j1xite2) · [Socials](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw1fua000itx07nt2f5wz5) · [Video](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw1kln000utm07lh8bar1c) · [all teams](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw2qz1000xtm075ww703yr) |
-| Which scenarios passed in this run? Did my change help? | The results link in the Actor run's OUTPUT (the Langfuse compare view: one row per scenario, pass/fail columns, pick a baseline run to diff) |
-| Why did this scenario fail? | Click the row: the trace shows the flow as it happened, one `turn N` per model call (text, tool calls, tokens) and one `search-actors` / `call-actor` / `get-dataset-items` step per tool call with its arguments and result (errors in red), plus the judge's comment listing what went wrong with evidence |
+| Question                                                | Open                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| How are my Actors doing? What should I fix first?       | Your team dashboard: [Google](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw1c13000rtm077j1xite2) · [Socials](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw1fua000itx07nt2f5wz5) · [Video](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw1kln000utm07lh8bar1c) · [all teams](https://langfuse.apify.dev/project/cmshkde21000krg07shb46d8g/dashboards/cmtjw2qz1000xtm075ww703yr) |
+| Which scenarios passed in this run? Did my change help? | The results link in the Actor run's OUTPUT (the Langfuse compare view: one row per scenario, pass/fail columns, pick a baseline run to diff)                                                                                                                                                                                                                                                                                                                                  |
+| Why did this scenario fail?                             | Click the row: the trace shows the flow as it happened, one `turn N` per model call (text, tool calls, tokens) and one `search-actors` / `call-actor` / `get-dataset-items` step per tool call with its arguments and result (errors in red), plus the judge's comment listing what went wrong with evidence                                                                                                                                                                  |
 
 Three numbers, in this order:
 
 - **Verdict** (`judge.verdict`: `pass`, `fail`, `wrong-actor`, `inconclusive`): did the agent complete the scenario's task with real Actor data and pass every deterministic check? `wrong-actor` means it used an Actor other than the intended one (read from its tool calls). `inconclusive` means infrastructure failed, not the Actor. The numeric twin `judge.overall` (1/0) is what the dashboards average; its average is the pass rate, the OKR baseline per Actor per model.
-- **Found vs Works**: *Found* = discovery scenarios, where the agent had to pick your Actor in store search (checked deterministically by Actor name). *Works* = usage scenarios, where your Actor is pinned and the agent has to drive it. A Found failure belongs to store search and how the Actor presents itself; a Works failure belongs to the Actor.
+- **Found vs Works**: _Found_ = discovery scenarios, where the agent had to pick your Actor in store search (checked deterministically by Actor name). _Works_ = usage scenarios, where your Actor is pinned and the agent has to drive it. A Found failure belongs to store search and how the Actor presents itself; a Works failure belongs to the Actor.
 - **Fix area** (`judge.fixArea`): the one thing the judge thinks the team should change first, with a cited tool call. `input-schema`, `readme-docs`, `output-format`, `error-messages` are yours. `discoverability` is store search. `agent-or-model` means your Actor did its part.
 
 ### Check whether a change to your Actor helped
@@ -45,7 +45,7 @@ Keep prompts finishable in about two minutes: cap result counts, no whole-site c
 
 ### Reading the numbers honestly
 
-- Every model runs inside the Claude Code harness. "Per model" means "this model inside Claude Code".
+- Models run inside the selected harness, Claude Code by default or Codex. Compare the same model and harness; Codex run names include `codex`.
 - One run is a sample. Compare runs on the same model and judge; use repeats or the dashboard trend before acting.
 - The judge is a model. Its fix area is a hint with evidence, not a verdict.
 
@@ -54,12 +54,36 @@ Keep prompts finishable in about two minutes: cap result counts, no whole-site c
 ### What the Actor does
 
 1. Fetches the Langfuse dataset by name, filters by `metadata.category`, repeats items if asked.
-2. Runs one isolated headless Claude Code session per item, in parallel inside this Actor run (pool with `concurrency`, per-item timeout). Each session gets hosted `mcp.apify.com` narrowed by `?tools=` (spec D1) and Bash only when the item asks.
-3. Under the agent span, the session is replayed as child observations for humans: a generation per model turn (text, tool calls, token usage from Claude Code's per-message usage) and a tool observation per tool call (arguments, result up to 20 kB, ERROR level on tool errors), timed from stdout arrival. The agent span itself carries the judge-ready conversation JSON (spec D10) validated against `contract/`; full logs and tool-schema snapshots go to the named `eval-artifacts` key-value store with URL + sha256 pointers on the span. Traces are named after the scenario title and tagged `dataset:`, `model:`, `actor:`, `team:`, `skill:`. Because Langfuse dashboards can only group scores by a fixed set of trace attributes (and group `tags` by the whole array), the team-facing slices are also mapped onto them: trace `userId` = Actor (and `sessionId` = Actor, so the Sessions page lists every trace of one Actor), `version` = model; team stays a tag used as the dashboard-level filter. The dashboards' per-Actor and per-model widgets read those.
+2. Runs one isolated headless session in the selected harness per item, in parallel inside this Actor run (pool with `concurrency`, per-item timeout). Each session gets hosted `mcp.apify.com` narrowed by `?tools=` (spec D1) and, for Claude Code, Bash only when the item asks.
+3. Under the agent span, the session is replayed as child observations for humans: a generation per model turn (text, tool calls, token usage when the harness exposes per-call counts) and a tool observation per tool call (arguments, result up to 20 kB, ERROR level on tool errors), timed from stdout arrival. The agent span itself carries the judge-ready conversation JSON (spec D10) validated against `contract/`; full logs and tool-schema snapshots go to the named `eval-artifacts` key-value store with URL + sha256 pointers on the span. Traces are named after the scenario title and tagged `dataset:`, `model:`, `actor:`, `team:`, `skill:`. Because Langfuse dashboards can only group scores by a fixed set of trace attributes (and group `tags` by the whole array), the team-facing slices are also mapped onto them: trace `userId` = Actor (and `sessionId` = Actor, so the Sessions page lists every trace of one Actor), `version` = model; team stays a tag used as the dashboard-level filter. The dashboards' per-Actor and per-model widgets read those.
 4. Collects **evidence** from the full tool results (the Actor runs the agent triggered with run ids, status, dataset ids and the input the agent built; tool calls; dataset items fetched from the Apify API, capped at 1000; an optional reference run of the subject Actor for fresh ground truth) and runs the scenario's deterministic checks against it (`contract/src/checks.ts`). Writes one `check.<id>` score per check onto the experiment item, plus `check.all` and `check.infra`, freezes the evidence and check results as `evidence-<traceId>.json` in `eval-artifacts`, and links `call-actor` observations to the Console run and dataset.
 5. Starts the [Eval Judge](../judge/README.md) (`Actor.call`, env `JUDGE_ACTOR`) on the new run and merges its summary into OUTPUT: `resultsUrl` (compare view), `passRate`, `foundRate`, `worksRate`, `fixAreas`, `scoreboard`, `judgeRunUrl`.
 
 A broken harness fails the item loudly; an agent that ran out of turns or hit the timeout is a scored result, not an error (spec D13/D14).
+
+### Harnesses
+
+The default is `claude-code`. To run the same scenarios with Codex, set the advanced **Harness override** input:
+
+```json
+{
+    "harness": {
+        "kind": "codex",
+        "model": "openai/gpt-5-mini",
+        "maxTurns": 12
+    }
+}
+```
+
+The top-level `model` or `models` input overrides the model in `harness`; scenario `metadata.maxTurns` overrides the harness turn budget. Codex uses the same per-skill MCP allowlists, evidence, deterministic checks, judge, and trace observations. Its experiment name includes `codex` unless you supply `runName`.
+
+The image pins Codex CLI to `0.154.0`. Each session has a temporary `CODEX_HOME`, an empty working directory, shell tools disabled, and a read-only sandbox with approvals disabled. `apply_patch` remains advertised by Codex but writes are denied by the sandbox. Codex does not support the `allowBash` scenarios; use Claude Code for CLI evaluations. The run token is passed in the child environment for the model provider and MCP bearer authentication; it is not written to the generated config. Local runs with `useOpenRouterProxy: false` reuse only the developer's file-backed Codex login and need a model id accepted by that login, such as `gpt-5-mini`. Other local MCP servers and user configuration are not loaded.
+
+Codex has no `--max-turns` option. The adapter counts tool-call rounds and stops after the last allowed round returns, retaining its evidence as a scored result. Parallel calls count as one round. This can leave the final answer unfinished, and event delivery can race the next call, so the limit is not an exact billing cap. The per-item timeout covers MCP probes, the optional restart, and the session; it kills the child process group. Timeouts, truncated logs, startup failures, crashes, and unparseable sessions remain infrastructure failures. A failed MCP startup or a server exposing zero allowed tools gets one retry. Because Codex does not publish a tools/list event, the adapter obtains the tool count from a separate probe of the same URL and requires Codex's own MCP initialization to succeed.
+
+Codex JSONL reports token usage for the entire user turn, including all model calls. The adapter stores those totals in session metrics and adds generation usage only for a session with one generation. It does not distribute totals across inferred model calls. Cost and child peak RSS are unavailable for this adapter. Reasoning items appear in generation text when the CLI emits them.
+
+Local checks verified authenticated MCP calls, the event format, and shell/write restrictions. The orchestrating cloud probe verified `/api/v1/responses` with an Actor run token. An end-to-end cloud run is still needed to verify the built image, Codex's streaming model requests through the proxy, and the resulting Langfuse trace, evidence artifacts, and check scores.
 
 ### Run health and exit codes
 
@@ -67,7 +91,7 @@ The run status reports system health, never scenario results (spec D14). Exit 0:
 
 ### Secrets and permissions
 
-Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; the proxy speaks the Anthropic wire format and serves non-Anthropic models too. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for other deployments. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
+Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for other deployments. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
 
 Both Actors must run with **full permissions** (Actor settings → Permissions, or `apify api PUT actors/<id> -d '{"actorPermissionLevel":"FULL_PERMISSIONS"}'`). A new Actor defaults to limited permissions, and a limited run token cannot start other Actors or create tasks, so every MCP call the agent makes fails with `insufficient-permissions` and the runner cannot open the named store. It is a one-time setting per Actor; it survives every `apify push`.
 
@@ -99,12 +123,12 @@ Langfuse here runs v4 in events-only mode: dataset-run read APIs are disabled, u
 
 ### Spec mapping
 
-| Spec decision | Here |
-| --- | --- |
-| D1 hosted MCP, per-case tools | yes (`metadata.tools` → `?tools=`) |
-| D5 one image, harness discriminator | yes (`harness.kind`, adapter registry; only `claude-code` exists) |
-| D7 one Actor run per case | replaced by the in-process pool |
-| D8 per-case timeout/maxTurns | `metadata.maxTurns`; timeout is run-level |
-| D9/D11 judge reads traces, prompt in Langfuse | yes, via the Judge Actor the runner starts |
-| D10 conversation JSON on the agent span | yes |
-| D13/D14 health vs results | yes |
+| Spec decision                                 | Here                                                              |
+| --------------------------------------------- | ----------------------------------------------------------------- |
+| D1 hosted MCP, per-case tools                 | yes (`metadata.tools` → `?tools=`)                                |
+| D5 one image, harness discriminator           | yes (`harness.kind`, adapter registry; `claude-code` and `codex`) |
+| D7 one Actor run per case                     | replaced by the in-process pool                                   |
+| D8 per-case timeout/maxTurns                  | `metadata.maxTurns`; timeout is run-level                         |
+| D9/D11 judge reads traces, prompt in Langfuse | yes, via the Judge Actor the runner starts                        |
+| D10 conversation JSON on the agent span       | yes                                                               |
+| D13/D14 health vs results                     | yes                                                               |
