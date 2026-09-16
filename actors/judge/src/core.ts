@@ -275,7 +275,9 @@ export async function schemaValidityCheck(
     const failures: string[] = [];
     for (const entry of conversation) {
         if (entry.type !== 'tool_call' || typeof entry.tool !== 'string') continue;
-        const toolName = entry.tool.replace(/^mcp__apify__/, '');
+        // Strip any MCP server prefix, not just the Apify one: the snapshot keys
+        // tools by bare name, and a narrower pattern silently skips the call.
+        const toolName = entry.tool.replace(/^mcp__[^_]+__/, '');
         const schema = byName.get(toolName);
         // Skip non-MCP tools, and inputs that were truncated to strings on the span.
         if (!schema || typeof entry.input === 'string') continue;
