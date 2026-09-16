@@ -6,7 +6,7 @@
         "datasetRunId": {
             "title": "Langfuse dataset-run id",
             "type": "string",
-            "description": "The run to judge; the Runner Actor returns this in its OUTPUT as datasetRunId. v1 judges by dataset-run id only; traceIds/filter inputs and full-log fetching are planned follow-ups.",
+            "description": "The run to judge; the Runner Actor returns this in its OUTPUT as datasetRunId. v1 judges by dataset-run id only; traceIds/filter inputs are a planned follow-up.",
             "editor": "textfield"
         },
         "judgeModel": {
