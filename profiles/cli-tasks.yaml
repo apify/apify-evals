@@ -1,0 +1,25 @@
+# Stub: the Apify CLI under test; the agent works in Bash with `apify` installed and no MCP.
+name: cli-tasks
+subjectKind: cli-command
+description: Apify CLI commands driven by an agent through Bash.
+skills:
+  find:
+    label: Found
+    description: The agent must discover the right command from `apify help`.
+    tools: []
+    allowBash: true
+    maxTurns: 14
+  use:
+    label: Works
+    description: The command is named; the agent must use its flags correctly.
+    tools: []
+    allowBash: true
+    maxTurns: 12
+wrongSubjectLabel: wrong-command
+fixAreas:
+  - { id: command-help, owner: subject, description: "The --help text did not explain the command or flag well enough." }
+  - { id: flag-naming, owner: subject, description: Flag names or defaults misled the agent. }
+  - { id: error-messages, owner: subject, description: The CLI error did not tell the agent how to recover. }
+  - { id: docs, owner: docs, description: The agent needed docs.apify.com and they were missing or wrong. }
+  - { id: agent-or-model, owner: none, description: The CLI did its part. }
+evidence: [apify-runs-from-cli]
