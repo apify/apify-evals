@@ -17,7 +17,7 @@
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "npm test --workspaces --if-present",
-        "scenarios:check": "npm -w tools run scenarios:check",
-        "scenarios:sync": "npm -w tools run scenarios:sync"
+        "scenarios:check": "npm run scenarios:check --workspaces --if-present",
+        "scenarios:sync": "npm run scenarios:sync --workspaces --if-present"
     }
 }

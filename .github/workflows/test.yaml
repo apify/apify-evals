@@ -16,8 +16,18 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build -w contract -w actors/judge -w actors/workflow-runner
-      - run: npm test -w contract -w actors/judge -w actors/workflow-runner -w tools
+      - name: Build and test the eval workspaces
+        # npm silently no-ops a `-w` flag that does not resolve, so an explicit
+        # list would pass while exercising nothing. Select what is checked out.
+        run: |
+          set -eu
+          workspaces=""
+          for w in contract actors/judge actors/workflow-runner tools; do
+            if [ -f "$w/package.json" ]; then workspaces="$workspaces -w $w"; fi
+          done
+          echo "Workspaces:$workspaces"
+          npm run build $workspaces --if-present
+          npm test $workspaces --if-present
       - name: Validate scenario files against the contract
         run: npm run scenarios:check
 
