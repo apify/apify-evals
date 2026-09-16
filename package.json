@@ -4,7 +4,9 @@
     "type": "module",
     "workspaces": [
         "shared",
-        "actors/*"
+        "contract",
+        "actors/*",
+        "tools"
     ],
     "engines": {
         "node": ">=18.0.0"
@@ -14,6 +16,8 @@
         "lint:fix": "eslint --fix",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test": "npm test --workspaces --if-present"
+        "test": "npm test --workspaces --if-present",
+        "scenarios:check": "npm -w tools run scenarios:check",
+        "scenarios:sync": "npm -w tools run scenarios:sync"
     }
 }
