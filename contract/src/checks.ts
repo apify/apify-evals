@@ -95,7 +95,8 @@ export function infraStatus(evidence: Evidence): { ok: boolean; reasons: string[
     if (evidence.session.stdoutTruncated) reasons.push('session log truncated');
     // The harness connected to the MCP server but the agent got no tools from
     // it: the agent cannot be blamed for not using tools it never had.
-    if (evidence.session.mcpExpected && evidence.session.mcpToolCount === 0) reasons.push('MCP server exposed no tools to the agent');
+    if (evidence.session.mcpExpected && evidence.session.mcpToolCount === 0)
+        reasons.push('MCP server exposed no tools to the agent');
     for (const srv of evidence.session.mcpServers ?? []) {
         if (srv.status !== 'connected') reasons.push(`MCP server ${srv.name} ${srv.status}`);
     }
@@ -115,7 +116,15 @@ export function runChecks(checks: DeterministicCheck[], evidence: Evidence): Che
             const r = evaluate(check, evidence);
             return { id, type: check.type, severity, ...r };
         } catch (err) {
-            return { id, type: check.type, severity, value: 0, passed: false, applicable: true, comment: `check error: ${err}` };
+            return {
+                id,
+                type: check.type,
+                severity,
+                value: 0,
+                passed: false,
+                applicable: true,
+                comment: `check error: ${err}`,
+            };
         }
     });
 }
@@ -137,7 +146,9 @@ function evaluate(check: AnyCheck, ev: Evidence): Partial {
         case 'regex':
         case 'answer.regex': {
             const v = String(check.value ?? '');
-            return new RegExp(v, 'i').test(ev.finalResult) ? pass(`answer matches /${v}/`) : fail(`answer does not match /${v}/`);
+            return new RegExp(v, 'i').test(ev.finalResult)
+                ? pass(`answer matches /${v}/`)
+                : fail(`answer does not match /${v}/`);
         }
         case 'answer.grounded':
             return grounded(check, ev);
@@ -180,13 +191,19 @@ function subjectUsed(check: AnyCheck, ev: Evidence): Partial {
     const used = candidatesUsed(ev);
     const wanted = typeof check.value === 'string' ? [check.value] : [];
     const allowOthers = Array.isArray(check.allowOthers) ? (check.allowOthers as string[]) : [];
-    const pattern = typeof check.pattern === 'string' ? new RegExp(check.pattern) : null;
+    // Actor ids are case-insensitive on the platform and the store returns some
+    // with capitals (compass/Google-Maps-Reviews-Scraper), so compare folded.
+    const fold = (s: string) => s.toLowerCase();
+    const pattern = typeof check.pattern === 'string' ? new RegExp(check.pattern, 'i') : null;
     const accepted = (s: string) =>
-        wanted.includes(s) || allowOthers.includes(s) || (pattern !== null && pattern.test(s));
+        wanted.map(fold).includes(fold(s)) ||
+        allowOthers.map(fold).includes(fold(s)) ||
+        (pattern !== null && pattern.test(s));
     const hits = used.filter(accepted);
     if (hits.length > 0) return pass(`used ${hits.join(', ')}`);
     const actors = ev.actorRuns.map((r) => r.actor);
-    const summary = actors.length > 0 ? `used ${[...new Set(actors)].join(', ')}` : 'no Actor run and no matching tool call';
+    const summary =
+        actors.length > 0 ? `used ${[...new Set(actors)].join(', ')}` : 'no Actor run and no matching tool call';
     return fail(`${summary}; expected ${wanted[0] ?? check.pattern}`);
 }
 
@@ -196,7 +213,7 @@ function subjectUsed(check: AnyCheck, ev: Evidence): Partial {
 
 function runsFor(check: AnyCheck, ev: Evidence): ActorRunEvidence[] {
     const actor = typeof check.actor === 'string' ? check.actor : null;
-    return actor ? ev.actorRuns.filter((r) => r.actor === actor) : ev.actorRuns;
+    return actor ? ev.actorRuns.filter((r) => r.actor.toLowerCase() === actor.toLowerCase()) : ev.actorRuns;
 }
 
 function apifyRun(check: AnyCheck, ev: Evidence): Partial {
@@ -224,7 +241,10 @@ function apifyInput(check: AnyCheck, ev: Evidence): Partial {
         if (typeof check.path === 'string') {
             const actual = getPath(input, check.path);
             const ok = compare(actual, String(check.op ?? 'equals'), check.value);
-            if (!ok) problems.push(`${r.actor}: ${check.path} = ${JSON.stringify(actual)} (expected ${check.op ?? 'equals'} ${JSON.stringify(check.value)})`);
+            if (!ok)
+                problems.push(
+                    `${r.actor}: ${check.path} = ${JSON.stringify(actual)} (expected ${check.op ?? 'equals'} ${JSON.stringify(check.value)})`,
+                );
         }
     }
     return problems.length === 0
@@ -249,12 +269,15 @@ function apifyItems(check: AnyCheck, ev: Evidence): Partial {
     const runs = runsFor(check, ev);
     if (runs.length === 0) return fail('no Actor run to read items from');
     const { items, missing } = itemsFor(check, ev);
-    if (missing.length > 0 && items.length === 0) return na(`dataset(s) ${missing.join(', ')} not available (expired or not fetched)`);
+    if (missing.length > 0 && items.length === 0)
+        return na(`dataset(s) ${missing.join(', ')} not available (expired or not fetched)`);
     const problems: string[] = [];
     const count = check.count as { min?: number; max?: number } | undefined;
     if (count) {
-        if (typeof count.min === 'number' && items.length < count.min) problems.push(`${items.length} items, expected at least ${count.min}`);
-        if (typeof count.max === 'number' && items.length > count.max) problems.push(`${items.length} items, expected at most ${count.max}`);
+        if (typeof count.min === 'number' && items.length < count.min)
+            problems.push(`${items.length} items, expected at least ${count.min}`);
+        if (typeof count.max === 'number' && items.length > count.max)
+            problems.push(`${items.length} items, expected at most ${count.max}`);
     }
     if (Array.isArray(check.requiredFields)) {
         for (const f of check.requiredFields as string[]) {
@@ -265,17 +288,25 @@ function apifyItems(check: AnyCheck, ev: Evidence): Partial {
     if (typeof check.field === 'string' && check.set === undefined) {
         const op = String(check.op ?? 'equals');
         const bad = items.filter((it) => !compare(getPath(it, check.field as string), op, check.value)).length;
-        if (bad > 0) problems.push(`${bad} of ${items.length} items fail ${check.field} ${op} ${JSON.stringify(check.value)}`);
+        if (bad > 0)
+            problems.push(`${bad} of ${items.length} items fail ${check.field} ${op} ${JSON.stringify(check.value)}`);
     }
     if (typeof check.field === 'string' && check.set && typeof check.set === 'object') {
         const set = check.set as { mode?: string; value?: unknown[] };
         const expected = new Set((set.value ?? []).map(String));
-        const actual = new Set(items.map((it) => getPath(it, check.field as string)).filter((v) => v !== undefined).map(String));
+        const actual = new Set(
+            items
+                .map((it) => getPath(it, check.field as string))
+                .filter((v) => v !== undefined)
+                .map(String),
+        );
         const mode = set.mode ?? 'equals';
         const missingVals = [...expected].filter((v) => !actual.has(v));
         const extra = [...actual].filter((v) => !expected.has(v));
         if (mode === 'equals' && (missingVals.length > 0 || extra.length > 0)) {
-            problems.push(`${check.field} set differs: missing ${missingVals.join(', ') || 'none'}; extra ${extra.join(', ') || 'none'}`);
+            problems.push(
+                `${check.field} set differs: missing ${missingVals.join(', ') || 'none'}; extra ${extra.join(', ') || 'none'}`,
+            );
         } else if (mode === 'superset' && missingVals.length > 0) {
             problems.push(`${check.field} missing expected values: ${missingVals.join(', ')}`);
         } else if (mode === 'intersects' && missingVals.length === expected.size) {
@@ -326,7 +357,8 @@ function flattenNumbers(value: unknown, into: number[], depth = 0): void {
         if (value.trim() !== '' && Number.isFinite(n)) into.push(n);
         else for (const x of extractNumbers(value, 1)) into.push(x);
     } else if (Array.isArray(value)) for (const v of value) flattenNumbers(v, into, depth + 1);
-    else if (typeof value === 'object') for (const v of Object.values(value as object)) flattenNumbers(v, into, depth + 1);
+    else if (typeof value === 'object')
+        for (const v of Object.values(value as object)) flattenNumbers(v, into, depth + 1);
 }
 
 function grounded(check: AnyCheck, ev: Evidence): Partial {
@@ -348,7 +380,10 @@ function grounded(check: AnyCheck, ev: Evidence): Partial {
     const comment =
         missing.length === 0
             ? `all ${answerNums.length} numbers found in Actor output`
-            : `${missing.length} of ${answerNums.length} numbers not in Actor output: ${missing.slice(0, 6).map((n) => n.toLocaleString('en-US')).join(', ')}`;
+            : `${missing.length} of ${answerNums.length} numbers not in Actor output: ${missing
+                  .slice(0, 6)
+                  .map((n) => n.toLocaleString('en-US'))
+                  .join(', ')}`;
     return { value: Number(fraction.toFixed(3)), passed: fraction >= minFraction, applicable: true, comment };
 }
 
@@ -371,7 +406,12 @@ function toolCalled(check: AnyCheck, ev: Evidence): Partial {
 function workspaceFile(check: AnyCheck, ev: Evidence): Partial {
     const files = ev.workspaceFiles ?? [];
     const glob = typeof check.path === 'string' ? check.path : '*';
-    const re = new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*')}$`);
+    const re = new RegExp(
+        `^${glob
+            .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+            .replace(/\*\*/g, '.*')
+            .replace(/\*/g, '[^/]*')}$`,
+    );
     const hits = files.filter((f) => re.test(f.path));
     if (hits.length === 0) return fail(`no file matches ${glob}`);
     if (check.jsonSchema && typeof check.jsonSchema === 'object') {
@@ -380,7 +420,8 @@ function workspaceFile(check: AnyCheck, ev: Evidence): Partial {
         for (const f of hits) {
             if (f.content === undefined) return na(`${f.path} content not captured`);
             try {
-                if (!validate(JSON.parse(f.content))) return fail(`${f.path} violates the schema: ${ajv.errorsText(validate.errors)}`);
+                if (!validate(JSON.parse(f.content)))
+                    return fail(`${f.path} violates the schema: ${ajv.errorsText(validate.errors)}`);
             } catch (err) {
                 return fail(`${f.path} is not JSON: ${err}`);
             }
@@ -412,7 +453,9 @@ function reference(check: AnyCheck, ev: Evidence): Partial {
             if (!Number.isFinite(answerVal)) problems.push(`answer has no value for /${c.answerRegex}/`);
             else if (!Number.isFinite(refVal)) problems.push(`reference item has no numeric ${c.field}`);
             else if (Math.abs(answerVal - refVal) > Math.abs(refVal) * tol) {
-                problems.push(`${c.field}: answer ${answerVal.toLocaleString('en-US')} vs reference ${refVal.toLocaleString('en-US')} (tolerance ${tol * 100}%)`);
+                problems.push(
+                    `${c.field}: answer ${answerVal.toLocaleString('en-US')} vs reference ${refVal.toLocaleString('en-US')} (tolerance ${tol * 100}%)`,
+                );
             } else notes.push(`${c.field} within ${tol * 100}%`);
         }
         if (c.itemsOverlap && typeof c.itemsOverlap === 'object') {
@@ -421,13 +464,17 @@ function reference(check: AnyCheck, ev: Evidence): Partial {
             const subjectItems = Object.values(ev.datasets).flat();
             const subjectKeys = subjectItems.map((it) => String(getPath(it, keyField)));
             const overlap = subjectKeys.filter((k) => refKeys.has(k)).length / Math.max(1, subjectKeys.length);
-            if (overlap < (min ?? 0.5)) problems.push(`items overlap ${(overlap * 100).toFixed(0)}% on ${keyField}, expected >= ${(min ?? 0.5) * 100}%`);
+            if (overlap < (min ?? 0.5))
+                problems.push(
+                    `items overlap ${(overlap * 100).toFixed(0)}% on ${keyField}, expected >= ${(min ?? 0.5) * 100}%`,
+                );
             else notes.push(`items overlap ${(overlap * 100).toFixed(0)}%`);
         }
         if (typeof c.countWithinPct === 'number') {
             const subjectCount = Object.values(ev.datasets).flat().length;
             const diff = Math.abs(subjectCount - ref.items.length) / Math.max(1, ref.items.length);
-            if (diff * 100 > c.countWithinPct) problems.push(`item count ${subjectCount} vs reference ${ref.items.length}`);
+            if (diff * 100 > c.countWithinPct)
+                problems.push(`item count ${subjectCount} vs reference ${ref.items.length}`);
             else notes.push('item count within tolerance');
         }
     }

@@ -10,12 +10,16 @@ const items = [
 
 const evidence: Evidence = {
     prompt: 'Using apify/instagram-scraper, get the 3 most recent posts from @nasa and report like counts.',
-    finalResult: 'Top post C1abc has 267,546 likes; C1def 89,378; C1ghi 103,684. Average 153,536 likes.\nActor: apify/instagram-scraper',
+    finalResult:
+        'Top post C1abc has 267,546 likes; C1def 89,378; C1ghi 103,684. Average 153,536 likes.\nActor: apify/instagram-scraper',
     toolCalls: [
         { tool: 'mcp__apify__fetch-actor-details', input: { actor: 'apify/instagram-scraper' } },
         {
             tool: 'mcp__apify__call-actor',
-            input: { actor: 'apify/instagram-scraper', input: { directUrls: ['https://www.instagram.com/nasa/'], resultsType: 'posts', resultsLimit: 3 } },
+            input: {
+                actor: 'apify/instagram-scraper',
+                input: { directUrls: ['https://www.instagram.com/nasa/'], resultsType: 'posts', resultsLimit: 3 },
+            },
         },
         { tool: 'mcp__apify__get-dataset-items', input: { datasetId: 'ds1', limit: 20 } },
     ],
@@ -61,6 +65,7 @@ describe('runChecks', () => {
                     { id: 'exact', type: 'subject.used', value: 'apify/instagram-scraper' },
                     { id: 'pattern', type: 'subject.used', pattern: '^maxcopell/zillow' },
                     { id: 'others', type: 'subject.used', value: 'x/y', allowOthers: ['apify/instagram-scraper'] },
+                    { id: 'folded', type: 'subject.used', value: 'APIFY/Instagram-Scraper' },
                 ],
                 ev,
             ),
@@ -69,6 +74,7 @@ describe('runChecks', () => {
         expect(r.pattern.value).toBe(0);
         expect(r.pattern.comment).toMatch(/used apify\/instagram-scraper/);
         expect(r.others.value).toBe(1);
+        expect(r.folded.value).toBe(1);
     });
 
     it('apify.run and apify.input', () => {
@@ -80,7 +86,13 @@ describe('runChecks', () => {
                     { id: 'tooMany', type: 'apify.input', path: 'resultsLimit', op: 'gte', value: 10 },
                     { id: 'req', type: 'apify.input', required: ['directUrls', 'resultsType'] },
                     { id: 'reqMissing', type: 'apify.input', required: ['search'] },
-                    { id: 'url', type: 'apify.input', path: 'directUrls[0]', op: 'regex', value: 'instagram\\.com/nasa' },
+                    {
+                        id: 'url',
+                        type: 'apify.input',
+                        path: 'directUrls[0]',
+                        op: 'regex',
+                        value: 'instagram\\.com/nasa',
+                    },
                 ],
                 evidence,
             ),
@@ -103,9 +115,18 @@ describe('runChecks', () => {
                     { id: 'fields', type: 'apify.items', requiredFields: ['shortCode', 'likesCount'] },
                     { id: 'fieldsMissing', type: 'apify.items', requiredFields: ['caption'] },
                     { id: 'owner', type: 'apify.items', field: 'ownerUsername', op: 'equals', value: 'nasa' },
-                    { id: 'setSuper', type: 'apify.items', field: 'shortCode', set: { mode: 'superset', value: ['C1abc', 'C1def'] } },
+                    {
+                        id: 'setSuper',
+                        type: 'apify.items',
+                        field: 'shortCode',
+                        set: { mode: 'superset', value: ['C1abc', 'C1def'] },
+                    },
                     { id: 'setEq', type: 'apify.items', field: 'shortCode', set: { mode: 'equals', value: ['C1abc'] } },
-                    { id: 'schema', type: 'apify.items', jsonSchema: { type: 'object', required: ['shortCode', 'likesCount'] } },
+                    {
+                        id: 'schema',
+                        type: 'apify.items',
+                        jsonSchema: { type: 'object', required: ['shortCode', 'likesCount'] },
+                    },
                 ],
                 evidence,
             ),
@@ -134,10 +155,10 @@ describe('runChecks', () => {
         const lenient = runChecks([{ id: 'g', type: 'answer.grounded', minDigits: 4, minFraction: 0.7 }], evidence)[0];
         expect(lenient.passed).toBe(true);
         expect(ok.passed).toBe(false);
-        const invented = runChecks(
-            [{ id: 'g', type: 'answer.grounded' }],
-            { ...evidence, finalResult: 'The post has 39,600,000 plays and 3.9M likes.' },
-        )[0];
+        const invented = runChecks([{ id: 'g', type: 'answer.grounded' }], {
+            ...evidence,
+            finalResult: 'The post has 39,600,000 plays and 3.9M likes.',
+        })[0];
         expect(invented.value).toBe(0);
         expect(invented.comment).toContain('39,600,000');
     });
@@ -147,14 +168,30 @@ describe('runChecks', () => {
         const r = byId(
             runChecks(
                 [
-                    { id: 'ref', type: 'reference', compare: [{ answerRegex: 'followers?[^0-9]{0,20}([\\d,]+)|([\\d,]+) followers', field: 'followersCount', tolerance: 0.02 }] },
+                    {
+                        id: 'ref',
+                        type: 'reference',
+                        compare: [
+                            {
+                                answerRegex: 'followers?[^0-9]{0,20}([\\d,]+)|([\\d,]+) followers',
+                                field: 'followersCount',
+                                tolerance: 0.02,
+                            },
+                        ],
+                    },
                 ],
                 ev,
             ),
         );
         expect(r.ref.value).toBe(1);
         const far = runChecks(
-            [{ id: 'ref', type: 'reference', compare: [{ answerRegex: '([\\d,]+) followers', field: 'followersCount', tolerance: 0.02 }] }],
+            [
+                {
+                    id: 'ref',
+                    type: 'reference',
+                    compare: [{ answerRegex: '([\\d,]+) followers', field: 'followersCount', tolerance: 0.02 }],
+                },
+            ],
             { ...evidence, finalResult: 'NASA has 90,000,000 followers.' },
         )[0];
         expect(far.value).toBe(0);
@@ -163,14 +200,21 @@ describe('runChecks', () => {
     it('tool.called and workspace.file', () => {
         const ev: Evidence = {
             ...evidence,
-            toolCalls: [{ tool: 'Bash', input: { command: 'apify actors call apify/instagram-scraper --input-file in.json' } }],
+            toolCalls: [
+                { tool: 'Bash', input: { command: 'apify actors call apify/instagram-scraper --input-file in.json' } },
+            ],
             workspaceFiles: [{ path: 'out/result.json', content: '{"count": 3}' }],
         };
         const r = byId(
             runChecks(
                 [
                     { id: 'cli', type: 'tool.called', name: 'Bash', inputRegex: 'apify (actors )?call' },
-                    { id: 'file', type: 'workspace.file', path: 'out/*.json', jsonSchema: { type: 'object', required: ['count'] } },
+                    {
+                        id: 'file',
+                        type: 'workspace.file',
+                        path: 'out/*.json',
+                        jsonSchema: { type: 'object', required: ['count'] },
+                    },
                     { id: 'noFile', type: 'workspace.file', path: 'out/*.csv' },
                 ],
                 ev,
@@ -182,7 +226,10 @@ describe('runChecks', () => {
     });
 
     it('severity and generated ids', () => {
-        const [warn, auto] = runChecks([{ type: 'answer.contains', value: 'zzz', severity: 'warn' }, { type: 'apify.run' }], evidence);
+        const [warn, auto] = runChecks(
+            [{ type: 'answer.contains', value: 'zzz', severity: 'warn' }, { type: 'apify.run' }],
+            evidence,
+        );
         expect(warn.severity).toBe('warn');
         expect(warn.id).toBe('answer_contains_1');
         expect(auto.id).toBe('apify_run_2');
@@ -203,7 +250,12 @@ describe('infraStatus', () => {
     it('flags an MCP server that exposed no tools', () => {
         const r = infraStatus({
             ...evidence,
-            session: { ...evidence.session, mcpExpected: true, mcpToolCount: 0, mcpServers: [{ name: 'apify', status: 'connected' }] },
+            session: {
+                ...evidence.session,
+                mcpExpected: true,
+                mcpToolCount: 0,
+                mcpServers: [{ name: 'apify', status: 'connected' }],
+            },
         });
         expect(r.ok).toBe(false);
         expect(r.reasons[0]).toContain('no tools');
