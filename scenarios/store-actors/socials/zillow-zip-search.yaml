@@ -53,6 +53,28 @@ scenarios:
           - forSaleByOwner
           - forRent
           - sold
+      # Presence is not comprehension: the four booleans must also carry the
+      # values a for-sale search needs, which is what this scenario tests.
+      - id: forSaleByAgentTrue
+        type: apify.input
+        path: forSaleByAgent
+        op: equals
+        value: true
+      - id: forSaleByOwnerTrue
+        type: apify.input
+        path: forSaleByOwner
+        op: equals
+        value: true
+      - id: forRentFalse
+        type: apify.input
+        path: forRent
+        op: equals
+        value: false
+      - id: soldFalse
+        type: apify.input
+        path: sold
+        op: equals
+        value: false
       - id: priceCap
         type: apify.input
         path: priceMax
