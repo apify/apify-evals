@@ -1,6 +1,8 @@
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { loadProfile } from '../src/profiles.js';
 import { lintPrompt, loadSuite } from '../src/scenario-format.js';
@@ -51,6 +53,44 @@ describe('store-actors scenario files', () => {
         for (const item of suite.items) {
             for (const c of item.metadata.checks ?? []) expect((c as { id?: string }).id).toBeTruthy();
         }
+    });
+});
+
+describe('incomplete scenarios', () => {
+    // A fixture root so the bad file never reaches the real scenarios folder.
+    const root = mkdtempSync(join(tmpdir(), 'scenario-format-'));
+    mkdirSync(join(root, 'profiles'), { recursive: true });
+    mkdirSync(join(root, 'scenarios', 'store-actors', 'socials'), { recursive: true });
+    copyFileSync(
+        join(import.meta.dirname, '..', '..', 'profiles', 'store-actors.yaml'),
+        join(root, 'profiles', 'store-actors.yaml'),
+    );
+    writeFileSync(
+        join(root, 'scenarios', 'store-actors', 'socials', 'bad.yaml'),
+        [
+            'subject: some/bad',
+            'scenarios:',
+            '  - id: bad-no-expected',
+            '    skill: use',
+            '    prompt: Using the some/bad Actor, get 10 things.',
+            '  - id: bad-no-prompt',
+            '    skill: use',
+            '    expected: The agent does the thing.',
+            '  - id: bad-neither',
+            '    skill: use',
+        ].join('\n'),
+    );
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+    it('report an empty prompt or expected instead of throwing', () => {
+        const suite = loadSuite(root, 'store-actors');
+        expect(suite.items).toEqual([]);
+        expect(suite.problems).toEqual([
+            'scenarios/store-actors/socials/bad.yaml \u203a bad-no-expected: expected is empty (the judge needs it)',
+            'scenarios/store-actors/socials/bad.yaml \u203a bad-no-prompt: prompt is empty',
+            'scenarios/store-actors/socials/bad.yaml \u203a bad-neither: prompt is empty',
+            'scenarios/store-actors/socials/bad.yaml \u203a bad-neither: expected is empty (the judge needs it)',
+        ]);
     });
 });
 

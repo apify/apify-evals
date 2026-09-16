@@ -100,8 +100,18 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
                     problems.push(`${where}: skill must be "find" or "use"`);
                     continue;
                 }
-                if (!s.prompt?.trim()) problems.push(`${where}: prompt is empty`);
-                if (!s.expected?.trim()) problems.push(`${where}: expected is empty (the judge needs it)`);
+                // Report both, then skip the item: everything below dereferences
+                // prompt and expected, so one bad file must not take down the suite.
+                let incomplete = false;
+                if (!s.prompt?.trim()) {
+                    problems.push(`${where}: prompt is empty`);
+                    incomplete = true;
+                }
+                if (!s.expected?.trim()) {
+                    problems.push(`${where}: expected is empty (the judge needs it)`);
+                    incomplete = true;
+                }
+                if (incomplete) continue;
                 const skillCfg = fileProfile.skills[s.skill];
                 if (!skillCfg) {
                     problems.push(`${where}: profile "${fileProfile.name}" has no skill "${s.skill}"`);
