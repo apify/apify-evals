@@ -238,6 +238,7 @@ process.stdin.on('end', () => {
         expect(captured.config).toContain('shell_tool = false');
         expect(captured.config).toContain('sandbox_mode = "read-only"');
         expect(captured.config).toContain('required = true');
+        expect(captured.config).toContain('default_tools_approval_mode = "approve"');
         expect(captured.config).toContain('existing=1&tools=search-actors');
         expect(captured.config).not.toContain(ctx.apifyToken);
         expect(captured.home).not.toBe(captured.cwd);

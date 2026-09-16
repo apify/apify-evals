@@ -91,6 +91,11 @@ function buildConfig(ctx: CodexContext): string {
             `url = ${q(toolsUrl(ctx.mcpUrl, tools))}`,
             'bearer_token_env_var = "APIFY_TOKEN"',
             `enabled_tools = ${q(tools)}`,
+            // Codex asks for approval before any MCP tool it does not consider
+            // read-only (call-actor, create-actor-task). With approval_policy
+            // "never" such calls would be rejected outright, so pre-approve the
+            // allowlisted tools: the ?tools= list is already the permission boundary.
+            'default_tools_approval_mode = "approve"',
             'required = true',
             'startup_timeout_sec = 20',
         );
