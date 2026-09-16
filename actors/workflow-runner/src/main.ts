@@ -4,6 +4,8 @@ import { promisify } from 'node:util';
 import { type DatasetItemMetadata, validateDatasetItemMetadata } from '@apify-evals/contract';
 import { Actor, log } from 'apify';
 
+import { resolveHealthThreshold, resolveTrigger, shouldNotify } from './config.js';
+
 const execFile = promisify(execFileCb);
 
 const OUTPUT_PREVIEW_CAP = 500;
@@ -86,13 +88,12 @@ const {
     subjects = [],
     owners = [],
     categories = [],
-    healthThreshold: healthThresholdInput = 0.9,
+    healthThreshold: healthThresholdInput,
     skipPreflight = false,
     mcpUrl = 'https://mcp.apify.com',
     useOpenRouterProxy = true,
 } = input;
-// The schema carries the threshold as a string (Apify has no float editor).
-const healthThreshold = Math.min(1, Math.max(0, Number(healthThresholdInput) || 0.9));
+const healthThreshold = resolveHealthThreshold(healthThresholdInput);
 // Artifact store: the resource-picker grant when given, else the store id
 // from the Actor environment (schedules and tasks do not need the picker).
 const artifactStoreId = input.artifactStore ?? process.env.ARTIFACT_STORE_ID ?? undefined;
@@ -203,7 +204,7 @@ if (wantSubjects.size > 0) scopeParts.push(`subject:${[...wantSubjects].map(slug
 if (itemLimit > 0) scopeParts.push(`limit:${itemLimit}`);
 const scope = scopeParts.length === 0 ? 'all' : scopeParts.join(' ');
 const fullScope = scope === 'all';
-const trigger = input.trigger ?? (process.env.APIFY_META_ORIGIN ?? 'unknown').toLowerCase();
+const trigger = resolveTrigger(input.trigger, process.env.APIFY_META_ORIGIN);
 
 log.info(
     `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, scope ${scope}, models ${models.join(', ')}, concurrency ${concurrency}, trigger ${trigger}`,
@@ -486,7 +487,7 @@ for (const s of summaries) log.info(`Results (${s.model}): ${s.resultsUrl}`);
 // Slack digest: scheduled runs post by default, manual runs only when asked.
 // Per-scenario rows come from the judge's dataset; the previous pass rate
 // from the last run-level pass_rate score that is not this run's.
-if (input.notify ?? trigger === 'schedule') {
+if (shouldNotify(input.notify, trigger)) {
     for (const s of summaries) {
         if (!s.judge || !s.judgeDatasetId) continue;
         try {
