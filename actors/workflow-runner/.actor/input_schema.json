@@ -153,8 +153,8 @@
         "notify": {
             "title": "Post Slack digest",
             "type": "boolean",
-            "description": "Post the per-team digest to Slack after this run (needs SLACK_WEBHOOK_URL or SLACK_WEBHOOKS_BY_OWNER in the Actor environment). Scheduled runs post by default.",
-            "default": false
+            "description": "Post the per-team digest to Slack after this run (needs SLACK_WEBHOOK_URL or SLACK_WEBHOOKS_BY_OWNER in the Actor environment). Leave unset to post on scheduled runs only.",
+            "nullable": true
         },
         "harness": {
             "title": "Harness override (JSON)",
