@@ -29,11 +29,15 @@ import { mergeVerdict, type MergedVerdict } from './verdict.js';
  * `judge.overall` mirrors `judge.taskCompletion` by design (#1203: overall =
  * taskCompletion); it exists so dashboards have one canonical score name.
  *
- * v1 scope: judges from the span's conversation JSON only; fetching the full
- * log via the span's fullLogUrl pointer is future work. Pre-contract traces
- * (no contractVersion) and contract-invalid spans are judged in degraded
- * mode: conversation-only, schema-validity not_applicable, contractVersion
- * "none"/"invalid" stamped into score metadata.
+ * v1 scope: judges by dataset-run id only. The conversation is rebuilt from
+ * the full session log when the span carries a fullLogUrl (hash-verified,
+ * 8 kB previews), falling back to the span's own conversation JSON.
+ * Pre-contract traces (no contractVersion) and contract-invalid spans are
+ * judged in degraded mode: contractVersion "none"/"invalid" stamped into
+ * score metadata, and schema validity forced to not_applicable when no
+ * evidence artifact is reachable. A degraded trace that still has a fetchable
+ * evidence artifact runs the real schema-validity check against its full
+ * tool inputs.
  */
 
 export const RUBRIC_VERSION = '1203-draft-3';

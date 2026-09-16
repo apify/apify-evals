@@ -51,9 +51,13 @@ score. Bump `RUBRIC_VERSION` in `core.ts` when the rubric's meaning changes.
 ## Degraded mode
 
 Traces without a `contractVersion` (pre-contract) or with an invalid span are
-judged from their conversation JSON alone; schema validity becomes
-`not_applicable` and score metadata carries `contractVersion: "none"` or
-`"invalid"`.
+still judged, with score metadata carrying `contractVersion: "none"` or
+`"invalid"`. Evidence is fetched independently of span validity (it keys off
+`meta.evidenceUrl`), so a degraded trace that still has a reachable evidence
+artifact keeps its frozen checks and runs the real schema-validity check
+against the artifact's full tool inputs. Only when a degraded trace has no
+reachable artifact do the checks fall back to the runner's single legacy
+`deterministic` field and schema validity is forced to `not_applicable`.
 
 ## Run directly (re-grading)
 
@@ -72,6 +76,8 @@ OUTPUT: `{datasetRunId, items, judged, passed, passRate, foundRate, worksRate, f
 
 ## Scope notes
 
-- Judges by dataset-run id only; judging from the span's conversation JSON, not the full log.
+- Judges by dataset-run id only; `traceIds`/filter inputs are not built.
+- The conversation comes from the hash-verified full session log when the span
+  carries a `fullLogUrl`; the span's own conversation JSON is the fallback.
 - The halo-audit mode (isolated per-dimension calls) from the design record is not built.
 - Deploy: `scripts/deploy.sh judge` from the repo root.
