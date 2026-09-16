@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { compare, extractNumbers, getPath, infraStatus, runChecks, type Evidence } from '../src/checks.js';
+import {
+    compare,
+    extractNumbers,
+    getPath,
+    globToRegExp,
+    infraStatus,
+    runChecks,
+    type Evidence,
+} from '../src/checks.js';
 
 const items = [
     { shortCode: 'C1abc', likesCount: 267546, ownerUsername: 'nasa', caption: 'Roman launch' },
@@ -225,6 +233,68 @@ describe('runChecks', () => {
         expect(r.noFile.value).toBe(0);
     });
 
+    it('workspace.file matches recursive globs', () => {
+        const ev: Evidence = {
+            ...evidence,
+            workspaceFiles: [{ path: 'a/b/c.json' }, { path: 'c.json' }, { path: 'a/b/c.csv' }],
+        };
+        const r = byId(
+            runChecks(
+                [
+                    { id: 'deep', type: 'workspace.file', path: '**/*.json' },
+                    { id: 'oneLevel', type: 'workspace.file', path: 'a/*.json' },
+                    { id: 'wrongExt', type: 'workspace.file', path: '**/*.txt' },
+                ],
+                ev,
+            ),
+        );
+        expect(r.deep.value).toBe(1);
+        // `**/` also matches zero directories, so both JSON files are hits.
+        expect(r.deep.comment).toContain('a/b/c.json');
+        expect(r.deep.comment).toContain('c.json');
+        expect(r.oneLevel.value).toBe(0);
+        expect(r.wrongExt.value).toBe(0);
+    });
+
+    it('answer.grounded does not ground numbers in the agent own tool inputs', () => {
+        const ev: Evidence = {
+            ...evidence,
+            finalResult: 'The account has 123456 followers.',
+            datasets: {},
+            reference: null,
+            toolCalls: [{ tool: 'Bash', input: { command: 'echo 123456' } }],
+        };
+        const [noPool] = runChecks([{ id: 'g', type: 'answer.grounded' }], ev);
+        expect(noPool.applicable).toBe(false);
+        const [invented] = runChecks([{ id: 'g', type: 'answer.grounded' }], {
+            ...ev,
+            datasets: { ds1: [{ followersCount: 999888 }] },
+        });
+        expect(invented.value).toBe(0);
+        expect(invented.comment).toContain('123,456');
+    });
+
+    it('reference comparisons only look at the scoped Actor datasets', () => {
+        const ev: Evidence = {
+            ...evidence,
+            actorRuns: [
+                { actor: 'wrong/one', runId: 'r0', datasetId: 'dsW', status: 'SUCCEEDED' },
+                { actor: 'right/one', runId: 'r1', datasetId: 'dsR', status: 'SUCCEEDED' },
+            ],
+            datasets: {
+                dsW: [{ k: 'x1' }, { k: 'x2' }, { k: 'x3' }, { k: 'x4' }, { k: 'x5' }],
+                dsR: [{ k: 'a' }, { k: 'b' }, { k: 'c' }],
+            },
+            reference: { actor: 'right/one', input: {}, items: [{ k: 'a' }, { k: 'b' }, { k: 'c' }] },
+        };
+        const compareSpec = [{ itemsOverlap: { keyField: 'k', min: 0.5 } }, { countWithinPct: 20 }];
+        const [scoped] = runChecks([{ id: 'ref', type: 'reference', actor: 'right/one', compare: compareSpec }], ev);
+        expect(scoped.value).toBe(1);
+        // Without the scoping the stray Actor's dataset still counts.
+        const [unscoped] = runChecks([{ id: 'ref', type: 'reference', compare: compareSpec }], ev);
+        expect(unscoped.value).toBe(0);
+    });
+
     it('severity and generated ids', () => {
         const [warn, auto] = runChecks(
             [{ type: 'answer.contains', value: 'zzz', severity: 'warn' }, { type: 'apify.run' }],
@@ -233,6 +303,16 @@ describe('runChecks', () => {
         expect(warn.severity).toBe('warn');
         expect(warn.id).toBe('answer_contains_1');
         expect(auto.id).toBe('apify_run_2');
+    });
+});
+
+describe('globToRegExp', () => {
+    it('keeps ** and * apart and escapes the rest', () => {
+        expect(globToRegExp('**/*.json').test('a/b/c.json')).toBe(true);
+        expect(globToRegExp('**/*.json').test('c.json')).toBe(true);
+        expect(globToRegExp('*.json').test('a/b.json')).toBe(false);
+        expect(globToRegExp('out/**').test('out/a/b.csv')).toBe(true);
+        expect(globToRegExp('a.b').test('axb')).toBe(false);
     });
 });
 

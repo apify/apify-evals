@@ -370,9 +370,11 @@ function grounded(check: AnyCheck, ev: Evidence): Partial {
     const answerNums = [...new Set(extractNumbers(ev.finalResult, minDigits))].filter((n) => !promptNums.has(n));
     if (answerNums.length === 0) return pass('no numbers to ground in the answer');
     const pool: number[] = [];
+    // Only what the Actors returned grounds the answer. Tool-call *inputs* are
+    // the agent's own words, so pooling them would let a fabricated figure the
+    // agent typed into a call ground itself.
     for (const items of Object.values(ev.datasets)) flattenNumbers(items, pool);
     if (ev.reference?.items) flattenNumbers(ev.reference.items, pool);
-    for (const c of ev.toolCalls) flattenNumbers(c.input, pool);
     if (pool.length === 0) return na('no Actor output to ground against');
     const found = answerNums.filter((n) => pool.some((p) => Math.abs(p - n) <= Math.abs(n) * (tolerancePct / 100)));
     const missing = answerNums.filter((n) => !found.includes(n));
@@ -403,15 +405,29 @@ function toolCalled(check: AnyCheck, ev: Evidence): Partial {
         : fail(`${hits.length} matching tool call(s), expected at least ${min}`);
 }
 
+/**
+ * Glob -> anchored RegExp. `**` crosses directories, `*` does not, `**\/`
+ * also matches zero directories (`**\/*.json` matches `c.json`).
+ *
+ * Escaping and wildcard expansion happen in one pass on purpose: running them
+ * as separate `.replace()` calls makes the later pass rewrite the output of
+ * the earlier one (a second `*` -> `[^/]*` pass corrupts the `.*` that `**`
+ * just produced).
+ */
+export function globToRegExp(glob: string): RegExp {
+    const body = glob.replace(/\*\*\/|\*\*|\*|[.+^${}()|[\]\\/]/g, (token) => {
+        if (token === '**/') return '(?:.*/)?';
+        if (token === '**') return '.*';
+        if (token === '*') return '[^/]*';
+        return `\\${token}`;
+    });
+    return new RegExp(`^${body}$`);
+}
+
 function workspaceFile(check: AnyCheck, ev: Evidence): Partial {
     const files = ev.workspaceFiles ?? [];
     const glob = typeof check.path === 'string' ? check.path : '*';
-    const re = new RegExp(
-        `^${glob
-            .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-            .replace(/\*\*/g, '.*')
-            .replace(/\*/g, '[^/]*')}$`,
-    );
+    const re = globToRegExp(glob);
     const hits = files.filter((f) => re.test(f.path));
     if (hits.length === 0) return fail(`no file matches ${glob}`);
     if (check.jsonSchema && typeof check.jsonSchema === 'object') {
@@ -433,6 +449,16 @@ function workspaceFile(check: AnyCheck, ev: Evidence): Partial {
 // ---------------------------------------------------------------------------
 // reference: compare against a fresh run made by the eval.
 // ---------------------------------------------------------------------------
+
+/**
+ * Dataset items the check compares against, narrowed by `actor` the same way
+ * `apify.items` narrows: a wrong Actor the agent tried first must not pollute
+ * a scoped comparison. Unscoped checks keep seeing every dataset.
+ */
+function scopedItems(check: AnyCheck, ev: Evidence): unknown[] {
+    if (typeof check.actor !== 'string') return Object.values(ev.datasets).flat();
+    return itemsFor(check, ev).items;
+}
 
 function reference(check: AnyCheck, ev: Evidence): Partial {
     const ref = ev.reference;
@@ -461,8 +487,7 @@ function reference(check: AnyCheck, ev: Evidence): Partial {
         if (c.itemsOverlap && typeof c.itemsOverlap === 'object') {
             const { keyField, min } = c.itemsOverlap as { keyField: string; min?: number };
             const refKeys = new Set(ref.items.map((it) => String(getPath(it, keyField))));
-            const subjectItems = Object.values(ev.datasets).flat();
-            const subjectKeys = subjectItems.map((it) => String(getPath(it, keyField)));
+            const subjectKeys = scopedItems(check, ev).map((it) => String(getPath(it, keyField)));
             const overlap = subjectKeys.filter((k) => refKeys.has(k)).length / Math.max(1, subjectKeys.length);
             if (overlap < (min ?? 0.5))
                 problems.push(
@@ -471,7 +496,7 @@ function reference(check: AnyCheck, ev: Evidence): Partial {
             else notes.push(`items overlap ${(overlap * 100).toFixed(0)}%`);
         }
         if (typeof c.countWithinPct === 'number') {
-            const subjectCount = Object.values(ev.datasets).flat().length;
+            const subjectCount = scopedItems(check, ev).length;
             const diff = Math.abs(subjectCount - ref.items.length) / Math.max(1, ref.items.length);
             if (diff * 100 > c.countWithinPct)
                 problems.push(`item count ${subjectCount} vs reference ${ref.items.length}`);
