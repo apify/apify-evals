@@ -30,6 +30,8 @@ import {
     STDERR_CAP,
     TEXT_BLOCK_CAP,
     TOOL_RESULT_CAP,
+    trackChild,
+    untrackChild,
 } from './adapters/shared.js';
 import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
 import {
@@ -400,6 +402,7 @@ function runClaudeCodeOnce(
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: true,
         });
+        trackChild(child);
 
         // StringDecoder keeps multi-byte UTF-8 intact across chunk boundaries.
         const outDecoder = new StringDecoder('utf8');
@@ -443,6 +446,7 @@ function runClaudeCodeOnce(
             if (settled) return;
             settled = true;
             clearTimeout(killer);
+            untrackChild(child);
             if (graceTimer) clearTimeout(graceTimer);
             if (rssTimer) clearInterval(rssTimer);
             try {

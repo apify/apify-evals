@@ -1,9 +1,11 @@
 import { execFile as execFileCb } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 import { type DatasetItemMetadata, validateDatasetItemMetadata } from '@apify-evals/contract';
 import { Actor, log } from 'apify';
 
+import { killTrackedChildren } from './adapters/shared.js';
 import { resolveHealthThreshold, resolveTrigger, shouldNotify } from './config.js';
 
 const execFile = promisify(execFileCb);
@@ -72,6 +74,17 @@ interface JudgeOutput {
 }
 
 await Actor.init();
+
+// Sessions run as detached `claude` process groups, so they survive this
+// process unless they are killed explicitly. Kill them on abort and exit as
+// soon as possible, so an aborted run stops billing compute and tokens.
+Actor.on('aborting', async () => {
+    const killed = killTrackedChildren();
+    log.warning(`Aborting: killed ${killed} running session(s)`);
+    // Give the SDK's state persistence a moment before tearing the process down.
+    await delay(1000);
+    await Actor.exit({ statusMessage: `Aborted; ${killed} running session(s) killed` });
+});
 const input = ((await Actor.getInput()) ?? {}) as Input;
 const {
     datasetName = 'store-actors',

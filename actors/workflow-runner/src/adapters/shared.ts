@@ -25,3 +25,26 @@ export function killProcessTree(child: ChildProcess): void {
         }
     }
 }
+
+/**
+ * Every live session child, so an Actor-level abort can kill them all. The
+ * children are detached process group leaders: without this they survive the
+ * Actor's own exit and keep burning compute (and tokens) after an abort.
+ */
+const liveChildren = new Set<ChildProcess>();
+
+export function trackChild(child: ChildProcess): void {
+    liveChildren.add(child);
+}
+
+export function untrackChild(child: ChildProcess): void {
+    liveChildren.delete(child);
+}
+
+/** Kill every tracked session child. Returns how many were still running. */
+export function killTrackedChildren(): number {
+    const count = liveChildren.size;
+    for (const child of liveChildren) killProcessTree(child);
+    liveChildren.clear();
+    return count;
+}
