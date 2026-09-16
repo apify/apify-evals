@@ -1,0 +1,62 @@
+# compass/crawler-google-places · owner: google · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: compass/crawler-google-places
+scenarios:
+  - id: crawler-google-places-discovery-miami-gyms
+    skill: find
+    title: "Discovery: places-comparison task finds the Google Maps scraper"
+    prompt: Track and compare the top 20 gyms in Miami by rating, review count, and opening hours.
+    expected: The agent discovers and runs compass/crawler-google-places with a place cap of 20, and
+      reports gyms with rating, review count, and opening hours grounded in retrieved data.
+      (Daniela-tested prompt, 2026-07-16.)
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: compass/crawler-google-places
+      - id: namedActor
+        type: answer.contains
+        value: compass/crawler-google-places
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: crawler-google-places-usage-prague-coffee
+    skill: use
+    title: "Usage: pinned Google Maps scraper, filtered place search with contact fields"
+    prompt: Using the compass/crawler-google-places Actor, find 10 highly-rated coffee shops in Prague
+      with name, address, phone number, and rating. Report how many you retrieved and name the
+      highest-rated one.
+    expected: The agent runs the pinned actor with a sensible search string, Prague as location, and a
+      10-place cap, and reports real names, addresses, phone numbers, and ratings from the retrieved
+      data (not invented).
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \+?\d[\d ()-]{7,}
+      - id: rightActor
+        type: subject.used
+        value: compass/crawler-google-places
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: cap
+        type: apify.input
+        path: maxCrawledPlacesPerSearch
+        op: lte
+        value: 10
+        severity: warn
+      - id: items
+        type: apify.items
+        count:
+          min: 1
+          max: 10
+      - id: fields
+        type: apify.items
+        requiredFields:
+          - title
+          - totalScore
+      - id: grounded
+        type: answer.grounded
+        minDigits: 4

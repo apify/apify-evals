@@ -1,0 +1,25 @@
+# Stub: the Apify SDK / API under test; the agent writes and runs small programs in a workspace.
+name: sdk-tasks
+subjectKind: sdk-feature
+description: Apify SDK and REST API features driven by an agent building code.
+skills:
+  find:
+    label: Found
+    description: The agent must find the right SDK feature or endpoint from docs.
+    tools: []
+    allowBash: true
+    maxTurns: 16
+  use:
+    label: Works
+    description: The feature is named; the agent must use it correctly.
+    tools: []
+    allowBash: true
+    maxTurns: 14
+wrongSubjectLabel: wrong-feature
+fixAreas:
+  - { id: docs, owner: docs, description: Docs or examples missing, wrong, or hard to find. }
+  - { id: api-naming, owner: subject, description: Method, parameter or endpoint naming misled the agent. }
+  - { id: error-messages, owner: subject, description: Errors did not explain how to recover. }
+  - { id: types, owner: subject, description: Type definitions or response shapes confused the agent. }
+  - { id: agent-or-model, owner: none, description: The SDK did its part. }
+evidence: [apify-runs-from-cli, workspace-files]

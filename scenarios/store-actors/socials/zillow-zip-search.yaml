@@ -1,0 +1,69 @@
+# maxcopell/zillow-zip-search · owner: socials · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: maxcopell/zillow-zip-search
+scenarios:
+  - id: zillow-zip-search-discovery-scottsdale
+    skill: find
+    title: "Discovery: ZIP-code home search finds an official Zillow actor"
+    prompt: Find 10 homes currently for sale in ZIP code 85251 (Scottsdale, Arizona) priced under
+      $800,000, with address and price for each.
+    expected: "The agent discovers one of the official maxcopell Zillow actors
+      (maxcopell/zillow-zip-search is the intended fit for ZIP-code searches; the check accepts the
+      maxcopell/zillow family), runs it with the ZIP, the price cap, and a 10-result limit, and
+      reports real addresses and prices. Note for judges: a third-party Zillow actor counts as a
+      discovery miss."
+    checks:
+      - id: rightActor
+        type: subject.used
+        pattern: ^maxcopell/zillow
+      - id: namedActor
+        type: answer.contains
+        value: maxcopell/zillow
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: zillow-zip-search-usage-scottsdale
+    skill: use
+    title: "Usage: pinned Zillow ZIP search, required-flags schema comprehension"
+    prompt: Using the maxcopell/zillow-zip-search Actor, find homes for sale in ZIP code 85251 with a
+      maximum price of $800,000, limited to 10 results. Report how many you retrieved and the
+      cheapest one's address and price.
+    expected: "The agent reads the pinned actor's schema and sets ALL required fields correctly
+      (zipCodes plus the four required booleans: forSaleByAgent/forSaleByOwner true, forRent/sold
+      false), applies priceMax and the 10-result limit, and reports real addresses and prices from
+      retrieved data. This item deliberately tests comprehension of required boolean flags."
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \d{1,3},\d{3}
+      - id: rightActor
+        type: subject.used
+        value: maxcopell/zillow-zip-search
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: requiredFlags
+        type: apify.input
+        required:
+          - zipCodes
+          - forSaleByAgent
+          - forSaleByOwner
+          - forRent
+          - sold
+      - id: priceCap
+        type: apify.input
+        path: priceMax
+        op: lte
+        value: 800000
+        severity: warn
+      - id: tenResults
+        type: apify.items
+        count:
+          min: 1
+          max: 10
+      - id: grounded
+        type: answer.grounded
+        minDigits: 5
