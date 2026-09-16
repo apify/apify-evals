@@ -21,6 +21,7 @@ import { propagateAttributes, startActiveObservation, startObservation } from '@
 import { trace } from '@opentelemetry/api';
 import { log } from 'apify';
 
+import { runCodex } from './adapters/codex.js';
 import {
     capToolInput,
     EXIT_GRACE_MS,
@@ -552,6 +553,7 @@ function runClaudeCodeOnce(
 
 const ADAPTERS: Record<string, (ctx: SessionContext & { prompt: string }) => Promise<AdapterResult>> = {
     'claude-code': runClaudeCode,
+    codex: runCodex,
 };
 
 /** Validate harness config up front so a bad input fails fast, before any
