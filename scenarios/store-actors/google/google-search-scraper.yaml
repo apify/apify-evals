@@ -1,0 +1,114 @@
+# apify/google-search-scraper · owner: google · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Google team (Sept 2026).
+subject: apify/google-search-scraper
+tags: [family:google-search]
+scenarios:
+  - id: google-search-scraper-discovery-organic-results
+    skill: find
+    title: "Discovery: plain SERP request finds the Google Search scraper"
+    prompt: Scrape Google Search results (organic results, titles, links, snippets) for the query
+      "apify web scraping", first results page only.
+    expected: The agent discovers and runs apify/google-search-scraper for a plain organic-results
+      request, caps to a single results page, and returns organic results with titles, URLs, and
+      descriptions taken from the retrieved data. A generic website crawler is not an acceptable
+      substitute, because the task needs the ranked search results page rather than the content of
+      any single page. Prompt shape taken from Apify AI chat traffic.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/google-search-scraper
+      - id: namedActor
+        type: answer.contains
+        value: apify/google-search-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: google-search-scraper-usage-german-serp
+    skill: use
+    title: "Usage: pinned Google Search scraper, localized SERP with country and language"
+    prompt: Using the apify/google-search-scraper Actor, get the first page of German Google results for
+      "elektroauto leasing". Report how many organic results you got and the top three domains.
+    expected: The agent runs the pinned Actor with the German query, a German country code and language
+      code, and one results page per query, then reports the organic result count with titles and
+      domains taken from the retrieved data rather than from prior knowledge.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/google-search-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: query
+        type: apify.input
+        required: [queries]
+      - id: country
+        type: apify.input
+        path: countryCode
+        op: equals
+        value: de
+      - id: lang
+        type: apify.input
+        path: languageCode
+        op: equals
+        value: de
+        severity: warn
+      - id: pages
+        type: apify.input
+        path: maxPagesPerQuery
+        op: lte
+        value: 1
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 5 }
+      - id: fields
+        type: apify.items
+        requiredFields: [searchQuery, organicResults]
+  - id: google-search-scraper-usage-ai-mode-addon
+    skill: use
+    title: "Usage: pinned Google Search scraper, AI Mode add-on must be switched on"
+    prompt: Using the apify/google-search-scraper Actor, get Google's AI Mode answer for "best crm for
+      small business" in the UK. Report the answer text and how many sources it cited.
+    expected: The agent enables the Google AI Mode add-on on the pinned Actor, sets a UK country code and
+      one results page, and reports the AI Mode answer text plus an accurate count of cited sources
+      taken from the retrieved data. Enabling the add-on is the point of the scenario, since
+      aiModeSearch.enableAiMode defaults to false and must be switched on deliberately from the
+      input schema. A failure here points at add-on discoverability in the schema rather than at
+      the Actor generally. The AI add-ons carry the real AI-search volume on this Actor and no other
+      scenario in the suite covers AI search.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/google-search-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: aiModeOn
+        type: apify.input
+        path: aiModeSearch.enableAiMode
+        op: equals
+        value: true
+      - id: query
+        type: apify.input
+        required: [queries]
+      - id: country
+        type: apify.input
+        path: countryCode
+        op: equals
+        value: gb
+        severity: warn
+      - id: pages
+        type: apify.input
+        path: maxPagesPerQuery
+        op: lte
+        value: 1
+        severity: warn
+      - id: fields
+        type: apify.items
+        requiredFields: [searchQuery, aiModeResult]
+        severity: warn
