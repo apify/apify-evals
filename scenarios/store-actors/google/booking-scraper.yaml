@@ -1,0 +1,71 @@
+# voyager/booking-scraper · owner: google · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Google team (Sept 2026).
+subject: voyager/booking-scraper
+scenarios:
+  - id: booking-scraper-discovery-amsterdam-hotels
+    skill: find
+    title: "Discovery: Booking.com hotel search finds the Booking scraper"
+    prompt: Get me 10 hotels in Amsterdam on Booking.com for two nights about a month from now. Which is
+      cheapest?
+    expected: The agent discovers voyager/booking-scraper, sets a check-in roughly a month ahead with a
+      two-night stay, caps at 10 properties, and reports names and nightly prices from the retrieved
+      data, naming a cheapest property consistent with its own list. Dates and prices are live and
+      differ between runs, so only internal consistency with the retrieved data is required. Apify
+      AI chat traffic shows users name a destination and ask about price, but rarely specify guest
+      counts or currency, so the prompt deliberately omits them.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: voyager/booking-scraper
+      - id: namedActor
+        type: answer.contains
+        value: voyager/booking-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: booking-scraper-usage-amsterdam-three-adults
+    skill: use
+    title: "Usage: pinned Booking scraper, dated stay with a non-default guest count"
+    prompt: Using the voyager/booking-scraper Actor, find 10 hotels in Amsterdam for a two-night stay
+      starting about four weeks from today, for three adults. Report how many you retrieved, the
+      cheapest nightly price, and the highest-rated property.
+    expected: The agent runs the pinned Actor with Amsterdam as the search, a check-in roughly four weeks
+      ahead and a check-out two nights later, three adults, and a 10-item cap. It then reports the
+      count, the cheapest price, and the highest-rated property name from the retrieved data. Three
+      adults is deliberately non-default (the Actor defaults to two), so the check tests whether the
+      agent read the input schema. Dates and prices are live and will differ between runs.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: voyager/booking-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: cap
+        type: apify.input
+        path: maxItems
+        op: lte
+        value: 10
+        severity: warn
+      - id: dates
+        type: apify.input
+        required: [checkIn, checkOut]
+      - id: adults
+        type: apify.input
+        path: adults
+        op: equals
+        value: 3
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 10 }
+      - id: fields
+        type: apify.items
+        requiredFields: [name]
+      - id: optFields
+        type: apify.items
+        requiredFields: [price, rating]
+        severity: warn
