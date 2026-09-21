@@ -5,76 +5,78 @@
 subject: clockworks/tiktok-comments-scraper
 tags: [family:tiktok]
 scenarios:
-  - id: tiktok-comments-scraper-discovery-video-top-comments
-    skill: find
-    title: "Discovery: comments for one TikTok video URL find the Comments scraper"
-    prompt: "Here's a TikTok video: https://www.tiktok.com/@apifylife/video/7332342275151760642. What
-      are people saying in the comments? List the 5 most-liked ones."
-    expected: The agent treats this as a comment-extraction task for a single TikTok video URL, picks
-      clockworks/tiktok-comments-scraper, runs it against the given video, and returns the 5
-      comments with the highest like counts along with their text drawn from the retrieved data. It
-      does not ask for the Actor name or clarification, since a valid video URL was given. A general
-      TikTok video scraper or profile scraper is the wrong sibling.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: clockworks/tiktok-comments-scraper
-      - id: namedActor
-        type: answer.contains
-        value: clockworks/tiktok-comments-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-      - id: shape
-        type: answer.regex
-        value: \d+
-  - id: tiktok-comments-scraper-usage-top-level-only
-    skill: use
-    title: "Usage: pinned Comments scraper, capped top-level comments without replies"
-    prompt: "Using the clockworks/tiktok-comments-scraper Actor, get the top 20 comments (no replies)
-      from this TikTok video: https://www.tiktok.com/@apifylife/video/7332342275151760642, and
-      report the 5 comments with the most likes."
-    expected: The agent calls clockworks/tiktok-comments-scraper with the given video URL in postURLs, a
-      comment limit around 20 with replies disabled (maxRepliesPerComment 0), runs it successfully,
-      and reports the 5 highest-liked comments with their text, without inventing comments that were
-      not in the dataset.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: clockworks/tiktok-comments-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: videoUrl
-        type: apify.input
-        path: postURLs[0]
-        op: regex
-        value: tiktok\.com/@apifylife/video/7332342275151760642
-      - id: cap
-        type: apify.input
-        path: commentsPerPost
-        op: lte
-        value: 20
-        severity: warn
-      - id: noReplies
-        type: apify.input
-        path: maxRepliesPerComment
-        op: equals
-        value: 0
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 20 }
-        severity: warn
-      - id: field
-        type: apify.items
-        field: text
-        op: exists
-        severity: warn
-      - id: grounded
-        type: answer.grounded
-        minDigits: 2
-        severity: warn
+    - id: tiktok-comments-scraper-discovery-video-top-comments
+      skill: find
+      title: 'tiktok-comments / find / video-top-comments'
+      notes: 'Discovery: comments for one TikTok video URL find the Comments scraper'
+      prompt: "Here's a TikTok video: https://www.tiktok.com/@apifylife/video/7332342275151760642. What
+          are people saying in the comments? List the 5 most-liked ones."
+      expected: The agent treats this as a comment-extraction task for a single TikTok video URL, picks
+          clockworks/tiktok-comments-scraper, runs it against the given video, and returns the 5
+          comments with the highest like counts along with their text drawn from the retrieved data. It
+          does not ask for the Actor name or clarification, since a valid video URL was given. A general
+          TikTok video scraper or profile scraper is the wrong sibling.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: clockworks/tiktok-comments-scraper
+          - id: namedActor
+            type: answer.contains
+            value: clockworks/tiktok-comments-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+          - id: shape
+            type: answer.regex
+            value: \d+
+    - id: tiktok-comments-scraper-usage-top-level-only
+      skill: use
+      title: 'tiktok-comments / use / top-level-only'
+      notes: 'Usage: pinned Comments scraper, capped top-level comments without replies'
+      prompt: 'Using the clockworks/tiktok-comments-scraper Actor, get the top 20 comments (no replies)
+          from this TikTok video: https://www.tiktok.com/@apifylife/video/7332342275151760642, and
+          report the 5 comments with the most likes.'
+      expected: The agent calls clockworks/tiktok-comments-scraper with the given video URL in postURLs, a
+          comment limit around 20 with replies disabled (maxRepliesPerComment 0), runs it successfully,
+          and reports the 5 highest-liked comments with their text, without inventing comments that were
+          not in the dataset.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: clockworks/tiktok-comments-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: videoUrl
+            type: apify.input
+            path: postURLs[0]
+            op: regex
+            value: tiktok\.com/@apifylife/video/7332342275151760642
+          - id: cap
+            type: apify.input
+            path: commentsPerPost
+            op: lte
+            value: 20
+            severity: warn
+          - id: noReplies
+            type: apify.input
+            path: maxRepliesPerComment
+            op: equals
+            value: 0
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 20 }
+            severity: warn
+          - id: field
+            type: apify.items
+            field: text
+            op: exists
+            severity: warn
+          - id: grounded
+            type: answer.grounded
+            minDigits: 2
+            severity: warn

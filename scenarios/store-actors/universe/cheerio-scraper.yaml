@@ -6,81 +6,83 @@
 subject: apify/cheerio-scraper
 tags: [family:generic-scrapers]
 scenarios:
-  - id: cheerio-scraper-discovery-ikea-static-catalog
-    skill: find
-    title: "Discovery: fast static-HTML extraction request finds the Cheerio Scraper"
-    prompt: I need product names and prices from IKEA's chest of drawers category
-      https://www.ikea.com/gb/en/cat/chest-of-drawers-drawer-units-st004/. It's a large catalog page
-      and I don't need JavaScript-rendered content, just what's in the server-rendered HTML, so I
-      want something fast and lightweight rather than a full headless browser, since I'll be
-      running this often. Run it against that first category page only and show me 10 results so I
-      can check the extraction looks right before I scale it up.
-    expected: The agent finds and uses apify/cheerio-scraper with the category URL as the start URL, a
-      sensible page function extracting names and prices, and a small page cap, and shows about 10
-      real items from the run. Web Scraper (headless browser) or Website Content Crawler are wrong
-      siblings because the user asked for a lightweight non-browser extractor with custom fields.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/cheerio-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/cheerio-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-      - id: pageFunction
-        type: apify.input
-        path: pageFunction
-        op: exists
-      - id: pageCap
-        type: apify.input
-        path: maxPagesPerCrawl
-        op: lte
-        value: 5
-        severity: warn
-  - id: cheerio-scraper-usage-foyles-manga-two-hops
-    skill: use
-    title: "Usage: pinned Cheerio Scraper, link following with depth and page caps"
-    prompt: Run the apify/cheerio-scraper Actor on https://www.foyles.co.uk/category. From there follow
-      the link to the manga category and get the books listed in it. Stop after 2 hops of following
-      links and don't let it process more than 20 pages total. For each book page, get me the title
-      and the price as a JSON object with title and price keys, and show me 5 of them.
-    expected: The agent uses apify/cheerio-scraper with the category URL as start, a sensible link
-      selector or globs that reach the manga category, a page function returning title and price, a
-      crawling depth of 2 and a 20-page cap, and returns real items in the requested shape.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/cheerio-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: startUrl
-        type: apify.input
-        path: startUrls[0].url
-        op: regex
-        value: foyles\.co\.uk
-      - id: pageFunction
-        type: apify.input
-        path: pageFunction
-        op: exists
-      - id: depth
-        type: apify.input
-        path: maxCrawlingDepth
-        op: lte
-        value: 2
-        severity: warn
-      - id: pageCap
-        type: apify.input
-        path: maxPagesPerCrawl
-        op: lte
-        value: 20
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1 }
-        severity: warn
+    - id: cheerio-scraper-discovery-ikea-static-catalog
+      skill: find
+      title: 'cheerio / find / ikea-static-catalog'
+      notes: 'Discovery: fast static-HTML extraction request finds the Cheerio Scraper'
+      prompt: I need product names and prices from IKEA's chest of drawers category
+          https://www.ikea.com/gb/en/cat/chest-of-drawers-drawer-units-st004/. It's a large catalog page
+          and I don't need JavaScript-rendered content, just what's in the server-rendered HTML, so I
+          want something fast and lightweight rather than a full headless browser, since I'll be
+          running this often. Run it against that first category page only and show me 10 results so I
+          can check the extraction looks right before I scale it up.
+      expected: The agent finds and uses apify/cheerio-scraper with the category URL as the start URL, a
+          sensible page function extracting names and prices, and a small page cap, and shows about 10
+          real items from the run. Web Scraper (headless browser) or Website Content Crawler are wrong
+          siblings because the user asked for a lightweight non-browser extractor with custom fields.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/cheerio-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/cheerio-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+          - id: pageFunction
+            type: apify.input
+            path: pageFunction
+            op: exists
+          - id: pageCap
+            type: apify.input
+            path: maxPagesPerCrawl
+            op: lte
+            value: 5
+            severity: warn
+    - id: cheerio-scraper-usage-foyles-manga-two-hops
+      skill: use
+      title: 'cheerio / use / foyles-manga-two-hops'
+      notes: 'Usage: pinned Cheerio Scraper, link following with depth and page caps'
+      prompt: Run the apify/cheerio-scraper Actor on https://www.foyles.co.uk/category. From there follow
+          the link to the manga category and get the books listed in it. Stop after 2 hops of following
+          links and don't let it process more than 20 pages total. For each book page, get me the title
+          and the price as a JSON object with title and price keys, and show me 5 of them.
+      expected: The agent uses apify/cheerio-scraper with the category URL as start, a sensible link
+          selector or globs that reach the manga category, a page function returning title and price, a
+          crawling depth of 2 and a 20-page cap, and returns real items in the requested shape.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/cheerio-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: startUrl
+            type: apify.input
+            path: startUrls[0].url
+            op: regex
+            value: foyles\.co\.uk
+          - id: pageFunction
+            type: apify.input
+            path: pageFunction
+            op: exists
+          - id: depth
+            type: apify.input
+            path: maxCrawlingDepth
+            op: lte
+            value: 2
+            severity: warn
+          - id: pageCap
+            type: apify.input
+            path: maxPagesPerCrawl
+            op: lte
+            value: 20
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1 }
+            severity: warn

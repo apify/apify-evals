@@ -4,64 +4,66 @@
 subject: compass/google-maps-extractor
 tags: [family:google-maps]
 scenarios:
-  - id: google-maps-extractor-discovery-toronto-plumbers
-    skill: find
-    title: "Discovery: plain Maps listings request finds a listings Actor (extractor or places)"
-    prompt: Get me 15 plumbers in Toronto with name, address, phone, website, and rating. Just the
-      listings, no reviews.
-    expected: The agent discovers a Google Maps place-listing Actor and runs either
-      compass/google-maps-extractor or compass/crawler-google-places, capping at 15 places and
-      returning names, addresses, phone numbers, websites, and ratings from the retrieved data. Both
-      listings Actors are acceptable by the Google team's decision, because Apify AI chat traffic
-      shows roughly 40% of Maps requests carry no signal distinguishing them and crawler-google-places
-      is the production default for ambiguous listing requests. The prompt excludes reviews and
-      contact enrichment, so the reviews Actor and the email-enrichment Actor are not correct.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: compass/google-maps-extractor
-        allowOthers: [compass/crawler-google-places]
-      - id: namedActor
-        type: answer.regex
-        value: compass/(google-maps-extractor|crawler-google-places)
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: google-maps-extractor-usage-toronto-plumbers
-    skill: use
-    title: "Usage: pinned Maps extractor, capped listing pull with ratings"
-    prompt: Using the compass/google-maps-extractor Actor, find 15 plumbers in Toronto and return name,
-      address, phone number, and star rating for each. Say how many you got and name the
-      highest-rated.
-    expected: The agent runs the pinned Actor with a sensible search string, Toronto as the location, and
-      a 15-place cap, then reports real names, addresses, phone numbers, and ratings from the
-      retrieved data rather than invented values, naming a highest-rated place consistent with its
-      own list.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: compass/google-maps-extractor
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: cap
-        type: apify.input
-        path: maxCrawledPlacesPerSearch
-        op: lte
-        value: 15
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 15 }
-      - id: fields
-        type: apify.items
-        requiredFields: [title, totalScore, address]
-      - id: shape
-        type: answer.regex
-        value: '[1-5][.][0-9]'
-      - id: grounded
-        type: answer.grounded
-        minDigits: 4
+    - id: google-maps-extractor-discovery-toronto-plumbers
+      skill: find
+      title: 'google-maps-extractor / find / toronto-plumbers'
+      notes: 'Discovery: plain Maps listings request finds a listings Actor (extractor or places)'
+      prompt: Get me 15 plumbers in Toronto with name, address, phone, website, and rating. Just the
+          listings, no reviews.
+      expected: The agent discovers a Google Maps place-listing Actor and runs either
+          compass/google-maps-extractor or compass/crawler-google-places, capping at 15 places and
+          returning names, addresses, phone numbers, websites, and ratings from the retrieved data. Both
+          listings Actors are acceptable by the Google team's decision, because Apify AI chat traffic
+          shows roughly 40% of Maps requests carry no signal distinguishing them and crawler-google-places
+          is the production default for ambiguous listing requests. The prompt excludes reviews and
+          contact enrichment, so the reviews Actor and the email-enrichment Actor are not correct.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: compass/google-maps-extractor
+            allowOthers: [compass/crawler-google-places]
+          - id: namedActor
+            type: answer.regex
+            value: compass/(google-maps-extractor|crawler-google-places)
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: google-maps-extractor-usage-toronto-plumbers
+      skill: use
+      title: 'google-maps-extractor / use / toronto-plumbers'
+      notes: 'Usage: pinned Maps extractor, capped listing pull with ratings'
+      prompt: Using the compass/google-maps-extractor Actor, find 15 plumbers in Toronto and return name,
+          address, phone number, and star rating for each. Say how many you got and name the
+          highest-rated.
+      expected: The agent runs the pinned Actor with a sensible search string, Toronto as the location, and
+          a 15-place cap, then reports real names, addresses, phone numbers, and ratings from the
+          retrieved data rather than invented values, naming a highest-rated place consistent with its
+          own list.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: compass/google-maps-extractor
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: cap
+            type: apify.input
+            path: maxCrawledPlacesPerSearch
+            op: lte
+            value: 15
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 15 }
+          - id: fields
+            type: apify.items
+            requiredFields: [title, totalScore, address]
+          - id: shape
+            type: answer.regex
+            value: '[1-5][.][0-9]'
+          - id: grounded
+            type: answer.grounded
+            minDigits: 4

@@ -6,77 +6,79 @@
 subject: apify/ai-web-scraper
 tags: [family:generic-scrapers]
 scenarios:
-  - id: ai-web-scraper-discovery-climate-articles-three-sites
-    skill: find
-    title: "Discovery: describe-the-fields extraction across sites finds the AI Web Scraper"
-    prompt: I need recent articles about climate change from these 3 news sites, and I don't want to
-      write any selectors or code, just describe what I need. From each site take up to 5 articles
-      with article title, author name, and publication date. Sites are
-      https://www.theguardian.com/environment/climate-crisis,
-      https://www.bbc.com/news/science-environment and
-      https://www.reuters.com/sustainability/climate-energy/. Report how many articles you got per
-      site and show three examples.
-    expected: The agent discovers apify/ai-web-scraper (the describe-what-you-want extractor), puts all
-      three sites in the start URLs, writes a prompt describing title, author and publication date,
-      caps pages to visit, waits for the run and reports counts and examples from the retrieved
-      items. Cheerio Scraper or Web Scraper are wrong here because the user refused to write
-      selectors or code.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/ai-web-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/ai-web-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-      - id: promptGiven
-        type: apify.input
-        path: prompt
-        op: exists
-        severity: warn
-      - id: pageCap
-        type: apify.input
-        path: maxPagesToVisit
-        op: lte
-        value: 20
-        severity: warn
-  - id: ai-web-scraper-usage-apify-store-first-page
-    skill: use
-    title: "Usage: pinned AI Web Scraper, single page with a field prompt"
-    prompt: Using the apify/ai-web-scraper Actor, get the Actors listed on the first page of
-      https://apify.com/store and give me each Actor's name, description, rating and number of users
-      in a table. One page only, no crawling.
-    expected: The agent starts apify/ai-web-scraper with apify.com/store as the start URL, a prompt
-      describing the four fields, and page limits that keep it to one page, then returns the fields
-      in a structured way drawn from the retrieved items rather than from memory.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/ai-web-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: startUrl
-        type: apify.input
-        path: startUrls[0].url
-        op: regex
-        value: apify\.com/store
-      - id: promptGiven
-        type: apify.input
-        path: prompt
-        op: exists
-      - id: onePage
-        type: apify.input
-        path: maxPagesToVisit
-        op: lte
-        value: 3
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1 }
-        severity: warn
+    - id: ai-web-scraper-discovery-climate-articles-three-sites
+      skill: find
+      title: 'ai-web / find / climate-articles-three-sites'
+      notes: 'Discovery: describe-the-fields extraction across sites finds the AI Web Scraper'
+      prompt: I need recent articles about climate change from these 3 news sites, and I don't want to
+          write any selectors or code, just describe what I need. From each site take up to 5 articles
+          with article title, author name, and publication date. Sites are
+          https://www.theguardian.com/environment/climate-crisis,
+          https://www.bbc.com/news/science-environment and
+          https://www.reuters.com/sustainability/climate-energy/. Report how many articles you got per
+          site and show three examples.
+      expected: The agent discovers apify/ai-web-scraper (the describe-what-you-want extractor), puts all
+          three sites in the start URLs, writes a prompt describing title, author and publication date,
+          caps pages to visit, waits for the run and reports counts and examples from the retrieved
+          items. Cheerio Scraper or Web Scraper are wrong here because the user refused to write
+          selectors or code.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/ai-web-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/ai-web-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+          - id: promptGiven
+            type: apify.input
+            path: prompt
+            op: exists
+            severity: warn
+          - id: pageCap
+            type: apify.input
+            path: maxPagesToVisit
+            op: lte
+            value: 20
+            severity: warn
+    - id: ai-web-scraper-usage-apify-store-first-page
+      skill: use
+      title: 'ai-web / use / apify-store-first-page'
+      notes: 'Usage: pinned AI Web Scraper, single page with a field prompt'
+      prompt: Using the apify/ai-web-scraper Actor, get the Actors listed on the first page of
+          https://apify.com/store and give me each Actor's name, description, rating and number of users
+          in a table. One page only, no crawling.
+      expected: The agent starts apify/ai-web-scraper with apify.com/store as the start URL, a prompt
+          describing the four fields, and page limits that keep it to one page, then returns the fields
+          in a structured way drawn from the retrieved items rather than from memory.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/ai-web-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: startUrl
+            type: apify.input
+            path: startUrls[0].url
+            op: regex
+            value: apify\.com/store
+          - id: promptGiven
+            type: apify.input
+            path: prompt
+            op: exists
+          - id: onePage
+            type: apify.input
+            path: maxPagesToVisit
+            op: lte
+            value: 3
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1 }
+            severity: warn

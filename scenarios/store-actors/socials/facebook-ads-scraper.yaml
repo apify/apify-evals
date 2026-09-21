@@ -4,74 +4,76 @@
 subject: apify/facebook-ads-scraper
 tags: [family:facebook]
 scenarios:
-  - id: facebook-ads-scraper-discovery-nike-ad-library
-    skill: find
-    title: "Discovery: Meta Ad Library question finds the Facebook Ads scraper"
-    prompt: What Facebook and Instagram ads is Nike currently running, according to Meta's public Ad
-      Library? Look up ads for facebook.com/nike, limit it to 10 ads, and report how many active ads
-      you found and one example body text from them.
-    expected: The agent discovers apify/facebook-ads-scraper (the socials-team Meta Ad Library scraper)
-      via store search, runs it with the Nike Facebook page URL and a small cap, and reports a real
-      ad count and an example body text drawn from the retrieved data (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/facebook-ads-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/facebook-ads-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: facebook-ads-scraper-usage-nike-last-30-days
-    skill: use
-    title: "Usage: pinned Facebook Ads scraper, dated pull with per-ad details"
-    prompt: Using the apify/facebook-ads-scraper Actor, get the ads from the last 30 days in Meta's Ad
-      Library for the Facebook page https://www.facebook.com/nike, limited to 20 results. Include the
-      reach and spend data. Report how many ads you actually retrieved and one real ad's body text
-      with reach data.
-    expected: The agent runs the pinned actor with startUrls set to the Nike Facebook page, a 20-result
-      cap, a date filter for the last 30 days and per-ad details enabled, and reports a real ad
-      count, body text and reach data drawn from the retrieved dataset items (not invented).
-    checks:
-      - id: shape
-        type: answer.regex
-        value: \d+
-      - id: rightActor
-        type: subject.used
-        value: apify/facebook-ads-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: pageUrl
-        type: apify.input
-        path: startUrls[0].url
-        op: regex
-        value: facebook\.com/nike
-        severity: warn
-      - id: dateRange
-        type: apify.input
-        path: onlyAdsNewerThan
-        op: exists
-        severity: warn
-      - id: twentyAds
-        type: apify.input
-        path: resultsLimit
-        op: lte
-        value: 20
-        severity: warn
-      - id: detailsFlag
-        type: apify.input
-        path: isDetailsPerAd
-        op: equals
-        value: true
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 20 }
-      - id: grounded
-        type: answer.grounded
-        minDigits: 1
+    - id: facebook-ads-scraper-discovery-nike-ad-library
+      skill: find
+      title: 'facebook-ads / find / nike-ad-library'
+      notes: 'Discovery: Meta Ad Library question finds the Facebook Ads scraper'
+      prompt: What Facebook and Instagram ads is Nike currently running, according to Meta's public Ad
+          Library? Look up ads for facebook.com/nike, limit it to 10 ads, and report how many active ads
+          you found and one example body text from them.
+      expected: The agent discovers apify/facebook-ads-scraper (the socials-team Meta Ad Library scraper)
+          via store search, runs it with the Nike Facebook page URL and a small cap, and reports a real
+          ad count and an example body text drawn from the retrieved data (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/facebook-ads-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/facebook-ads-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: facebook-ads-scraper-usage-nike-last-30-days
+      skill: use
+      title: 'facebook-ads / use / nike-last-30-days'
+      notes: 'Usage: pinned Facebook Ads scraper, dated pull with per-ad details'
+      prompt: Using the apify/facebook-ads-scraper Actor, get the ads from the last 30 days in Meta's Ad
+          Library for the Facebook page https://www.facebook.com/nike, limited to 20 results. Include the
+          reach and spend data. Report how many ads you actually retrieved and one real ad's body text
+          with reach data.
+      expected: The agent runs the pinned actor with startUrls set to the Nike Facebook page, a 20-result
+          cap, a date filter for the last 30 days and per-ad details enabled, and reports a real ad
+          count, body text and reach data drawn from the retrieved dataset items (not invented).
+      checks:
+          - id: shape
+            type: answer.regex
+            value: \d+
+          - id: rightActor
+            type: subject.used
+            value: apify/facebook-ads-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: pageUrl
+            type: apify.input
+            path: startUrls[0].url
+            op: regex
+            value: facebook\.com/nike
+            severity: warn
+          - id: dateRange
+            type: apify.input
+            path: onlyAdsNewerThan
+            op: exists
+            severity: warn
+          - id: twentyAds
+            type: apify.input
+            path: resultsLimit
+            op: lte
+            value: 20
+            severity: warn
+          - id: detailsFlag
+            type: apify.input
+            path: isDetailsPerAd
+            op: equals
+            value: true
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 20 }
+          - id: grounded
+            type: answer.grounded
+            minDigits: 1

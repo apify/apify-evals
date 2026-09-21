@@ -2,51 +2,53 @@
 # Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
 subject: clockworks/tiktok-scraper
 scenarios:
-  - id: tiktok-scraper-discovery-cleantok
-    skill: find
-    title: "Discovery: hashtag task finds the flagship TikTok scraper among four siblings"
-    prompt: "Pull the top 20 TikTok videos under the hashtag #cleantok and summarize what content is
-      trending and how much engagement it gets."
-    expected: "The agent discovers clockworks/tiktok-scraper (the video team's intended answer for
-      hashtag pulls; the free/comments/profile siblings count as misses), caps at 20 videos, and
-      summarizes content themes with real engagement numbers. Note for judges: the sibling-overlap
-      decision is the video team's; a sibling pick is scored as a discovery miss pending their
-      confirmation."
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: clockworks/tiktok-scraper
-      - id: namedActor
-        type: answer.contains
-        value: clockworks/tiktok-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: tiktok-scraper-usage-protein-coffee
-    skill: use
-    title: "Usage: pinned TikTok scraper, video search sorted by plays"
-    prompt: Using the clockworks/tiktok-scraper Actor, search TikTok for "protein coffee recipe" videos
-      and report the 10 with the most plays, including their play counts.
-    expected: The agent uses the pinned actor's video search with a 10-result cap and reports real play
-      counts from retrieved data.
-    checks:
-      - id: shape
-        type: answer.regex
-        value: \d{4,}|\d{1,3}(,\d{3})+
-      - id: rightActor
-        type: subject.used
-        value: clockworks/tiktok-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: plays
-        type: apify.items
-        requiredFields:
-          - playCount
-        severity: warn
-      - id: grounded
-        type: answer.grounded
-        minDigits: 4
+    - id: tiktok-scraper-discovery-cleantok
+      skill: find
+      title: 'tiktok / find / cleantok'
+      notes: 'Discovery: hashtag task finds the flagship TikTok scraper among four siblings'
+      prompt: 'Pull the top 20 TikTok videos under the hashtag #cleantok and summarize what content is
+          trending and how much engagement it gets.'
+      expected: "The agent discovers clockworks/tiktok-scraper (the video team's intended answer for
+          hashtag pulls; the free/comments/profile siblings count as misses), caps at 20 videos, and
+          summarizes content themes with real engagement numbers. Note for judges: the sibling-overlap
+          decision is the video team's; a sibling pick is scored as a discovery miss pending their
+          confirmation."
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: clockworks/tiktok-scraper
+          - id: namedActor
+            type: answer.contains
+            value: clockworks/tiktok-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: tiktok-scraper-usage-protein-coffee
+      skill: use
+      title: 'tiktok / use / protein-coffee'
+      notes: 'Usage: pinned TikTok scraper, video search sorted by plays'
+      prompt: Using the clockworks/tiktok-scraper Actor, search TikTok for "protein coffee recipe" videos
+          and report the 10 with the most plays, including their play counts.
+      expected: The agent uses the pinned actor's video search with a 10-result cap and reports real play
+          counts from retrieved data.
+      checks:
+          - id: shape
+            type: answer.regex
+            value: \d{4,}|\d{1,3}(,\d{3})+
+          - id: rightActor
+            type: subject.used
+            value: clockworks/tiktok-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: plays
+            type: apify.items
+            requiredFields:
+                - playCount
+            severity: warn
+          - id: grounded
+            type: answer.grounded
+            minDigits: 4

@@ -5,67 +5,69 @@
 subject: apify/rag-web-browser
 tags: [family:generic-scrapers]
 scenarios:
-  - id: rag-web-browser-discovery-web-search-with-sources
-    skill: find
-    title: "Discovery: web search returning page text with sources finds the RAG Web Browser"
-    prompt: Search the web for the 5 most popular James Bond movies by box office and give me the answer
-      as clean text with the pages you used as sources. Don't answer from memory; fetch the live
-      pages and quote them.
-    expected: The agent discovers apify/rag-web-browser, runs it with a sensible search query and a
-      small result cap, and answers from the returned page text (Markdown or text) with the source
-      URLs listed. Website Content Crawler is the wrong sibling because the input is a search
-      query, not a site to crawl.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/rag-web-browser
-      - id: namedActor
-        type: answer.contains
-        value: apify/rag-web-browser
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-      - id: query
-        type: apify.input
-        path: query
-        op: exists
-      - id: sources
-        type: answer.regex
-        value: https?://
-  - id: rag-web-browser-usage-sf-startups-markdown
-    skill: use
-    title: "Usage: pinned RAG Web Browser, Google query with a result cap and Markdown output"
-    prompt: Using the apify/rag-web-browser Actor, search Google for "fastest growing startups in San
-      Francisco 2026" and return the top 5 results as Markdown, with each page's URL and a two-line
-      summary of what it says.
-    expected: The agent uses apify/rag-web-browser with a sensible Google query, maxResults 5, and
-      Markdown in the output formats, and returns pages with their URLs and summaries drawn from the
-      returned Markdown rather than from memory.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/rag-web-browser
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: query
-        type: apify.input
-        path: query
-        op: regex
-        value: '[Ss]an [Ff]rancisco'
-      - id: cap
-        type: apify.input
-        path: maxResults
-        op: lte
-        value: 5
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 5 }
-        severity: warn
-      - id: sources
-        type: answer.regex
-        value: https?://
+    - id: rag-web-browser-discovery-web-search-with-sources
+      skill: find
+      title: 'rag-web-browser / find / web-search-with-sources'
+      notes: 'Discovery: web search returning page text with sources finds the RAG Web Browser'
+      prompt: Search the web for the 5 most popular James Bond movies by box office and give me the answer
+          as clean text with the pages you used as sources. Don't answer from memory; fetch the live
+          pages and quote them.
+      expected: The agent discovers apify/rag-web-browser, runs it with a sensible search query and a
+          small result cap, and answers from the returned page text (Markdown or text) with the source
+          URLs listed. Website Content Crawler is the wrong sibling because the input is a search
+          query, not a site to crawl.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/rag-web-browser
+          - id: namedActor
+            type: answer.contains
+            value: apify/rag-web-browser
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+          - id: query
+            type: apify.input
+            path: query
+            op: exists
+          - id: sources
+            type: answer.regex
+            value: https?://
+    - id: rag-web-browser-usage-sf-startups-markdown
+      skill: use
+      title: 'rag-web-browser / use / sf-startups-markdown'
+      notes: 'Usage: pinned RAG Web Browser, Google query with a result cap and Markdown output'
+      prompt: Using the apify/rag-web-browser Actor, search Google for "fastest growing startups in San
+          Francisco 2026" and return the top 5 results as Markdown, with each page's URL and a two-line
+          summary of what it says.
+      expected: The agent uses apify/rag-web-browser with a sensible Google query, maxResults 5, and
+          Markdown in the output formats, and returns pages with their URLs and summaries drawn from the
+          returned Markdown rather than from memory.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/rag-web-browser
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: query
+            type: apify.input
+            path: query
+            op: regex
+            value: '[Ss]an [Ff]rancisco'
+          - id: cap
+            type: apify.input
+            path: maxResults
+            op: lte
+            value: 5
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 5 }
+            severity: warn
+          - id: sources
+            type: answer.regex
+            value: https?://

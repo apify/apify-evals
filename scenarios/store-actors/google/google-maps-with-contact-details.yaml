@@ -4,65 +4,67 @@
 subject: lukaskrivka/google-maps-with-contact-details
 tags: [family:google-maps]
 scenarios:
-  - id: google-maps-contact-details-discovery-toronto-roofers-emails
-    skill: find
-    title: "Discovery: Maps plus emails finds the contact-details enrichment Actor"
-    prompt: Find emails for 10 roofing companies in Toronto from Google Maps. Tell me how many had an
-      email.
-    expected: The agent discovers lukaskrivka/google-maps-with-contact-details, which extends Google Maps
-      place data by visiting each business website for contact details, caps at 10 places, and
-      reports business names with emails plus an accurate count of how many had one. A plain Maps
-      place scraper is not sufficient, because it does not visit the business websites. Apify AI
-      chat traffic shows users pair "Google Maps" with "emails" without naming the mechanism, so the
-      pairing itself is the discovery signal. Email coverage is naturally partial, so a correct
-      answer states the real count rather than claiming all ten.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: lukaskrivka/google-maps-with-contact-details
-      - id: namedActor
-        type: answer.contains
-        value: lukaskrivka/google-maps-with-contact-details
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: google-maps-contact-details-usage-toronto-roofers
-    skill: use
-    title: "Usage: pinned contact-details Actor, capped pull with social profiles enabled"
-    prompt: Using the lukaskrivka/google-maps-with-contact-details Actor, get 10 roofing companies in
-      Toronto with name, website, email, and social profiles. Say how many had an email.
-    expected: The agent runs the pinned Actor with a sensible search string, Toronto as the location, and
-      a 10-place cap, with social media profile scraping enabled, then reports names, websites,
-      emails, and social links from the retrieved data. Email coverage is naturally partial, so a
-      correct answer states the real count rather than claiming all ten.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: lukaskrivka/google-maps-with-contact-details
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: cap
-        type: apify.input
-        path: maxCrawledPlacesPerSearch
-        op: lte
-        value: 10
-        severity: warn
-      - id: socials
-        type: apify.input
-        path: scrapeSocialMediaProfiles
-        op: exists
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 10 }
-      - id: fields
-        type: apify.items
-        requiredFields: [title, emails]
-      - id: count
-        type: answer.regex
-        value: '[0-9]'
-        severity: warn
+    - id: google-maps-contact-details-discovery-toronto-roofers-emails
+      skill: find
+      title: 'google-maps-contact-details / find / toronto-roofers-emails'
+      notes: 'Discovery: Maps plus emails finds the contact-details enrichment Actor'
+      prompt: Find emails for 10 roofing companies in Toronto from Google Maps. Tell me how many had an
+          email.
+      expected: The agent discovers lukaskrivka/google-maps-with-contact-details, which extends Google Maps
+          place data by visiting each business website for contact details, caps at 10 places, and
+          reports business names with emails plus an accurate count of how many had one. A plain Maps
+          place scraper is not sufficient, because it does not visit the business websites. Apify AI
+          chat traffic shows users pair "Google Maps" with "emails" without naming the mechanism, so the
+          pairing itself is the discovery signal. Email coverage is naturally partial, so a correct
+          answer states the real count rather than claiming all ten.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: lukaskrivka/google-maps-with-contact-details
+          - id: namedActor
+            type: answer.contains
+            value: lukaskrivka/google-maps-with-contact-details
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: google-maps-contact-details-usage-toronto-roofers
+      skill: use
+      title: 'google-maps-contact-details / use / toronto-roofers'
+      notes: 'Usage: pinned contact-details Actor, capped pull with social profiles enabled'
+      prompt: Using the lukaskrivka/google-maps-with-contact-details Actor, get 10 roofing companies in
+          Toronto with name, website, email, and social profiles. Say how many had an email.
+      expected: The agent runs the pinned Actor with a sensible search string, Toronto as the location, and
+          a 10-place cap, with social media profile scraping enabled, then reports names, websites,
+          emails, and social links from the retrieved data. Email coverage is naturally partial, so a
+          correct answer states the real count rather than claiming all ten.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: lukaskrivka/google-maps-with-contact-details
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: cap
+            type: apify.input
+            path: maxCrawledPlacesPerSearch
+            op: lte
+            value: 10
+            severity: warn
+          - id: socials
+            type: apify.input
+            path: scrapeSocialMediaProfiles
+            op: exists
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 10 }
+          - id: fields
+            type: apify.items
+            requiredFields: [title, emails]
+          - id: count
+            type: answer.regex
+            value: '[0-9]'
+            severity: warn

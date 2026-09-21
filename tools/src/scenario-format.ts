@@ -117,6 +117,11 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
                         ? `${s.prompt.trim()} ${skillCfg.promptSuffix}`
                         : s.prompt.trim();
                 for (const w of lintPrompt(prompt)) problems.push(`${where}: warning: ${w}`);
+                const title = s.title ?? s.expected.split(/(?<=\.)\s/)[0].slice(0, 120);
+                if (title.length > 60)
+                    problems.push(
+                        `${where}: title is ${title.length} chars; keep it under 60 ("<actor> / find|use / <topic>") so chart labels stay readable`,
+                    );
 
                 const checks = (s.checks ?? []).map((c, i) => ({ id: `c${i + 1}`, ...c }));
                 const metadata: Record<string, unknown> = {
