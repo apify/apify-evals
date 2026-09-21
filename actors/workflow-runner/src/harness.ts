@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -31,6 +31,8 @@ import {
     STDERR_CAP,
     TEXT_BLOCK_CAP,
     TOOL_RESULT_CAP,
+    snapshotWorkspace,
+    type WorkspaceFile,
 } from './adapters/shared.js';
 import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
 import {
@@ -124,6 +126,8 @@ export type TimelineEvent =
 
 export interface AdapterResult {
     output: string;
+    /** Files the agent left in its working directory (Bash-enabled scenarios only). */
+    workspaceFiles?: WorkspaceFile[];
     conversation: ConversationEntry[];
     timeline: TimelineEvent[];
     startedAt: number;
@@ -396,6 +400,10 @@ function runClaudeCodeOnce(
     return new Promise((resolve) => {
         const started = Date.now();
         const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
+        // The agent works in a clean subdirectory, not in its HOME: what it leaves
+        // there is the workspace evidence (CLI / SDK / Actor-building suites).
+        const work = join(home, 'work');
+        mkdirSync(work);
         const meta = item.metadata ?? {};
 
         // All filesystem effects live here: session dir, then the token-bearing
@@ -424,7 +432,7 @@ function runClaudeCodeOnce(
         // detached: the child leads its own process group, so the timeout kill
         // reaches grandchildren (Bash tool shells) that share the stdio pipes.
         const child = spawn('claude', args, {
-            cwd: home,
+            cwd: work,
             env: env as NodeJS.ProcessEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: true,
@@ -474,6 +482,7 @@ function runClaudeCodeOnce(
             clearTimeout(killer);
             if (graceTimer) clearTimeout(graceTimer);
             if (rssTimer) clearInterval(rssTimer);
+            const workspaceFiles = meta.allowBash ? snapshotWorkspace(work) : undefined;
             try {
                 rmSync(home, { recursive: true, force: true });
             } catch {
@@ -501,6 +510,7 @@ function runClaudeCodeOnce(
 
             resolve({
                 output: finalResult ?? lastAssistantText(conversation),
+                ...(workspaceFiles ? { workspaceFiles } : {}),
                 conversation,
                 timeline,
                 startedAt: started,
@@ -629,6 +639,7 @@ async function collectEvidence(
         actorRuns: enriched.actorRuns,
         datasets: enriched.datasets,
         reference,
+        ...(r.workspaceFiles ? { workspaceFiles: r.workspaceFiles } : {}),
         session: {
             timedOut: Boolean(m.timedOut),
             stdoutTruncated: Boolean(m.stdoutTruncated),
