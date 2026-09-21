@@ -774,6 +774,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
         ...(meta.actor ? [`actor:${meta.actor}`] : []),
         ...(meta.team ? [`team:${meta.team}`] : []),
         ...(meta.skill ? [`skill:${meta.skill}`] : []),
+        ...(Array.isArray(meta.tags) ? meta.tags.map(String) : []),
     ];
     // The experiment-item-run span is active here (the SDK opened it around
     // the task): checks are scored onto it, because that is the observation

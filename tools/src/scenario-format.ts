@@ -34,6 +34,8 @@ export interface ScenarioFileEntry {
 export interface ScenarioFile {
     subject: string;
     profile?: string;
+    /** Tags applied to every scenario in the file (e.g. `family:instagram`); merged with per-scenario tags. */
+    tags?: string[];
     scenarios: ScenarioFileEntry[];
 }
 
@@ -82,8 +84,11 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
             }
             const fileProfile = doc.profile ? loadProfile(rootDir, doc.profile) : profile;
             const slug = basename(file).replace(/\.ya?ml$/, '');
+            const fileTags = Array.isArray(doc.tags) ? doc.tags.map(String) : [];
             if (doc.subject.split('/')[1] !== slug) {
-                problems.push(`${rel}: file name "${slug}" should match the subject name "${doc.subject.split('/')[1]}"`);
+                problems.push(
+                    `${rel}: file name "${slug}" should match the subject name "${doc.subject.split('/')[1]}"`,
+                );
             }
             for (const s of doc.scenarios) {
                 const where = `${rel} › ${s?.id ?? '(no id)'}`;
@@ -124,11 +129,11 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
                     tools: s.tools ?? skillCfg.tools,
                     maxTurns: s.maxTurns ?? skillCfg.maxTurns,
                     checks,
-                    ...(s.allowBash ?? skillCfg.allowBash ? { allowBash: true } : {}),
+                    ...((s.allowBash ?? skillCfg.allowBash) ? { allowBash: true } : {}),
                     ...(s.timeoutSecs ? { timeoutSecs: s.timeoutSecs } : {}),
                     ...(s.reference ? { reference: s.reference } : {}),
                     ...(s.notes ? { notes: s.notes } : {}),
-                    ...(s.tags ? { tags: s.tags } : {}),
+                    ...(fileTags.length > 0 || s.tags ? { tags: [...fileTags, ...(s.tags ?? [])] } : {}),
                     // Store-suite sugar for filters, tags and the existing dashboards.
                     ...(fileProfile.subjectKind === 'actor'
                         ? { actor: doc.subject, team: owner, category: doc.subject.split('/')[1] }
@@ -154,7 +159,8 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
 /** Cheap prompt hygiene: the things that made scenarios flaky or slow before. */
 export function lintPrompt(prompt: string): string[] {
     const warnings: string[] = [];
-    if (!/\b\d{1,3}\b/.test(prompt)) warnings.push('no result cap in the prompt (e.g. "10 results"); unbounded asks run long');
+    if (!/\b\d{1,3}\b/.test(prompt))
+        warnings.push('no result cap in the prompt (e.g. "10 results"); unbounded asks run long');
     if (/\b(all|every|entire|whole)\b.*\b(posts|pages|reviews|results|site)\b/i.test(prompt)) {
         warnings.push('asks for "all/every" items; cap it so the scenario finishes in ~2 minutes');
     }
