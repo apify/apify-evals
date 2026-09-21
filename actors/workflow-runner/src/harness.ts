@@ -94,11 +94,14 @@ export function buildTraceTags(
     ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats'>,
     meta: Partial<DatasetItemMetadata> & { tags?: unknown },
 ): string[] {
+    // The platform reports the scheduler origin as APIFY_META_ORIGIN=SCHEDULER, so
+    // match the prefix rather than the "schedule" label the input schema documents.
     const trigger = (ctx.trigger ?? 'unknown').toLowerCase();
+    const triggerTag = trigger.startsWith('schedul') ? 'schedule' : trigger === 'unknown' ? 'unknown' : 'manual';
     return [
         `dataset:${ctx.datasetName}`,
         `model:${ctx.harness.model}`,
-        `trigger:${trigger === 'schedule' ? 'schedule' : trigger === 'unknown' ? 'unknown' : 'manual'}`,
+        `trigger:${triggerTag}`,
         `repeats:${Math.max(1, Math.floor(ctx.repeats ?? 1))}`,
         ...(meta.actor ? [`actor:${meta.actor}`] : []),
         ...(meta.team ? [`team:${meta.team}`] : []),

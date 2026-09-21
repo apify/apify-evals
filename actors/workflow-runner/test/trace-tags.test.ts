@@ -26,6 +26,13 @@ describe('buildTraceTags', () => {
             'family:instagram',
         ]);
     });
+    it('treats the platform scheduler origin as schedule', () => {
+        for (const trigger of ['scheduler', 'SCHEDULER', 'schedule']) {
+            expect(buildTraceTags({ ...(ctx as object), trigger, repeats: 1 } as never, {})).toContain(
+                'trigger:schedule',
+            );
+        }
+    });
     it('folds every non-schedule origin into manual and keeps repeats', () => {
         for (const trigger of ['web', 'api', 'cli', 'WEB']) {
             const tags = buildTraceTags({ ...(ctx as object), trigger, repeats: 3 } as never, {});
