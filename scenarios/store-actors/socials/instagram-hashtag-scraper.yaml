@@ -4,70 +4,72 @@
 subject: apify/instagram-hashtag-scraper
 tags: [family:instagram]
 scenarios:
-  - id: instagram-hashtag-scraper-discovery-nasa-hashtag
-    skill: find
-    title: "Discovery: hashtag search finds the Instagram Hashtag scraper, not a profile scraper"
-    prompt: "Find 5 Instagram posts tagged #nasa and report which accounts posted them and what the
-      posts are about."
-    expected: The agent discovers apify/instagram-hashtag-scraper (the socials-team hashtag and keyword
-      scraper) via store search, runs it with the hashtag "nasa" and a small results cap, and
-      reports the actor name along with real post captions and usernames drawn from the retrieved
-      data (not invented). The distinguishing signal is the hashtag; a profile or post scraper for a
-      named account is the wrong sibling.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/instagram-hashtag-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/instagram-hashtag-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: instagram-hashtag-scraper-usage-nasa-keyword-reels
-    skill: use
-    title: "Usage: pinned Hashtag scraper, keyword mode with reels result type"
-    prompt: Using the apify/instagram-hashtag-scraper Actor, get 5 Instagram reels based on keyword nasa
-      and report each post's caption's first sentence and its like count.
-    expected: The agent runs the pinned actor with hashtags set to ["nasa"], keyword search enabled,
-      resultsType "reels" and a 5-result cap, and reports real captions and like counts drawn from
-      the retrieved dataset items (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/instagram-hashtag-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: keywordInput
-        type: apify.input
-        path: hashtags[0]
-        op: regex
-        value: nasa
-      - id: keywordMode
-        type: apify.input
-        path: keywordSearch
-        op: equals
-        value: true
-        severity: warn
-      - id: reelsType
-        type: apify.input
-        path: resultsType
-        op: equals
-        value: reels
-        severity: warn
-      - id: fiveResults
-        type: apify.input
-        path: resultsLimit
-        op: lte
-        value: 5
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 5 }
-      - id: grounded
-        type: answer.grounded
-        minDigits: 1
+    - id: instagram-hashtag-scraper-discovery-nasa-hashtag
+      skill: find
+      title: 'instagram-hashtag / find / nasa-hashtag'
+      notes: 'Discovery: hashtag search finds the Instagram Hashtag scraper, not a profile scraper'
+      prompt: 'Find 5 Instagram posts tagged #nasa and report which accounts posted them and what the
+          posts are about.'
+      expected: The agent discovers apify/instagram-hashtag-scraper (the socials-team hashtag and keyword
+          scraper) via store search, runs it with the hashtag "nasa" and a small results cap, and
+          reports the actor name along with real post captions and usernames drawn from the retrieved
+          data (not invented). The distinguishing signal is the hashtag; a profile or post scraper for a
+          named account is the wrong sibling.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/instagram-hashtag-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/instagram-hashtag-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: instagram-hashtag-scraper-usage-nasa-keyword-reels
+      skill: use
+      title: 'instagram-hashtag / use / nasa-keyword-reels'
+      notes: 'Usage: pinned Hashtag scraper, keyword mode with reels result type'
+      prompt: Using the apify/instagram-hashtag-scraper Actor, get 5 Instagram reels based on keyword nasa
+          and report each post's caption's first sentence and its like count.
+      expected: The agent runs the pinned actor with hashtags set to ["nasa"], keyword search enabled,
+          resultsType "reels" and a 5-result cap, and reports real captions and like counts drawn from
+          the retrieved dataset items (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/instagram-hashtag-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: keywordInput
+            type: apify.input
+            path: hashtags[0]
+            op: regex
+            value: nasa
+          - id: keywordMode
+            type: apify.input
+            path: keywordSearch
+            op: equals
+            value: true
+            severity: warn
+          - id: reelsType
+            type: apify.input
+            path: resultsType
+            op: equals
+            value: reels
+            severity: warn
+          - id: fiveResults
+            type: apify.input
+            path: resultsLimit
+            op: lte
+            value: 5
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 5 }
+          - id: grounded
+            type: answer.grounded
+            minDigits: 1
