@@ -1,0 +1,23 @@
+# Stub: Apify AI (the product agent) under test end to end. The only profile where
+# `system-prompt` is a legitimate fix area.
+name: apify-ai
+subjectKind: agent
+description: Apify AI answering real user prompts.
+skills:
+  find:
+    label: Intent
+    description: The agent must pick the right Actors and tools for the user's intent.
+    tools: []
+    maxTurns: 20
+  use:
+    label: Result
+    description: The intent is clear; the agent must produce the right result.
+    tools: []
+    maxTurns: 20
+wrongSubjectLabel: wrong-intent
+fixAreas:
+  - { id: system-prompt, owner: subject, description: The agent's own instructions caused the failure. }
+  - { id: tool-selection, owner: subject, description: The agent chose the wrong Actor or tool. }
+  - { id: store-data, owner: store, description: Actor descriptions or schemas in the store misled the agent. }
+  - { id: agent-or-model, owner: none, description: Model reasoning failure. }
+evidence: [apify-runs-from-mcp]

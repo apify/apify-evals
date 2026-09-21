@@ -361,6 +361,16 @@ async function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<
     }
 }
 
+/**
+ * Session wall clock: the scenario's own `timeoutSecs` (scenarios/README.md)
+ * wins over the Actor-level default, so a slow scenario is not killed at the
+ * global limit. Anything non-positive or non-numeric falls back.
+ */
+export function sessionTimeoutSecs(meta: DatasetItemMetadata | Record<string, unknown>, fallback: number): number {
+    const override = (meta as { timeoutSecs?: unknown }).timeoutSecs;
+    return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : fallback;
+}
+
 function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
@@ -431,10 +441,11 @@ function runClaudeCodeOnce(
                 : null;
 
         const killTree = () => killProcessTree(child);
+        const timeoutMs = sessionTimeoutSecs(meta, perItemTimeoutSecs) * 1000;
         const killer = setTimeout(() => {
             timedOut = true;
             killTree();
-        }, perItemTimeoutSecs * 1000);
+        }, timeoutMs);
 
         const settle = ({
             exitCode = null,

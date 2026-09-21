@@ -114,6 +114,48 @@ describe('runChecks', () => {
         expect(r.url.value).toBe(1);
     });
 
+    it('apify.input: boolean flags are compared by value, not presence', () => {
+        // The agent set every required flag, but two of them the wrong way round.
+        const ev: Evidence = {
+            ...evidence,
+            actorRuns: [
+                {
+                    ...evidence.actorRuns[0],
+                    input: {
+                        zipCodes: ['85251'],
+                        forSaleByAgent: true,
+                        forSaleByOwner: true,
+                        forRent: true,
+                        sold: true,
+                    },
+                },
+            ],
+        };
+        const r = byId(
+            runChecks(
+                [
+                    {
+                        id: 'present',
+                        type: 'apify.input',
+                        required: ['forSaleByAgent', 'forSaleByOwner', 'forRent', 'sold'],
+                    },
+                    { id: 'agent', type: 'apify.input', path: 'forSaleByAgent', op: 'equals', value: true },
+                    { id: 'rent', type: 'apify.input', path: 'forRent', op: 'equals', value: false },
+                    { id: 'sold', type: 'apify.input', path: 'sold', op: 'equals', value: false },
+                    { id: 'absent', type: 'apify.input', path: 'daysOnZillow', op: 'equals', value: false },
+                ],
+                ev,
+            ),
+        );
+        expect(r.present.value).toBe(1);
+        expect(r.agent.value).toBe(1);
+        expect(r.rent.value).toBe(0);
+        expect(r.rent.comment).toContain('forRent = true');
+        expect(r.sold.value).toBe(0);
+        // A flag the agent never set must not count as "false".
+        expect(r.absent.value).toBe(0);
+    });
+
     it('apify.items: count, fields, predicates, sets, schema', () => {
         const r = byId(
             runChecks(
