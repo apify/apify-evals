@@ -126,7 +126,10 @@ export async function loadRunItems(langfuse: LangfuseClient, datasetRunId: strin
                 expectedOutput: it.expectedOutput,
             });
         }
-        cursor = (page as unknown as { meta?: { nextCursor?: string } }).meta?.nextCursor;
+        // The experiments API paginates with meta.cursor (scores-v3 style); older builds read
+        // meta.nextCursor and silently stopped after the first 50 items.
+        const meta = (page as unknown as { meta?: { cursor?: string; nextCursor?: string } }).meta;
+        cursor = meta?.cursor ?? meta?.nextCursor;
     } while (cursor);
     return items;
 }
@@ -443,7 +446,10 @@ function legacyChecks(deterministic: number | undefined, skill: 'find' | 'use' |
             passed: deterministic === 1,
             severity: 'fail',
             applicable: true,
-            comment: deterministic === 1 ? 'runner check passed' : 'runner check failed (legacy trace, no evidence artifact)',
+            comment:
+                deterministic === 1
+                    ? 'runner check passed'
+                    : 'runner check failed (legacy trace, no evidence artifact)',
         },
     ];
 }
@@ -485,17 +491,27 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
     // session log for a conversation with generous previews.
     const artifact = await fetchEvidence(obs.metadata, apifyToken);
     const conversation =
-        (await conversationFromFullLog(obs.metadata, apifyToken)) ?? ((output.conversation ?? []) as ConversationEntry[]);
+        (await conversationFromFullLog(obs.metadata, apifyToken)) ??
+        ((output.conversation ?? []) as ConversationEntry[]);
     const checks = artifact ? artifact.checks : legacyChecks(deterministic, skill);
-    const infra = artifact?.infra ?? { ok: !obs.metadata.timedOut, reasons: obs.metadata.timedOut ? ['session timed out'] : [] };
+    const infra = artifact?.infra ?? {
+        ok: !obs.metadata.timedOut,
+        reasons: obs.metadata.timedOut ? ['session timed out'] : [],
+    };
 
     // Schema validity from full tool inputs when we have evidence, else from the span.
     const schemaConversation: ConversationEntry[] = artifact
-        ? artifact.evidence.toolCalls.map((c) => ({ role: 'assistant', type: 'tool_call', tool: c.tool, input: c.input }))
+        ? artifact.evidence.toolCalls.map((c) => ({
+              role: 'assistant',
+              type: 'tool_call',
+              tool: c.tool,
+              input: c.input,
+          }))
         : conversation;
-    const schema = degraded && !artifact
-        ? { verdict: 'not_applicable' as Verdict, detail: pre ? 'contract_v0_trace' : 'contract_invalid_span' }
-        : await schemaValidityCheck(schemaConversation, obs.metadata, apifyToken);
+    const schema =
+        degraded && !artifact
+            ? { verdict: 'not_applicable' as Verdict, detail: pre ? 'contract_v0_trace' : 'contract_invalid_span' }
+            : await schemaValidityCheck(schemaConversation, obs.metadata, apifyToken);
 
     const facts = renderFacts({ intendedSubject, skill, artifact, session: obs.metadata });
     const prompt = compileTemplate(promptTemplate, {
@@ -577,12 +593,22 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
     // Team-facing scores.
     await write('judge.fixArea', merged.fixArea, fixAreaEvidence, 'CATEGORICAL');
     if (merged.disagreement === 1 || checks.some((c) => c.applicable)) {
-        await write('judge.disagreement', merged.disagreement, merged.disagreement ? 'model and deterministic checks disagree' : 'model and checks agree');
+        await write(
+            'judge.disagreement',
+            merged.disagreement,
+            merged.disagreement ? 'model and deterministic checks disagree' : 'model and checks agree',
+        );
     }
-    if (merged.found !== null) await write('eval.found', merged.found, merged.found ? 'intended subject used' : 'intended subject not used');
-    if (merged.works !== null) await write('eval.works', merged.works, merged.works ? 'usage scenario passed' : 'usage scenario failed');
+    if (merged.found !== null)
+        await write('eval.found', merged.found, merged.found ? 'intended subject used' : 'intended subject not used');
+    if (merged.works !== null)
+        await write('eval.works', merged.works, merged.works ? 'usage scenario passed' : 'usage scenario failed');
     if (merged.overall !== null) {
-        await write('judge.overall', merged.overall, `${merged.overall ? 'PASS' : 'FAIL'}: ${merged.reasons[0] ?? overallEvidence}`);
+        await write(
+            'judge.overall',
+            merged.overall,
+            `${merged.overall ? 'PASS' : 'FAIL'}: ${merged.reasons[0] ?? overallEvidence}`,
+        );
     }
 
     // Why-it-failed, readable without expanding scores.
@@ -620,7 +646,10 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
         endedAt: call.endedAt,
         model: judgeModel,
         input: prompt,
-        output: { ...reply, merged: { verdict: merged.verdictLabel, fixArea: merged.fixArea, reasons: merged.reasons } },
+        output: {
+            ...reply,
+            merged: { verdict: merged.verdictLabel, fixArea: merged.fixArea, reasons: merged.reasons },
+        },
         usage: call.usage,
         metadata: { ...version, evidence: scoreMetadata.evidence, checks: checks.length },
     });
@@ -647,7 +676,10 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
         works: merged.works,
         checksPassed: checks.filter((c) => c.applicable && c.passed).length,
         checksTotal: checks.filter((c) => c.applicable).length,
-        actorRunsCostUsd: typeof (obs.metadata as { actorRunsCostUsd?: number }).actorRunsCostUsd === 'number' ? (obs.metadata as { actorRunsCostUsd: number }).actorRunsCostUsd : undefined,
+        actorRunsCostUsd:
+            typeof (obs.metadata as { actorRunsCostUsd?: number }).actorRunsCostUsd === 'number'
+                ? (obs.metadata as { actorRunsCostUsd: number }).actorRunsCostUsd
+                : undefined,
         title: obs.metadata.itemTitle,
         itemActor: obs.metadata.itemActor,
         itemTeam: obs.metadata.itemTeam,
