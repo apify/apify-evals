@@ -68,6 +68,11 @@ export interface SessionContext {
     apifyToken: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
+    /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
+     * dashboards can keep the scheduled series apart from team reruns. */
+    trigger?: string;
+    /** Repeats per scenario in this run; becomes the `repeats:` trace tag. */
+    repeats?: number;
     artifactStore: ArtifactStore;
     snapshots: SnapshotCache;
     /** Reference runs (fresh ground truth), shared across sessions of one experiment. */
@@ -80,6 +85,26 @@ export interface SessionContext {
         value: number;
         comment: string;
     }) => Promise<void>;
+}
+
+/** Trace tags are what Langfuse dashboards can filter and (for low-cardinality
+ * values) group by. `trigger:` and `repeats:` let the scheduled daily series be
+ * told apart from team reruns and 3-repeat diagnostics. */
+export function buildTraceTags(
+    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats'>,
+    meta: Partial<DatasetItemMetadata> & { tags?: unknown },
+): string[] {
+    const trigger = (ctx.trigger ?? 'unknown').toLowerCase();
+    return [
+        `dataset:${ctx.datasetName}`,
+        `model:${ctx.harness.model}`,
+        `trigger:${trigger === 'schedule' ? 'schedule' : trigger === 'unknown' ? 'unknown' : 'manual'}`,
+        `repeats:${Math.max(1, Math.floor(ctx.repeats ?? 1))}`,
+        ...(meta.actor ? [`actor:${meta.actor}`] : []),
+        ...(meta.team ? [`team:${meta.team}`] : []),
+        ...(meta.skill ? [`skill:${meta.skill}`] : []),
+        ...(Array.isArray(meta.tags) ? meta.tags.map(String) : []),
+    ];
 }
 
 /** One assistant turn or one tool result, with its arrival time, used to
@@ -768,14 +793,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     // Trace tags are what Langfuse dashboards can group by, so this is where
     // the team-facing slicing (per actor / team / skill) is wired in.
     const meta = item.metadata ?? {};
-    const tags = [
-        `dataset:${ctx.datasetName}`,
-        `model:${harness.model}`,
-        ...(meta.actor ? [`actor:${meta.actor}`] : []),
-        ...(meta.team ? [`team:${meta.team}`] : []),
-        ...(meta.skill ? [`skill:${meta.skill}`] : []),
-        ...(Array.isArray(meta.tags) ? meta.tags.map(String) : []),
-    ];
+    const tags = buildTraceTags(ctx, meta);
     // The experiment-item-run span is active here (the SDK opened it around
     // the task): checks are scored onto it, because that is the observation
     // the compare view and the run aggregates read.
