@@ -6,6 +6,31 @@ on:
     branches: [main]
 
 jobs:
+  agent-evals:
+    # The live Langfuse-based evals: contract, runner, judge, tools, scenarios.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build and test the eval workspaces
+        # npm silently no-ops a `-w` flag that does not resolve, so an explicit
+        # list would pass while exercising nothing. Select what is checked out.
+        run: |
+          set -eu
+          workspaces=""
+          for w in contract actors/judge actors/workflow-runner tools; do
+            if [ -f "$w/package.json" ]; then workspaces="$workspaces -w $w"; fi
+          done
+          echo "Workspaces:$workspaces"
+          npm run build $workspaces --if-present
+          npm test $workspaces --if-present
+      - name: Validate scenario files against the contract
+        run: npm run scenarios:check
+
   unit-tests:
     runs-on: ubuntu-latest
     steps:
