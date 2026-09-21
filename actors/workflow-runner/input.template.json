@@ -1,0 +1,11 @@
+{
+    "datasetName": "runner-poc",
+    "createDemoDataset": true,
+    "useOpenRouterProxy": true,
+    "concurrency": 3,
+    "harness": { "kind": "claude-code", "model": "anthropic/claude-haiku-4.5", "maxTurns": 6 },
+    "perItemTimeoutSecs": 300,
+    "langfuseBaseUrl": "https://langfuse.apify.dev",
+    "langfusePublicKey": "pk-lf-REPLACE-ME",
+    "langfuseSecretKey": "sk-lf-REPLACE-ME"
+}
