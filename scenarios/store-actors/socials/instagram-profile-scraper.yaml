@@ -1,0 +1,62 @@
+# apify/instagram-profile-scraper · owner: socials · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Socials team (Sept 2026).
+subject: apify/instagram-profile-scraper
+tags: [family:instagram]
+scenarios:
+  - id: instagram-profile-scraper-discovery-natgeo-verified
+    skill: find
+    title: "Discovery: profile-only question finds the lightweight Profile scraper"
+    prompt: Is the Instagram account @natgeo verified, and what does its bio say?
+    expected: The agent discovers apify/instagram-profile-scraper (the socials-team lightweight Instagram
+      profile-info Actor) via store search, runs it with the natgeo username, and truthfully reports
+      the actor name and the account's real verified status and bio drawn from the retrieved profile
+      data (not invented). The signal is that no posts are requested, so a post or reel scraper is
+      the wrong sibling.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/instagram-profile-scraper
+      - id: namedActor
+        type: answer.contains
+        value: apify/instagram-profile-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: instagram-profile-scraper-usage-natgeo-about-section
+    skill: use
+    title: "Usage: pinned Profile scraper with the about section enabled"
+    prompt: Using the apify/instagram-profile-scraper Actor, look up the Instagram profile @natgeo and
+      report its bio's first sentence, whether it's a business account and which country the account
+      is from.
+    expected: The agent runs the pinned actor with usernames set to ["natgeo"] and the about section
+      included, and reports the real bio text, business-account flag and country drawn from the
+      retrieved profile data (not invented).
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/instagram-profile-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: usernameInput
+        type: apify.input
+        path: usernames[0]
+        op: regex
+        value: natgeo
+      - id: aboutSection
+        type: apify.input
+        path: includeAboutSection
+        op: equals
+        value: true
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 1 }
+      - id: field
+        type: apify.items
+        field: isBusinessAccount
+        op: exists
