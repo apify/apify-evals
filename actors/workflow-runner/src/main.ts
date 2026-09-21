@@ -356,6 +356,8 @@ for (const model of models) {
                 const r = await runSession({
                     item: item as never,
                     datasetName,
+                    trigger,
+                    repeats: safeRepeats,
                     harness,
                     mcpUrl,
                     apifyToken,
