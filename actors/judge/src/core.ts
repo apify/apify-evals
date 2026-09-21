@@ -603,6 +603,26 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
         await write('eval.found', merged.found, merged.found ? 'intended subject used' : 'intended subject not used');
     if (merged.works !== null)
         await write('eval.works', merged.works, merged.works ? 'usage scenario passed' : 'usage scenario failed');
+    // Who won: on find scenarios name the subject the agent actually drove, so a
+    // discovery loss can be routed (third party vs our own sibling vs nothing run).
+    if (skill === 'find' && merged.verdict !== 'inconclusive' && artifact) {
+        const fold = (x: string) => x.toLowerCase();
+        const called = [
+            ...new Set(
+                (artifact.evidence.actorRuns as { actor?: unknown }[])
+                    .map((r) => String(r.actor ?? '').trim())
+                    .filter((x) => x.length > 0),
+            ),
+        ];
+        const others = called.filter((x) => !intendedSubject || fold(x) !== fold(intendedSubject));
+        const value = merged.found === 1 ? 'intended' : called.length === 0 ? 'none' : (others[0] ?? 'intended');
+        await write(
+            'eval.subjectCalled',
+            value,
+            called.length > 0 ? `Actors the agent ran: ${called.join(', ')}` : 'the agent ran no Actor',
+            'CATEGORICAL',
+        );
+    }
     if (merged.overall !== null) {
         await write(
             'judge.overall',

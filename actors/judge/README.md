@@ -24,7 +24,11 @@ view and dashboards can read them):
 - `judge.overall` (1/0): the same as a number for averages; not written for `inconclusive`.
 - `judge.fixArea` (category from the suite profile): what the subject's team should change first. Forced by a failed check when there is one (`apify.input` → `input-schema`, `apify.items` / `reference` → `output-format`, `subject.used` → `discoverability` on find scenarios), else the model's choice.
 - `judge.disagreement` (1/0): the model and the checks disagreed on pass/fail. A judge-quality signal, trended on the overview dashboard.
-- `eval.found` / `eval.works` (1/0): the Found / Works split per scenario type.
+- `eval.found` / `eval.works` (1/0): the Found / Works split per scenario type. `eval.found` is only
+  written when a `subject.used` check actually applied; a find scenario without one is not measured.
+- `eval.subjectCalled` (categorical, find scenarios): which subject the agent actually drove:
+  `intended`, `none` (no Actor run), or the id of the Actor it ran instead. The comment lists every
+  Actor it ran. Lets a discovery loss be routed to a third party, one of our own siblings, or nothing.
 - `eval.passAtN` / `eval.consistency`: when a run repeats scenarios, any-repeat-passed and majority agreement per scenario; OUTPUT lists the `flaky` ones.
 - `rubric.toolSelection`, `rubric.argumentCorrectness`, `rubric.resultUtilization`, `rubric.errorRecovery`, `rubric.planEfficiency`, `rubric.taskCompletion` (1/0): the model's rubric from apify-mcp-server#1203, maintainer-facing. `not_applicable` writes no score.
 - `check.schemaValidity` (1/0): every Actor input validates against the tool schema the agent saw (from the evidence's full inputs).
