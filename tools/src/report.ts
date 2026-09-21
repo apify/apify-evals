@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url';
 
 import { LangfuseClient } from '@langfuse/client';
 
+import { aggregate, ownerPrefixesFromExpected } from './report/aggregate.js';
 import { collectReportData } from './report/collect.js';
+import { renderHtml } from './report/render.js';
 
 const args = process.argv.slice(2);
 const flag = (name: string, dflt: string): string => {
@@ -31,6 +33,12 @@ const langfuse = new LangfuseClient();
 const data = await collectReportData(langfuse, { rootDir, suite, days, projectId: process.env.LANGFUSE_PROJECT_ID });
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(data, null, 1));
+const agg = aggregate(data, ownerPrefixesFromExpected(data.expected));
+const html = out.replace(/\.json$/, '') + '.html';
+writeFileSync(html, renderHtml(data, agg));
+console.log(
+    `  portfolio rows ${agg.portfolio.length}, recurring ${agg.recurring.length}, new ${agg.fresh.length}, discovery rows ${agg.discovery.length}; wrote ${html}`,
+);
 
 const byVerdict = new Map<string, number>();
 for (const o of data.observations) byVerdict.set(o.verdict, (byVerdict.get(o.verdict) ?? 0) + 1);
