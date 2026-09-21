@@ -1,0 +1,87 @@
+# apify/website-content-crawler · owner: universe · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Universe team (Sept 2026). The usage case
+# moved from crunchbase.com (bot-protected, unbounded) to a section of docs.apify.com with a page
+# cap, keeping the intent: section filtering plus saving HTML.
+subject: apify/website-content-crawler
+tags: [family:generic-scrapers]
+scenarios:
+  - id: website-content-crawler-discovery-docs-knowledge-base
+    skill: find
+    title: "Discovery: LLM-ready docs crawl finds the Website Content Crawler"
+    prompt: I want to build a knowledge base from a documentation website so I can later use it for RAG
+      and AI search. Can you crawl the docs at https://docs.apify.com/academy and extract clean text
+      or Markdown content from each page? Limit it to 20 pages so it doesn't run forever, and make
+      sure whatever tool you use is meant for turning websites into LLM-ready text, not just
+      retrieving raw HTML. Report how many pages you got and the titles of five of them.
+    expected: The agent reaches apify/website-content-crawler, sets the academy URL as start, a 20-page
+      cap, and extracts text or Markdown from the nested pages, reporting a real page count and
+      titles from the retrieved items. Cheerio Scraper and Web Scraper are wrong siblings because
+      the user wants LLM-ready text without writing extraction code.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/website-content-crawler
+      - id: namedActor
+        type: answer.contains
+        value: apify/website-content-crawler
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+      - id: startUrl
+        type: apify.input
+        path: startUrls[0].url
+        op: regex
+        value: docs\.apify\.com/academy
+      - id: pageCap
+        type: apify.input
+        path: maxCrawlPages
+        op: lte
+        value: 20
+        severity: warn
+  - id: website-content-crawler-usage-platform-section-html
+    skill: use
+    title: "Usage: pinned Website Content Crawler, one section only with HTML saved"
+    prompt: Use the apify/website-content-crawler Actor to crawl only the platform section of the Apify
+      docs, https://docs.apify.com/platform, and nothing outside it. Cap it at 10 pages. I need the
+      clean text of each page and also the full HTML of the pages you scraped. Report how many pages
+      you got and confirm the HTML was saved.
+    expected: The agent uses apify/website-content-crawler with the platform URL as start, URL filtering
+      that keeps the crawl inside the platform section (include globs or equivalent), a 10-page cap,
+      and HTML saving enabled, then reports a real page count from the run.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/website-content-crawler
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: startUrl
+        type: apify.input
+        path: startUrls[0].url
+        op: regex
+        value: docs\.apify\.com/platform
+      - id: pageCap
+        type: apify.input
+        path: maxCrawlPages
+        op: lte
+        value: 10
+        severity: warn
+      - id: sectionFilter
+        type: apify.input
+        path: includeUrlGlobs
+        op: exists
+        severity: warn
+      - id: saveHtml
+        type: apify.input
+        path: saveHtml
+        op: equals
+        value: true
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 10 }
+        severity: warn
