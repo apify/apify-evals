@@ -10,6 +10,8 @@ interface Input {
     writeRunScores?: boolean;
     /** Named key-value store for evidence, logs and the report (eval-artifacts). */
     artifactStore?: string;
+    /** Public key-value store the suite report is written to (eval-reports). Defaults to REPORT_STORE_ID. */
+    reportStore?: string;
     /** Suite (Langfuse dataset) name, used to build the report after a full run; resolved from the run when omitted. */
     datasetName?: string;
     /** Build and store the suite report after a full-scope run (default true). */
@@ -411,9 +413,14 @@ if (wantReport) {
             projectId,
             baseUrl: input.langfuseBaseUrl ?? process.env.LANGFUSE_BASE_URL,
         });
-        const store = await Actor.openKeyValueStore(input.artifactStore ?? process.env.ARTIFACT_STORE_ID, {
-            forceCloud: true,
-        });
+        // Reports go to a separate, publicly readable store: the artifacts store
+        // holds full agent logs and stays private.
+        const store = await Actor.openKeyValueStore(
+            input.reportStore ?? process.env.REPORT_STORE_ID ?? 'eval-reports',
+            {
+                forceCloud: true,
+            },
+        );
         const day = new Date().toISOString().slice(0, 10);
         const records: [string, string, string][] = [
             [`report-${suite}-latest.html`, built.html, 'text/html'],
