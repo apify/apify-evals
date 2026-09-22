@@ -17,7 +17,8 @@
         "@langfuse/tracing": "^5.10.1",
         "@langfuse/otel": "^5.10.1",
         "@opentelemetry/sdk-node": "^0.205.0",
-        "@opentelemetry/api": "^1.9.0"
+        "@opentelemetry/api": "^1.9.0",
+        "@apify-evals/report": "*"
     },
     "devDependencies": {
         "@types/node": "^24.0.0",

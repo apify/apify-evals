@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { derive, latestScores } from '../src/report/collect.js';
+import { derive, latestScores } from '../src/collect.js';
 
 describe('report collect', () => {
     it('keeps only the newest version of each score and reads categorical values from value', () => {

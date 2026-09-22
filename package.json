@@ -5,6 +5,7 @@
     "workspaces": [
         "shared",
         "contract",
+        "report",
         "actors/*",
         "tools"
     ],
