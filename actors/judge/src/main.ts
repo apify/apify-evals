@@ -394,7 +394,11 @@ await Actor.setValue('SCOREBOARD', renderScoreboard(scoreboard, datasetRunId, sk
 // days, written to the artifacts store under a stable "latest" key and a dated
 // one. Developers read this, not Langfuse.
 let reportUrl: string | null = null;
-if (writeRunScores && judged.length > 0 && input.report !== false) {
+// Default: after a full-scope batch that judged something new. `report: true`
+// forces a rebuild (e.g. to regenerate after a report change) even when every
+// item was already judged.
+const wantReport = input.report === true || (input.report !== false && writeRunScores && judged.length > 0);
+if (wantReport) {
     try {
         const { buildReport } = await import('@apify-evals/report');
         const { resolve } = await import('node:path');
@@ -434,8 +438,12 @@ async function datasetNameForRun(runId: string): Promise<string | undefined> {
         fields: 'core',
         fromStartTime: '2000-01-01T00:00:00Z',
         limit: 1,
-    })) as unknown as { data?: { experimentDatasetId?: string | null }[] };
-    const datasetId = page.data?.[0]?.experimentDatasetId;
+    })) as unknown as { data?: { experimentDatasetId?: string | null; metadata?: Record<string, unknown> | null }[] };
+    const first = page.data?.[0];
+    // The items API exposes the dataset id only inside the span metadata today.
+    const datasetId =
+        first?.experimentDatasetId ??
+        (typeof first?.metadata?.dataset_id === 'string' ? first.metadata.dataset_id : undefined);
     if (!datasetId) return undefined;
     let dsPage: number | undefined = 1;
     while (dsPage) {
