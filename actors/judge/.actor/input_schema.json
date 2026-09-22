@@ -101,6 +101,13 @@
             "type": "boolean",
             "description": "After a full-scope run, regenerate the suite report (last 7 days) into the artifacts store as report-<suite>-latest.html and a dated copy.",
             "default": true
+        },
+        "reportStore": {
+            "title": "Report store",
+            "type": "string",
+            "description": "Key-value store the suite report is written to. Should be publicly readable so developers can open the link without an Apify login. Defaults to the Actor's REPORT_STORE_ID (eval-reports).",
+            "editor": "textfield",
+            "nullable": true
         }
     },
     "required": ["datasetRunId"]
