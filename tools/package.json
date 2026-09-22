@@ -14,7 +14,8 @@
     "dependencies": {
         "@apify-evals/contract": "*",
         "@langfuse/client": "^5.10.1",
-        "yaml": "^2.8.0"
+        "yaml": "^2.8.0",
+        "@apify-evals/report": "*"
     },
     "devDependencies": {
         "@types/node": "^24.0.0",

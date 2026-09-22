@@ -411,6 +411,7 @@ for (const model of models) {
                 judgeActor,
                 {
                     datasetRunId,
+                    datasetName,
                     judgeModel,
                     writeRunScores: fullScope,
                     ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}),
