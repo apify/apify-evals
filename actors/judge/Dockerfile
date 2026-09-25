@@ -37,6 +37,7 @@ RUN npm install --omit=dev --omit=optional --audit=false
 
 COPY --from=builder /usr/src/app/contract/dist ./contract/dist
 COPY --from=builder /usr/src/app/report/dist ./report/dist
+COPY --from=builder /usr/src/app/report/assets ./report/assets
 COPY --from=builder /usr/src/app/actors/judge/dist ./actors/judge/dist
 # Suite profiles: fix-area taxonomy the judge may name (read at runtime).
 COPY profiles/ ./profiles/
