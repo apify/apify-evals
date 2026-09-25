@@ -1,6 +1,7 @@
 /* Report v2 client. Runs in the browser and, via vm, at build time to pre-render the default view. Design: ASTRA-REPORT workshop, 25 Sept 2026. */
 function application(raw) {
-  const esc = x => String(x ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const tidy = x => String(x ?? '').replace(/ = undefined \(expected exists undefined\)/g,' is missing (expected to be set)').replace(/ = undefined \(expected (\w+) /g,' is missing (expected $1 ');
+  const esc = x => tidy(x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const names = {P:'Passed', F:'Failed', W:'Other Actor', I:'Not counted', U:'No result'};
   const symbols = {P:'✓', F:'×', W:'↗', I:'∕', U:'?'};
   const code = x => !x ? 'U' : x.infraOk === false || x.verdict === 'inconclusive' ? 'I' : ({pass:'P',fail:'F','wrong-actor':'W'}[x.verdict] || 'U');
