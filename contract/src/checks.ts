@@ -228,6 +228,17 @@ function apifyRun(check: AnyCheck, ev: Evidence): Partial {
     return pass(`${runs.length} run(s) ${status}`);
 }
 
+/** Human wording for an input predicate in check comments. */
+function describeOp(op: string, value: unknown): string {
+    if (op === 'exists') return 'to be set';
+    if (op === 'notEquals') return `not ${JSON.stringify(value)}`;
+    if (op === 'in') return `one of ${JSON.stringify(value)}`;
+    if (op === 'regex') return `to match /${String(value)}/`;
+    if (op === 'lte') return `at most ${JSON.stringify(value)}`;
+    if (op === 'gte') return `at least ${JSON.stringify(value)}`;
+    return JSON.stringify(value);
+}
+
 function apifyInput(check: AnyCheck, ev: Evidence): Partial {
     const runs = runsFor(check, ev).filter((r) => r.input !== undefined);
     if (runs.length === 0) return fail('no Actor run with a recorded input');
@@ -243,7 +254,9 @@ function apifyInput(check: AnyCheck, ev: Evidence): Partial {
             const ok = compare(actual, String(check.op ?? 'equals'), check.value);
             if (!ok)
                 problems.push(
-                    `${r.actor}: ${check.path} = ${JSON.stringify(actual)} (expected ${check.op ?? 'equals'} ${JSON.stringify(check.value)})`,
+                    actual === undefined
+                        ? `${r.actor}: ${check.path} is missing (expected ${describeOp(String(check.op ?? 'equals'), check.value)})`
+                        : `${r.actor}: ${check.path} = ${JSON.stringify(actual)} (expected ${describeOp(String(check.op ?? 'equals'), check.value)})`,
                 );
         }
     }
