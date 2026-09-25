@@ -35,6 +35,7 @@ const { data, agg, html, json } = await buildReport(langfuse, {
     days,
     rootDir,
     projectId: process.env.LANGFUSE_PROJECT_ID,
+    variant,
 });
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, json);
