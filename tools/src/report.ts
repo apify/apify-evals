@@ -23,6 +23,7 @@ const flag = (name: string, dflt: string): string => {
 const suite = flag('suite', 'store-actors');
 const days = Number(flag('days', '7'));
 const out = flag('out', `/tmp/eval-report-${suite}.json`);
+const variant = args.includes('--v2') ? 'v2' : 'v1';
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 for (const k of ['LANGFUSE_BASE_URL', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY']) {
