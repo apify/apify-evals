@@ -27,6 +27,8 @@ export interface BuildReportOptions {
     now?: Date;
     /** 'v2' renders the Actor-table page; default is the v1 narrative page. */
     variant?: 'v1' | 'v2';
+    /** Public URL of the JSON twin, linked from the v2 footer. */
+    latestJsonUrl?: string;
 }
 
 export interface BuiltReport {
@@ -49,6 +51,7 @@ export async function buildReport(langfuse: LangfuseClient, opts: BuildReportOpt
         now: opts.now,
     });
     const agg = aggregate(data, ownerPrefixesFromExpected(data.expected));
-    const html = opts.variant === 'v2' ? renderHtmlV2(data, agg) : renderHtml(data, agg);
+    const html =
+        opts.variant === 'v2' ? renderHtmlV2(data, agg, { latestJsonUrl: opts.latestJsonUrl }) : renderHtml(data, agg);
     return { data, agg, html, json: JSON.stringify(data, null, 1) };
 }
