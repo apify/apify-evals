@@ -47,6 +47,20 @@ export interface V2Model {
 }
 
 export function buildV2Model(data: ReportData, agg: Aggregate, latestJsonUrl?: string): V2Model {
+    // One canonical result per task and day is the contract every number on
+    // the page relies on. Two scheduled full runs on one day would otherwise be
+    // merged silently (the client keeps whichever comes last), so refuse to
+    // publish rather than present inconsistent totals.
+    const seen = new Map<string, string>();
+    for (const o of agg.canonical) {
+        const key = `${o.scenarioId}|${o.day}`;
+        const other = seen.get(key);
+        if (other && other !== o.experimentId)
+            throw new Error(
+                `report v2: two canonical attempts for ${o.scenarioId} on ${o.day} (experiments ${other} and ${o.experimentId}); resolve before publishing`,
+            );
+        seen.set(key, o.experimentId);
+    }
     const observations = agg.canonical.map((o) => {
         const scores: Record<string, { value: number | null; comment: string | null }> = {};
         for (const [name, s] of Object.entries(o.scores)) {
