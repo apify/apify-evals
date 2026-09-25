@@ -108,6 +108,22 @@
             "description": "Key-value store the suite report is written to. Should be publicly readable so developers can open the link without an Apify login. Defaults to the Actor's REPORT_STORE_ID (eval-reports).",
             "editor": "textfield",
             "nullable": true
+        },
+        "reportVariant": {
+            "title": "Report variant",
+            "type": "string",
+            "description": "v1: narrative page. v2: Actor table with trend charts and in-place evidence (28-day window).",
+            "editor": "select",
+            "enum": ["v1", "v2"],
+            "enumTitles": ["v1 narrative", "v2 Actor table + charts"],
+            "default": "v1"
+        },
+        "reportKeyPrefix": {
+            "title": "Report key prefix",
+            "type": "string",
+            "description": "Record key prefix in the report store. Default report-<suite>. Use another prefix to publish a candidate beside the live report.",
+            "editor": "textfield",
+            "nullable": true
         }
     },
     "required": ["datasetRunId"]

@@ -12,6 +12,10 @@ interface Input {
     artifactStore?: string;
     /** Public key-value store the suite report is written to (eval-reports). Defaults to REPORT_STORE_ID. */
     reportStore?: string;
+    /** Report page variant: v1 (narrative) or v2 (Actor table with charts). */
+    reportVariant?: 'v1' | 'v2';
+    /** Record key prefix, default report-<suite>; use e.g. report-<suite>-v2-candidate to publish beside the live one. */
+    reportKeyPrefix?: string;
     /** Suite (Langfuse dataset) name, used to build the report after a full run; resolved from the run when omitted. */
     datasetName?: string;
     /** Build and store the suite report after a full-scope run (default true). */
@@ -406,30 +410,29 @@ if (wantReport) {
         const { resolve } = await import('node:path');
         const suite = input.datasetName ?? (await datasetNameForRun(datasetRunId));
         if (!suite) throw new Error('could not resolve the dataset name for the run');
+        const prefix = input.reportKeyPrefix ?? `report-${suite}`;
+        const storeId = input.reportStore ?? process.env.REPORT_STORE_ID ?? 'eval-reports';
         const built = await buildReport(langfuse, {
             suite,
-            days: 7,
+            days: input.reportVariant === 'v2' ? 28 : 7,
             rootDir: resolve(process.cwd(), '..', '..'),
             projectId,
             baseUrl: input.langfuseBaseUrl ?? process.env.LANGFUSE_BASE_URL,
+            variant: input.reportVariant ?? 'v1',
+            latestJsonUrl: `https://api.apify.com/v2/key-value-stores/${storeId}/records/${prefix}-latest.json`,
         });
         // Reports go to a separate, publicly readable store: the artifacts store
         // holds full agent logs and stays private.
-        const store = await Actor.openKeyValueStore(
-            input.reportStore ?? process.env.REPORT_STORE_ID ?? 'eval-reports',
-            {
-                forceCloud: true,
-            },
-        );
+        const store = await Actor.openKeyValueStore(storeId, { forceCloud: true });
         const day = new Date().toISOString().slice(0, 10);
         const records: [string, string, string][] = [
-            [`report-${suite}-latest.html`, built.html, 'text/html'],
-            [`report-${suite}-latest.json`, built.json, 'application/json'],
-            [`report-${suite}-${day}.html`, built.html, 'text/html'],
-            [`report-${suite}-${day}.json`, built.json, 'application/json'],
+            [`${prefix}-latest.html`, built.html, 'text/html'],
+            [`${prefix}-latest.json`, built.json, 'application/json'],
+            [`${prefix}-${day}.html`, built.html, 'text/html'],
+            [`${prefix}-${day}.json`, built.json, 'application/json'],
         ];
         for (const [key, body, contentType] of records) await store.setValue(key, body, { contentType });
-        reportUrl = `https://api.apify.com/v2/key-value-stores/${store.id}/records/report-${suite}-latest.html`;
+        reportUrl = `https://api.apify.com/v2/key-value-stores/${store.id}/records/${prefix}-latest.html`;
         log.info(
             `REPORT: ${reportUrl} (${built.agg.recurring.length} recurring, ${built.agg.fresh.length} new observations)`,
         );
