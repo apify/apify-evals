@@ -776,8 +776,13 @@ function emitTimeline(
  */
 export async function runSession(ctx: SessionContext): Promise<{ output: string }> {
     const { item, harness } = ctx;
-    const input = item.input as { prompt?: string } | string | undefined;
-    const prompt = typeof input === 'string' ? input : (input?.prompt ?? JSON.stringify(input));
+    const input = item.input as { prompt?: string; query?: string } | string | undefined;
+    // TEMPORARY: `query` is what the mcp-server-evals datasets call the prompt,
+    // while the repo's own suites use `prompt`. Accepting both keeps a foreign
+    // dataset from being handed `{"query":"..."}` as its literal prompt. The
+    // real fix is one key across every dataset (apify/ai-team#327); drop the
+    // `query` fallback once they are normalised.
+    const prompt = typeof input === 'string' ? input : (input?.prompt ?? input?.query ?? JSON.stringify(input));
     const adapter = ADAPTERS[harness.kind];
 
     // Trace tags are what Langfuse dashboards can group by, so this is where
