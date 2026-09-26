@@ -1,0 +1,28 @@
+{
+    "name": "apify-ai-online-evals-daily",
+    "title": "Apify AI online evals (daily)",
+    "description": "Judges a 20% sample of yesterday's finished production apify-ai turns (ai-team#249, #271). Input mirrors the online-mode defaults so the schedule is the record of what runs. Langfuse keys come from the Actor's secret environment variables, not from this input.",
+    "cronExpression": "0 6 * * *",
+    "timezone": "UTC",
+    "isEnabled": true,
+    "isExclusive": true,
+    "notifications": {
+        "email": true
+    },
+    "actions": [
+        {
+            "type": "RUN_ACTOR",
+            "actorId": "<ACTOR_ID of eval-judge, see schedule/README.md>",
+            "runInput": {
+                "body": "{\"mode\":\"online\",\"environment\":\"prod\",\"sampleRate\":0.2,\"maxItems\":100,\"judgeModel\":\"deepseek/deepseek-v4-flash\",\"promptLabel\":\"production\",\"concurrency\":4}",
+                "contentType": "application/json; charset=utf-8"
+            },
+            "runOptions": {
+                "build": "latest",
+                "timeoutSecs": 7200,
+                "memoryMbytes": 1024,
+                "restartOnError": false
+            }
+        }
+    ]
+}

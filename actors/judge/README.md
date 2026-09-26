@@ -643,6 +643,25 @@ judged and written, the rollup gains one run, the checkpoint moves. Same
 window after a prompt, impl or model bump: everything is judged again and the
 new scores land beside the old ones under new ids.
 
+## Schedule and alerting (online mode)
+
+[ai-team#271](https://github.com/apify/ai-team/issues/271). Neither artifact is
+created by code; both are committed as configuration plus the manual steps, and
+neither exists in Apify or Langfuse yet.
+
+- `schedule/online-daily.json` is the `POST /v2/schedules` body for the daily
+  online run (06:00 UTC, `isExclusive`, 2 h timeout, 1 GB, the online-mode
+  defaults pinned in `runInput`). `schedule/README.md` explains each field, the
+  Actor env secrets the run needs (`LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`,
+  `LANGFUSE_SECRET_KEY`; `APIFY_TOKEN` is implicit), the exact curl to create it,
+  and the Apify run-status alert that reports a dead run.
+- `monitors/agent-judge-pass-rate.md` is the Langfuse alert on `avg` of the
+  BOOLEAN `agent_judge` score over a 1-day window: `WARNING` below 0.8, `ALERT`
+  below 0.6, `NO_DATA` after 6 h without verdicts, delivered to Slack through a
+  Langfuse automation. Thresholds are loose on purpose until a baseline exists.
+  The planned second alert on `agent_judge_argumentCorrectness` is described
+  there too.
+
 ## Scope notes
 
 - Judges by dataset-run id only; judging from the span's conversation JSON, not the full log.
