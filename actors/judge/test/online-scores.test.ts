@@ -153,10 +153,10 @@ describe('ids', () => {
     it('onlineScoreId is <traceId>-<name>-p<prompt>-i<impl>-<model>, plus -run for the archival copy', () => {
         const key = { traceId: TRACE_ID, scoreName: 'agent_judge_toolSelection', version };
         expect(onlineScoreId(key, 'trace')).toBe(
-            `${TRACE_ID}-agent_judge_toolSelection-p3-i0-1-0-deepseek-deepseek-v4-flash`,
+            `${TRACE_ID}-agent_judge_toolSelection-p3-i0-3-0-deepseek-deepseek-v4-flash`,
         );
         expect(onlineScoreId(key, 'run')).toBe(`${onlineScoreId(key, 'trace')}${RUN_COPY_SUFFIX}`);
-        expect(JUDGE_IMPL_VERSION).toBe('0.1.0');
+        expect(JUDGE_IMPL_VERSION).toBe('0.3.0');
     });
 
     it('a bumped prompt, impl or model changes the id', () => {

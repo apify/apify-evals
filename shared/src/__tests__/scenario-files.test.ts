@@ -14,7 +14,7 @@ function collectScenarioFiles(dir: string, prefix = ''): string[] {
     const files: string[] = [];
 
     for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith('.md')) {
+        if (entry.isFile() && entry.name.endsWith('.md') && entry.name.toLowerCase() !== 'readme.md') {
             const label = prefix ? `${prefix}/${entry.name}` : entry.name;
             files.push(label);
         } else if (entry.isDirectory()) {

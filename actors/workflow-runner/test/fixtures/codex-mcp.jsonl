@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"fixture-thread"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll call the Apify search tool once for “website content crawler,” with a limit of one result if supported.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"apify","tool":"search-actors","arguments":{"keywords":"website content crawler","limit":1},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"apify","tool":"search-actors","arguments":{"keywords":"website content crawler","limit":1},"result":{"content":[{"type":"text","text":"Website Content Crawler (apify/website-content-crawler)"}],"structured_content":{"actors":[{"title":"Website Content Crawler","fullName":"apify/website-content-crawler"}],"query":"website content crawler","count":1}},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Actor: [Website Content Crawler](https://apify.com/apify/website-content-crawler) (`apify/website-content-crawler`).\n\nShell tools exposed: none.\nFile editing tools exposed: `apply_patch`."}}
+{"type":"turn.completed","usage":{"input_tokens":23035,"cached_input_tokens":10624,"cache_write_input_tokens":0,"output_tokens":212,"reasoning_output_tokens":42}}

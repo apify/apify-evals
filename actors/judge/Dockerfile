@@ -8,6 +8,7 @@ COPY --chown=myuser:myuser contract/package*.json ./contract/
 COPY --chown=myuser:myuser actors/runner/package*.json ./actors/runner/
 COPY --chown=myuser:myuser actors/workflow-runner/package*.json ./actors/workflow-runner/
 COPY --chown=myuser:myuser actors/judge/package*.json ./actors/judge/
+COPY --chown=myuser:myuser tools/package*.json ./tools/
 
 RUN npm install --include=dev --audit=false
 
@@ -26,11 +27,14 @@ COPY contract/package*.json ./contract/
 COPY actors/runner/package*.json ./actors/runner/
 COPY actors/workflow-runner/package*.json ./actors/workflow-runner/
 COPY actors/judge/package*.json ./actors/judge/
+COPY tools/package*.json ./tools/
 
 RUN npm install --omit=dev --omit=optional --audit=false
 
 COPY --from=builder /usr/src/app/contract/dist ./contract/dist
 COPY --from=builder /usr/src/app/actors/judge/dist ./actors/judge/dist
+# Suite profiles: fix-area taxonomy the judge may name (read at runtime).
+COPY profiles/ ./profiles/
 
 WORKDIR /usr/src/app/actors/judge
 CMD ["node", "dist/main.js"]
