@@ -6,6 +6,21 @@ on:
     branches: [main]
 
 jobs:
+  agent-evals:
+    # The live Langfuse-based evals: contract, runner, judge, tools, scenarios.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w contract -w actors/judge -w actors/workflow-runner
+      - run: npm test -w contract -w actors/judge -w actors/workflow-runner -w tools
+      - name: Validate scenario files against the contract
+        run: npm run scenarios:check
+
   unit-tests:
     runs-on: ubuntu-latest
     steps:

@@ -354,6 +354,8 @@ describe('judgeOnlineTrace', () => {
         holistic: { evidence: 'e', verdict: 'pass' },
     };
     const base = { traceId: 't1', apifyToken: 'tok', judgeModel: 'm', promptTemplate: '{{turn}}', promptVersion: 1 };
+    /** The shape judgeLlmCall returns: the parsed reply plus usage and timing. */
+    const llmResult = (json: unknown) => ({ json, usage: null, startedAt: 0, endedAt: 0 });
 
     it('fetches, reconstructs, checks arguments and judges, rendering the turn into the prompt', async () => {
         const prompts: string[] = [];
@@ -364,7 +366,7 @@ describe('judgeOnlineTrace', () => {
             schemas,
             callLlm: async ({ prompt }) => {
                 prompts.push(prompt);
-                return modelReply;
+                return llmResult(modelReply);
             },
         });
         expect(prompts).toHaveLength(1);
@@ -384,7 +386,7 @@ describe('judgeOnlineTrace', () => {
             ...base,
             langfuse: langfuseFor(stripped),
             schemas,
-            callLlm: async () => modelReply,
+            callLlm: async () => llmResult(modelReply),
         });
         expect(traceMetadataFound).toBe(false);
         expect(verdicts.metadata).toMatchObject({ toolSchemaHash: null, schemaMatch: null, outcome: null });
@@ -396,7 +398,7 @@ describe('judgeOnlineTrace', () => {
             ...base,
             langfuse,
             schemas: null,
-            callLlm: async () => modelReply,
+            callLlm: async () => llmResult(modelReply),
         });
         expect(omitted(verdicts.scores, 'agent_judge_argumentCorrectness')).toMatchObject({
             omitted: true,
@@ -407,7 +409,7 @@ describe('judgeOnlineTrace', () => {
 
     it('throws (so the caller counts failedToJudge) when the model reply is not a verdict', async () => {
         await expect(
-            judgeOnlineTrace({ ...base, langfuse, schemas, callLlm: async () => ({ verdict: 'pass' }) }),
+            judgeOnlineTrace({ ...base, langfuse, schemas, callLlm: async () => llmResult({ verdict: 'pass' }) }),
         ).rejects.toThrow(InvalidJudgeReplyError);
     });
 });

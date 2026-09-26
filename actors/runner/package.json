@@ -30,7 +30,7 @@
         "build": "tsc",
         "lint": "eslint",
         "lint:fix": "eslint --fix",
-        "test": "vitest run"
+        "test": "vitest run --passWithNoTests"
     },
     "author": "Apify",
     "license": "ISC"
