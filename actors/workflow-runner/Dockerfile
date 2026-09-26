@@ -10,6 +10,7 @@ COPY --chown=myuser:myuser contract/package*.json ./contract/
 COPY --chown=myuser:myuser actors/runner/package*.json ./actors/runner/
 COPY --chown=myuser:myuser actors/workflow-runner/package*.json ./actors/workflow-runner/
 COPY --chown=myuser:myuser actors/judge/package*.json ./actors/judge/
+COPY --chown=myuser:myuser tools/package*.json ./tools/
 
 RUN npm install --include=dev --audit=false
 
@@ -30,12 +31,16 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
     && chmod 755 /usr/local/bin/claude \
     && claude --version
 
+RUN npm install --global @openai/codex@0.154.0 --audit=false \
+    && codex --version
+
 COPY package*.json ./
 COPY shared/package*.json ./shared/
 COPY contract/package*.json ./contract/
 COPY actors/runner/package*.json ./actors/runner/
 COPY actors/workflow-runner/package*.json ./actors/workflow-runner/
 COPY actors/judge/package*.json ./actors/judge/
+COPY tools/package*.json ./tools/
 
 RUN npm install --omit=dev --omit=optional --audit=false && rm -rf /root/.npm
 
@@ -43,8 +48,9 @@ COPY --from=builder /usr/src/app/contract/dist ./contract/dist
 COPY --from=builder /usr/src/app/actors/workflow-runner/dist ./actors/workflow-runner/dist
 
 RUN chown -R root:root /usr/src/app && chmod -R 755 /usr/src/app \
-    && mkdir -p /home/myuser && chown myuser:myuser /home/myuser
+    && mkdir -p /home/myuser/.codex && chown -R myuser:myuser /home/myuser
 
 USER myuser
+ENV CODEX_HOME=/home/myuser/.codex
 WORKDIR /usr/src/app/actors/workflow-runner
 CMD ["node", "dist/main.js"]
