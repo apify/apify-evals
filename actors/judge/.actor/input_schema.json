@@ -63,13 +63,33 @@
         "artifactStore": {
             "title": "Eval artifacts store",
             "type": "string",
-            "description": "The named key-value store the Runner wrote full logs and tool-schema snapshots to. Grants this limited-permission Actor read access to verify snapshots.",
+            "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id IoT4ipiOnFHyRsZQH); the picker grants this run access. Leave empty to use the default store by name.",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
             "resourcePermissions": [
                 "READ"
             ],
             "nullable": true
+        },
+        "writeRunScores": {
+            "title": "Write run-level scores",
+            "type": "boolean",
+            "description": "pass_rate, found_rate, works_rate and friends on the dataset run. The runner sets this to false for filtered (team) runs so they do not move the OKR trend.",
+            "default": true
+        },
+        "auditQueue": {
+            "title": "Audit queue",
+            "type": "string",
+            "description": "Langfuse annotation queue that receives every non-pass scenario plus a sample of passes for human review of the judge. Empty disables.",
+            "editor": "textfield",
+            "default": "judge-audit"
+        },
+        "auditPassSample": {
+            "title": "Audit sample of passes",
+            "type": "string",
+            "description": "Share of passing scenarios also sent to the audit queue (0 to 1).",
+            "editor": "textfield",
+            "default": "0.1"
         }
     },
     "required": [
