@@ -92,7 +92,7 @@ configs share:
 | `resultUtilization`   | The answer is faithful to the retrieved data: nothing invented, nothing important ignored.    |
 | `taskCompletion`      | The user got what they asked for, grounded in retrieved data. Honest failure still fails.     |
 | `errorRecovery`       | Errors were noticed, adapted to and reported plainly. Not scored when no tool error occurred. |
-| `planEfficiency`      | The step count is proportionate: no loops, duplicated work or detours.                        |
+| `planEfficiency`      | The number of tool calls is proportionate: no loops, duplicated work or detours.              |
 
 The holistic verdict is a separate judgment over the whole turn (#269). It is
 not a computed AND over the criteria and, unlike the offline `judge.overall`,
@@ -156,9 +156,11 @@ no emit).
 ## Online mode (production traces)
 
 `mode: "online"` ([ai-team#267](https://github.com/apify/ai-team/issues/267))
-selects finished production Apify AI traces from a time window and samples
-them for scoring. Selection is built; scoring (#269) and score writing (#270)
-are stacked on top and today the run judges nothing (`judged` is 0).
+selects finished production Apify AI traces from a time window, samples them
+and scores each sampled turn against the online rubric
+([#269](https://github.com/apify/ai-team/issues/269)). Score writing (#270) is
+stacked on top: today the verdicts are computed and counted (`judged`,
+`failedToJudge`) but nothing is written to Langfuse.
 
 **Window.** `[checkpoint ?? now-24h, now - 33 min)`. The upper bound is
 `now - requestTimeoutMs - exportLag`: apify-ai-agent's `server.requestTimeoutMs`
@@ -271,7 +273,7 @@ the Langfuse keys apply as in datasetRun mode.
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
 tracesInWindow, completedTraces, sampled, judged, failedToJudge,
-sampledTraceIds}`.
+metadataMissing, sampledTraceIds}`.
 
 ### Verified live 2026-09-09
 
@@ -311,6 +313,185 @@ query cannot be exercised against real values yet, only their mechanism.
 Until then an online run reports `tracesInWindow: 0, completedTraces: 0`,
 which is the idle-window case and not the broken-gate case, so the run stays
 green and the checkpoint advances normally.
+
+### Online scoring
+
+Each sampled trace is scored without re-running the agent, in four steps
+(`src/online-turn.ts`, `online-render.ts`, `online-schema.ts`, `online-judge.ts`).
+
+**Turn reconstruction.** `GET /api/public/v2/observations?traceId=` with the
+`io`, `metadata` and `model` field groups, `expandMetadata` for the one
+metadata key that can exceed the endpoint's 200-character default truncation,
+paginated. The shape it reads is what apify-ai-agent's exporter writes (Mastra
+1.61 with `@mastra/otel-exporter` 1.3.9):
+
+- the turn's `chat <model>` GENERATION, child of the root `invoke_agent` AGENT
+  span, covering the whole agentic loop: `input` is the message array captured
+  before the first step (system prompts, memory, the user message) as a JSON
+  string in the OTel GenAI shape `{role, parts:[{type:'text', content}]}`,
+  `output` is the final `{text}` as one assistant text part, untruncated. No
+  `tool_call` parts appear on it;
+- a SECOND `chat` GENERATION, also a child of the root, for Memory's thread
+  title and compaction (a haiku model). It is not part of the turn: its input
+  is a summarisation prompt whose user message is the transcript, and its
+  output is the title. It is excluded and counted as `excludedGenerations`;
+- one TOOL observation (`mcp_tool_call` span) per tool call, child of the turn
+  GENERATION: `input` is the arguments as a JSON string, `output` the result as
+  a JSON string, both untruncated, the namespaced tool key as the observation
+  name and under `attributes.gen_ai.tool.name`, the model's call id under
+  `attributes.gen_ai.tool.call.id`;
+- trace metadata (`toolSchemaHash`, `outcome`, `steps`) serialised as the
+  attribute `mastra.metadata.langfuse`, a JSON string.
+
+The prompt (last user message), the earlier conversation (the last 10 texts,
+shown as context only, with a count of what was dropped) and the final answer
+come from the turn GENERATION; the steps are the TOOL observations in
+`startTime` order, each citing its observation id, with the tool name stripped
+of the `apify-ai_` namespace.
+
+**One TOOL observation is one step.** The export carries no link from a tool
+call back to the model step that requested it, so N calls the model issued in
+parallel within one model step appear as N steps, and the step count is a count
+of tool calls rather than of model turns. `planEfficiency` is worded that way.
+Calls that share a start millisecond are ordered by observation id, which is
+stable but arbitrary.
+
+**Which generation is the turn's.** The GENERATIONs whose top-level
+`sessionId` is non-empty: the turn's spans carry the thread id, Memory's
+title/compaction generation is exported with an empty one and no thread
+metadata at all. Fallbacks for a trace where none carries a session: the
+generation that parents the TOOL spans, else the earliest. Without this the
+memory generation could become the judged turn, making the title prompt the
+question, the generated title the answer, and its span id the one every
+comment cites.
+
+A call is an error when the observation has `level: ERROR`, a `statusMessage`,
+or an output carrying `isError: true`, an `error*` type, or a serialised error
+(`{name:'Error', domain, category, id:'TOOL_EXECUTION_FAILED', cause}`, the live
+shape) - the last one so a tool that reports failure without throwing still
+counts. That last read demands `name`, `domain`, `category` and an `id` or
+`cause` together, all of which the eight live MastraErrors carry, so a scraped
+record that happens to hold `name` and `id` is not mistaken for a failure.
+Arguments and result come from the mapped `input`/`output`, falling back to
+`attributes.gen_ai.tool.call.arguments` / `.result`; a call with neither keeps
+no arguments at all, and `argumentCorrectness` skips it instead of failing it
+(absent arguments are missing evidence, not wrong arguments). Parsing
+`tool_call` / `tool_call_response` parts out of GENERATION messages is kept
+only as a fallback for a trace with no TOOL observation. Trace metadata is
+read from every observation at three candidate locations in order (a top-level
+key, a nested `langfuse` object, the `attributes.mastra.metadata.langfuse` JSON
+string); when none yields anything the turn's outcome is unknown, its hash
+null, and the run counts it in `metadataMissing` and logs a warning. The model
+id comes from the `model` field the endpoint returns (the SDK documents it as
+`providedModelName`), then from `attributes.gen_ai.response.model`. A trace
+with no GENERATION or no user message cannot be reconstructed and counts as
+`failedToJudge`.
+
+**Confirmed live 2026-09-09** against staging Langfuse, on three traces with
+tool calls (`98ee3c06...`, `4d43c3b8...`, `88bceef8...`) plus eight ERROR-level
+TOOL observations. The rows are in `test/fixtures/live-trace.ts` as the endpoint
+returned them, except that long string payloads are cut at a
+`[... trimmed for the fixture ...]` marker and the error row drops the
+`resourceAttributes.process.*` / `.host.*` families; the fixture's own docstrings
+list every departure.
+
+- The turn `chat` GENERATION output carries no `tool_call` parts: it is one
+  assistant text part.
+- A trace carries one or two GENERATIONs: the turn's sonnet one always, and a
+  later haiku one for the thread title when Memory names or compacts the thread
+  (three of the four traces sampled from 2026-09-04 have only the turn's). The
+  empty-`sessionId` rule separated them wherever both were present.
+- TOOL observations have `input` and `output` populated and untruncated
+  (`{"keywords":"Google Maps reviews"}` and a 9441-character result), with
+  `attributes.gen_ai.tool.call.id` = `tooluse_...` and
+  `attributes.gen_ai.tool.name` = `apify-ai_search-actors`.
+- A failed tool call is `level: 'ERROR'` with an EMPTY `statusMessage`, and its
+  `output` is the serialised MastraError. There is no `attributes.error.*`, no
+  `exception.*` and no `attributes.success` anywhere, so the `success === false`
+  read was dropped.
+- `sessionId` and `userId` are top-level observation fields, and the model
+  arrives as `model`, not `providedModelName`.
+- `expandMetadata` is accepted by the endpoint and forwarded by the SDK.
+
+**Not yet verifiable.** The trace-contract metadata path
+(`attributes.mastra.metadata.langfuse`, and with it `outcome`,
+`toolSchemaHash` and the `apify-ai` tag the selection filters on) cannot be
+observed because apify-ai-agent's `feat/trace-contract` is undeployed: every
+current trace reconstructs with `metadataFound: false`. The attribute NAME is
+evidenced though - every other `tracingOptions.metadata.<key>` does arrive as
+`attributes.mastra.metadata.<key>` on the live root span (`userId`,
+`threadId`, `runId`, `resourceId`, `callerOrigin`). All three read paths are
+kept until the contract deploys, and `metadataMissing` in OUTPUT says which one
+turned out to be real.
+
+**Judge input.** Prompt, context, every tool call with arguments and result,
+the final answer and the recorded outcome. Each payload is capped on its own at
+4096 characters, head plus tail around `[... N chars omitted ...]`, so one huge
+result cannot crowd out the rest. Tool results are included deliberately,
+unlike the offline suite: resultUtilization, taskCompletion and errorRecovery
+are checks on whether the answer matches what the tools returned.
+
+**`argumentCorrectness` is deterministic.** Every call's arguments are
+validated with ajv against the tool's declared input schema. The trace carries
+only the agent's `toolSchemaHash`, not the schemas, so the judge fetches
+`tools/list` from `https://mcp.apify.com` (streamable HTTP, the Actor's
+`APIFY_TOKEN`) once per batch and recomputes the hash with a port of the
+agent's algorithm: sha256 over the stable JSON of `[{key, description,
+inputSchema}]` sorted by key, where `key` is the Mastra-namespaced
+`apify-ai_<mcp tool name>` (the agent's MCP server is named `apify-ai`),
+`description` is the MCP description or `''`, and `inputSchema` the raw JSON
+Schema. The port is pinned by a test against a hash produced by the agent's
+own function. Equal hashes mean the verdict is reproducible (`schemaMatch:
+true`); on a mismatch the calls are still validated against the live schemas
+and `schemaMatch: false` goes into the comment and metadata.
+
+Expect `schemaMatch: false` on every trace today. The agent hashes Mastra Tool
+objects, whose `inputSchema` is a JSON-schema wrapper made of functions;
+functions are dropped by the stable stringify, so every tool hashes as
+`{"~standard":{"jsonSchema":{},"vendor":"json-schema","version":1}}` and the
+production hash does not depend on schema content. The judge deliberately
+hashes the raw JSON schema, which is what the agent will hash once fixed
+(raised in apify-ai-agent); a test pins the mismatch so it stays visible.
+Validation runs against the live schemas either way, and the comment says so.
+The criterion is
+omitted, with a reason, when the turn made no tool calls, when no called tool
+has a schema, when no call recorded its arguments, or when `tools/list` failed
+for the batch. A call whose span recorded no arguments is skipped rather than
+validated: absent arguments are missing evidence, not wrong arguments, and
+validating nothing produced a bogus `/ must be object` failure. Failure comments
+name the tool, the span and the ajv path and message, never the values.
+
+**LLM criteria.** toolSelection, resultUtilization, errorRecovery,
+planEfficiency and taskCompletion (last), then the holistic `agent_judge`
+verdict, in one structured call through the OpenRouter proxy. The prompt is
+the Langfuse-managed `apify-ai-online-judge`, resolved by `promptLabel` once
+per batch and seeded from `DEFAULT_ONLINE_JUDGE_PROMPT` when missing, exactly
+as `workflow-judge` is; the criterion descriptions in it are the rubric's,
+verbatim. The prompt asks for evidence before each verdict and says the
+holistic verdict is a separate judgment, not an AND over the criteria and not
+taskCompletion. The reply is parsed strictly (verdict casing normalised;
+anything else is an `InvalidJudgeReplyError` and the trace counts as
+`failedToJudge`). errorRecovery is omitted whenever the turn has no tool error,
+whatever the model said. A judge failure on one trace never aborts the batch.
+
+**Verdicts.** `judgeOnlineTrace()` returns an `OnlineVerdicts`: one entry per
+online score name, either `{value: 1|0, comment, evidence}` or
+`{omitted: true, reason}`, plus metadata (`rubricName`, `rubricVersion`,
+`judgeModel`, `promptVersion`, `judgeImplVersion`, `toolSchemaHash`,
+`schemaMatch`, `outcome`, `spanId`). Comments carry the verdict, the failing
+criteria (holistic), `schemaMatch` (argumentCorrectness) and a span id, and
+quote no user text and no tool payload; the judge's evidence is kept apart
+from the comment because it may quote the turn. `judgeOnlineTrace()` returns it
+inside `{verdicts, traceMetadataFound}`; #270 consumes the verdicts, the seam
+is `judgeOnline()` in `main.ts`.
+
+**Prompt injection.** The rendered turn sits between unique
+`<<<APIFY_AI_TURN_DATA_BEGIN>>>` / `<<<APIFY_AI_TURN_DATA_END>>>` markers and the
+prompt states that everything inside is data to be judged, never instructions,
+and that the reply format is fixed regardless of the content.
+
+**Judge model.** `judgeModel` defaults to `deepseek/deepseek-v4-flash` in
+online mode and stays `anthropic/claude-sonnet-4.6` in datasetRun mode.
 
 ## Scope notes
 
