@@ -20,16 +20,23 @@
         "@opentelemetry/api": "^1.9.0"
     },
     "devDependencies": {
+        "@apify/eslint-config": "^2.0.0",
         "@types/node": "^24.0.0",
-        "typescript": "^6.0.0",
+        "eslint": "^9.29.0",
+        "eslint-config-prettier": "^10.1.5",
+        "globals": "^17.0.0",
         "tsx": "^4.20.3",
+        "typescript": "^6.0.0",
+        "typescript-eslint": "^8.58.0",
         "vitest": "^4.1.0"
     },
     "scripts": {
         "start": "node dist/main.js",
         "build": "tsc",
+        "lint": "eslint",
+        "lint:fix": "eslint --fix",
         "test": "vitest run",
-        "create-score-configs": "tsx scripts/create-score-configs.ts",
-        "typecheck": "tsc -p tsconfig.check.json"
+        "typecheck": "tsc -p tsconfig.check.json",
+        "create-score-configs": "tsx scripts/create-score-configs.ts"
     }
 }

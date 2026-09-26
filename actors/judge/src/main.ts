@@ -1,7 +1,13 @@
 import { Actor, log } from 'apify';
 
 interface Input {
+    mode?: 'datasetRun' | 'online';
     datasetRunId?: string;
+    sampleRate?: number;
+    maxItems?: number;
+    windowStart?: string;
+    windowEnd?: string;
+    environment?: string;
     judgeModel?: string;
     promptLabel?: string;
     force?: boolean;
@@ -19,7 +25,10 @@ interface Input {
 await Actor.init();
 const input = ((await Actor.getInput()) ?? {}) as Input;
 const {
+    mode = 'datasetRun',
     datasetRunId,
+    sampleRate = 0.2,
+    maxItems = 100,
     judgeModel = 'anthropic/claude-sonnet-4.6',
     promptLabel = 'production',
     force = false,
@@ -28,7 +37,9 @@ const {
     auditQueue = 'judge-audit',
     auditPassSample: auditPassSampleInput = 0.1,
 } = input;
-if (!datasetRunId) throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
+if (mode === 'datasetRun' && !datasetRunId) {
+    throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
+}
 const auditPassSample = Math.min(1, Math.max(0, Number(auditPassSampleInput) || 0));
 
 // Env must be set before the Langfuse SDK loads (it captures env at module load).
@@ -42,6 +53,63 @@ for (const [inputKey, envKey] of [
 }
 
 const { LangfuseClient } = await import('@langfuse/client');
+
+/** Seam for #269: judge the sampled traces. Until then nothing is judged. */
+// TODO(#269): replace with the online judge. TODO(#270): write the scores AND
+// move the checkpoint write (now inside selectTraces) behind the score write;
+// with it before scoring, a process death mid-batch loses the window's sample.
+async function judgeOnline(_traceIds: string[]): Promise<{ judged: number; failedToJudge: number }> {
+    return { judged: 0, failedToJudge: 0 };
+}
+
+if (mode === 'online') {
+    const { actorCheckpointStore, DEFAULT_ENVIRONMENT, langfuseObservationFetcher, selectTraces } =
+        await import('./select.js');
+    const environment = input.environment ?? DEFAULT_ENVIRONMENT;
+    const selection = await selectTraces({
+        now: new Date(),
+        sampleRate,
+        maxItems,
+        override: { windowStart: input.windowStart, windowEnd: input.windowEnd },
+        rng: Math.random,
+        fetchPage: langfuseObservationFetcher(new LangfuseClient()),
+        checkpoints: actorCheckpointStore(),
+        runId: Actor.getEnv().actorRunId,
+        environment,
+    });
+    const { judged, failedToJudge } = await judgeOnline(selection.sampledTraceIds);
+    const summary = {
+        mode,
+        environment,
+        window: selection.window
+            ? { start: selection.window.start.toISOString(), end: selection.window.end.toISOString() }
+            : null,
+        checkpointWritten: selection.checkpointWritten,
+        isGateBroken: selection.isGateBroken,
+        tracesInWindow: selection.tracesInWindow,
+        completedTraces: selection.completedTraces,
+        sampled: selection.sampled,
+        judged,
+        failedToJudge,
+        sampledTraceIds: selection.sampledTraceIds,
+    };
+    log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
+    await Actor.setValue('OUTPUT', summary);
+    // Fail the run on a broken completion gate, after OUTPUT is written: a
+    // SUCCEEDED run selecting nothing forever is invisible, while an Apify
+    // run-status alert already covers a FAILED one (#271 needs no extra monitor).
+    if (selection.isGateBroken) {
+        await Actor.fail(
+            `Completion gate broken: ${selection.tracesInWindow} traces in the window, none completed. ` +
+                'The checkpoint was not moved; see OUTPUT.',
+        );
+    }
+    // Actor.exit() ends the process; the datasetRun flow below never runs in this mode.
+    await Actor.exit();
+}
+// Type narrowing only: the datasetRun guard above already threw when it was missing.
+if (!datasetRunId) throw new Error('unreachable: datasetRunId checked above');
+
 const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { startObservation } = await import('@langfuse/tracing');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
