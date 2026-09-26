@@ -45,7 +45,7 @@ Keep prompts finishable in about two minutes: cap result counts, no whole-site c
 
 ### Reading the numbers honestly
 
-- Models run inside the selected harness, Claude Code by default. Compare the same model and harness.
+- Models run inside the selected harness, Claude Code by default or Codex. Compare the same model and harness; Codex run names include `codex`.
 - One run is a sample. Compare runs on the same model and judge; use repeats or the dashboard trend before acting.
 - The judge is a model. Its fix area is a hint with evidence, not a verdict.
 
@@ -63,7 +63,27 @@ A broken harness fails the item loudly; an agent that ran out of turns or hit th
 
 ### Harnesses
 
-The default and only harness is `claude-code`. The `harness` input's `kind` selects among registered adapters; the top-level `model` or `models` input overrides the model in `harness`, and scenario `metadata.maxTurns` overrides the harness turn budget.
+The default is `claude-code`. To run the same scenarios with Codex, set the advanced **Harness override** input:
+
+```json
+{
+    "harness": {
+        "kind": "codex",
+        "model": "openai/gpt-5-mini",
+        "maxTurns": 12
+    }
+}
+```
+
+The top-level `model` or `models` input overrides the model in `harness`; scenario `metadata.maxTurns` overrides the harness turn budget. Codex uses the same per-skill MCP allowlists, evidence, deterministic checks, judge, and trace observations. Its experiment name includes `codex` unless you supply `runName`.
+
+The image pins Codex CLI to `0.154.0`. Each session has a temporary `CODEX_HOME`, an empty working directory, shell tools disabled, and a read-only sandbox with approvals disabled; the allowlisted MCP tools are pre-approved (`default_tools_approval_mode = "approve"`), because Codex would otherwise reject every non-read-only tool call such as `call-actor` under a `never` approval policy. `apply_patch` remains advertised by Codex but writes are denied by the sandbox. Codex does not support the `allowBash` scenarios; use Claude Code for CLI evaluations. The run token is passed in the child environment for the model provider and MCP bearer authentication; it is not written to the generated config. Local runs with `useOpenRouterProxy: false` reuse only the developer's file-backed Codex login and need a model id accepted by that login, such as `gpt-5-mini`. Other local MCP servers and user configuration are not loaded.
+
+Codex has no `--max-turns` option. The adapter counts tool-call rounds and stops after the last allowed round returns, retaining its evidence as a scored result. Parallel calls count as one round. This can leave the final answer unfinished, and event delivery can race the next call, so the limit is not an exact billing cap. The per-item timeout covers MCP probes, the optional restart, and the session; it kills the child process group. Timeouts, truncated logs, startup failures, crashes, and unparseable sessions remain infrastructure failures. A failed MCP startup or a server exposing zero allowed tools gets one retry. Because Codex does not publish a tools/list event, the adapter obtains the tool count from a separate probe of the same URL and requires Codex's own MCP initialization to succeed.
+
+Codex JSONL reports token usage for the entire user turn, including all model calls. The adapter stores those totals in session metrics and adds generation usage only for a session with one generation. It does not distribute totals across inferred model calls. Cost and child peak RSS are unavailable for this adapter. Reasoning items appear in generation text when the CLI emits them.
+
+Local checks verified authenticated MCP calls, the event format, and shell/write restrictions. The orchestrating cloud probe verified `/api/v1/responses` with an Actor run token. An end-to-end cloud run is still needed to verify the built image, Codex's streaming model requests through the proxy, and the resulting Langfuse trace, evidence artifacts, and check scores.
 
 ### Run health and exit codes
 
@@ -71,7 +91,7 @@ The run status reports system health, never scenario results (spec D14). Exit 0:
 
 ### Secrets and permissions
 
-Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; Claude Code uses its Anthropic wire format and accepts OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for other deployments. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
+Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for other deployments. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
 
 Both Actors must run with **full permissions** (Actor settings → Permissions, or `apify api PUT actors/<id> -d '{"actorPermissionLevel":"FULL_PERMISSIONS"}'`). A new Actor defaults to limited permissions, and a limited run token cannot start other Actors or create tasks, so every MCP call the agent makes fails with `insufficient-permissions` and the runner cannot open the named store. It is a one-time setting per Actor; it survives every `apify push`.
 
@@ -106,7 +126,7 @@ Langfuse here runs v4 in events-only mode: dataset-run read APIs are disabled, u
 | Spec decision                                 | Here                                                              |
 | --------------------------------------------- | ----------------------------------------------------------------- |
 | D1 hosted MCP, per-case tools                 | yes (`metadata.tools` → `?tools=`)                                |
-| D5 one image, harness discriminator           | yes (`harness.kind`, adapter registry; `claude-code`)              |
+| D5 one image, harness discriminator           | yes (`harness.kind`, adapter registry; `claude-code` and `codex`) |
 | D7 one Actor run per case                     | replaced by the in-process pool                                   |
 | D8 per-case timeout/maxTurns                  | `metadata.maxTurns`; timeout is run-level                         |
 | D9/D11 judge reads traces, prompt in Langfuse | yes, via the Judge Actor the runner starts                        |
