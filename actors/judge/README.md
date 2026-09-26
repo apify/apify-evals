@@ -70,6 +70,89 @@ Langfuse keys come from the Actor's environment; `artifactStore` is the
 
 OUTPUT: `{datasetRunId, items, judged, passed, passRate, foundRate, worksRate, fixAreas, skippedAlreadyJudged, skippedNoTrace, errors, degraded, version, scoreboard}`; `SCOREBOARD` is the same per-Actor table as markdown.
 
+## Online mode: rubric and score configs
+
+Online evals ([ai-team#249](https://github.com/apify/ai-team/issues/249)) judge
+production `apify-ai-turn` traces with a second rubric, kept apart from the
+offline `judge.*` scores above. This branch defines the rubric and the score
+schema only ([#268](https://github.com/apify/ai-team/issues/268)); selection
+(#267), scoring (#269), score writing (#270) and scheduling (#271) stack on it.
+
+### The rubric
+
+`ONLINE_RUBRIC` in `src/rubric.ts` is `{ name: 'apify-ai-turn', version: 1 }`
+with six criteria, each judged independently as PASS or FAIL and each carrying
+a one-paragraph description that the judge prompt, this README and the score
+configs share:
+
+| Criterion             | Passes when                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `toolSelection`       | Every tool and Actor choice is defensible for the task; nothing unnecessary was called.       |
+| `argumentCorrectness` | Tool inputs are well-formed, taken from the conversation, and do what the task asks.          |
+| `resultUtilization`   | The answer is faithful to the retrieved data: nothing invented, nothing important ignored.    |
+| `taskCompletion`      | The user got what they asked for, grounded in retrieved data. Honest failure still fails.     |
+| `errorRecovery`       | Errors were noticed, adapted to and reported plainly. Not scored when no tool error occurred. |
+| `planEfficiency`      | The step count is proportionate: no loops, duplicated work or detours.                        |
+
+The holistic verdict is a separate judgment over the whole turn (#269). It is
+not a computed AND over the criteria and, unlike the offline `judge.overall`,
+not a copy of `taskCompletion`; the rubric object deliberately has no
+"overall = X" rule.
+
+### Score names and semantics
+
+`onlineScoreNames()` derives the names from the rubric, so the two cannot drift:
+
+- `agent_judge`: the holistic verdict.
+- `agent_judge_<criterion>`: one per criterion, e.g. `agent_judge_taskCompletion`.
+
+All online scores are BOOLEAN (1 = pass, 0 = fail), so `avg` over any of them
+in a Langfuse view is that score's pass rate with no further arithmetic, and a
+pass-rate alert (#271) is a plain threshold. Langfuse caps score config names
+at 35 characters and restricts the charset; `src/rubric.ts` asserts both at
+import time and the tests pin them, so a bad rename fails before it reaches
+Langfuse.
+
+### Score configs
+
+One BOOLEAN score config per name, with the rubric description and version as
+its description. Score configs in Langfuse can be archived but never deleted:
+a wrong name or data type stays in the project forever and keeps showing up in
+the annotation UI. That is why the schema is fixed here, before anything
+writes a score, and why the create script never creates a config whose name
+already exists, even when the existing one looks wrong.
+
+Verified live against the Apify AI Agent project on 2026-09-09: `GET
+/api/public/score-configs` is served in `events_only` mode, and the project has
+zero score configs, so the first run of the script creates all seven with no
+conflicts. Scores written without a config are accepted (BOOLEAN values read
+back as JSON `true` / `false`), which is why the configs exist for the UI and
+the `avg` views, not as a precondition for writing.
+
+`scripts/create-score-configs.ts` is idempotent: it lists the project's score
+configs (`GET /api/public/score-configs`, paginated), creates only the missing
+ones (`POST /api/public/score-configs`, `dataType: BOOLEAN`) and prints a
+table of `created` / `existing` / `CONFLICT` rows. A same-name config with
+another data type, or an archived one, is a conflict: nothing is created for
+that name and the script exits 1 so a human can decide in the Langfuse UI.
+The planning logic (`planScoreConfigs` in `src/score-configs.ts`) is pure and
+unit-tested; the script is the I/O around it.
+
+Run it once per Langfuse project, from the repo root, with that project's keys
+(it runs the TypeScript source via `tsx`, no build needed):
+
+```sh
+LANGFUSE_BASE_URL=https://langfuse.apify.dev \
+LANGFUSE_PUBLIC_KEY=pk-lf-... \
+LANGFUSE_SECRET_KEY=sk-lf-... \
+npm run create-score-configs --workspace actors/judge
+```
+
+Tests: `npm test --workspace actors/judge` (vitest, `test/`). The build
+tsconfig covers `src/` only; `npm run typecheck --workspace actors/judge`
+type-checks `src/`, `scripts/` and `test/` together (`tsconfig.check.json`,
+no emit).
+
 ## Scope notes
 
 - Judges by dataset-run id only; judging from the span's conversation JSON, not the full log.

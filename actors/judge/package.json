@@ -22,11 +22,14 @@
     "devDependencies": {
         "@types/node": "^24.0.0",
         "typescript": "^6.0.0",
+        "tsx": "^4.20.3",
         "vitest": "^4.1.0"
     },
     "scripts": {
         "start": "node dist/main.js",
         "build": "tsc",
-        "test": "vitest run"
+        "test": "vitest run",
+        "create-score-configs": "tsx scripts/create-score-configs.ts",
+        "typecheck": "tsc -p tsconfig.check.json"
     }
 }
