@@ -60,6 +60,13 @@ export class ArtifactStore {
         return { url: this.recordUrl(key), hash: sha256(ndjson) };
     }
 
+    /** Store one JSON record (e.g. the evidence snapshot of a session). */
+    async putJson(key: string, value: unknown): Promise<ArtifactRef> {
+        const content = JSON.stringify(value);
+        await this.store.setValue(key, content, { contentType: 'application/json' });
+        return { url: this.recordUrl(key), hash: sha256(content) };
+    }
+
     /**
      * Store a tools/list snapshot, deduped by content hash: many traces share
      * one tool config, so the snapshot is written once and referenced by all.
