@@ -68,21 +68,14 @@ if (mode === 'online') {
     const { DEFAULT_ONLINE_JUDGE_PROMPT, ONLINE_JUDGE_PROMPT_NAME, judgeOnlineTrace } =
         await import('./online-judge.js');
     const { mcpToolSchemaSource } = await import('./online-schema.js');
+    const { JUDGE_IMPL_VERSION } = await import('./core.js');
+    const { finishOnlineRun, langfuseOnlineScoreReader, skipAlreadyJudged } = await import('./online-scores.js');
     const langfuse = new LangfuseClient();
+    const now = new Date();
 
-    /**
-     * Score every sampled trace (ai-team#269). Returns the verdicts and writes
-     * NOTHING to Langfuse: TODO(#270) write the scores from `verdicts`, AND move
-     * the checkpoint write (now inside selectTraces) behind that write; with it
-     * before scoring, a process death mid-batch loses the window's sample.
-     */
-    async function judgeOnline(traceIds: string[]) {
+    /** Score every trace (ai-team#269). Returns the verdicts; writing them is the step after. */
+    async function judgeOnline(traceIds: string[], prompt: { version: number; template: string }) {
         if (traceIds.length === 0) return { judged: 0, failedToJudge: 0, metadataMissing: 0, verdicts: [] };
-        const prompt = await resolveOrSeedPrompt(langfuse, {
-            name: ONLINE_JUDGE_PROMPT_NAME,
-            label: promptLabel,
-            defaultPrompt: DEFAULT_ONLINE_JUDGE_PROMPT,
-        });
         // One tools/list per batch; a failure omits argumentCorrectness for the
         // whole batch rather than failing every trace.
         const schemas = await mcpToolSchemaSource({ token: apifyToken as string })
@@ -135,36 +128,89 @@ if (mode === 'online') {
         return { judged: verdicts.length, failedToJudge, metadataMissing, verdicts };
     }
 
+    // 1. Select. The checkpoint is NOT written here (writeCheckpoint: false):
+    // it moves only after the window's scores and rollup are in Langfuse.
+    const checkpoints = actorCheckpointStore();
     const selection = await selectTraces({
-        now: new Date(),
+        now,
         sampleRate,
         maxItems,
         override: { windowStart: input.windowStart, windowEnd: input.windowEnd },
         rng: Math.random,
         fetchPage: langfuseObservationFetcher(langfuse),
-        checkpoints: actorCheckpointStore(),
+        checkpoints,
         runId: Actor.getEnv().actorRunId,
         environment,
+        writeCheckpoint: false,
     });
-    const { judged, failedToJudge, metadataMissing } = await judgeOnline(selection.sampledTraceIds);
+
+    // 2. Resolve the prompt once per batch (its version is part of the score
+    // id), then drop traces already judged under this exact version BEFORE
+    // judging, so a re-run costs no LLM calls.
+    const prompt =
+        selection.sampled > 0
+            ? await resolveOrSeedPrompt(langfuse, {
+                  name: ONLINE_JUDGE_PROMPT_NAME,
+                  label: promptLabel,
+                  defaultPrompt: DEFAULT_ONLINE_JUDGE_PROMPT,
+              })
+            : { version: 0, template: '' };
+    const { toJudge, skipped } = await skipAlreadyJudged({
+        traceIds: selection.sampledTraceIds,
+        version: { promptVersion: prompt.version, judgeImplVersion: JUDGE_IMPL_VERSION, judgeModel },
+        force,
+        readScores: langfuseOnlineScoreReader(langfuse),
+    });
+    if (skipped.length > 0) log.info(`${skipped.length} sampled traces already judged under this version, skipped`);
+
+    // 3. Judge, then 4. write both copies of every score, 5. roll the batch up
+    // into the day's dataset item and 6. move the checkpoint, in that order;
+    // finishOnlineRun() documents why a rollup failure or an all-failed batch
+    // holds the checkpoint back and a single trace's write failure does not.
+    // Run copies and the rollup are keyed on the window START day (the day the
+    // traffic is from), so a backfill lands on its own day.
+    const { judged, failedToJudge, metadataMissing, verdicts } = await judgeOnline(toJudge, prompt);
+    const finished = await finishOnlineRun({
+        verdicts,
+        scores: langfuse.api.scores,
+        rollupApi: langfuse.api,
+        checkpoints,
+        checkpoint: selection.checkpoint,
+        date: selection.window?.start ?? now,
+        sampleRate,
+        maxItems,
+        coverage: {
+            tracesInWindow: selection.tracesInWindow,
+            completedTraces: selection.completedTraces,
+            sampled: selection.sampled,
+            judged,
+            failedToJudge,
+        },
+    });
+
     const summary = {
         mode,
         environment,
         window: selection.window
             ? { start: selection.window.start.toISOString(), end: selection.window.end.toISOString() }
             : null,
-        checkpointWritten: selection.checkpointWritten,
+        checkpointWritten: finished.checkpointWritten,
         isGateBroken: selection.isGateBroken,
         tracesInWindow: selection.tracesInWindow,
         completedTraces: selection.completedTraces,
         sampled: selection.sampled,
+        scoresSkipped: skipped.length,
         judged,
         failedToJudge,
         metadataMissing,
+        scoresWritten: finished.scoresWritten,
+        failedToWrite: finished.failedToWrite,
+        rollupItemId: finished.rollupItemId,
         sampledTraceIds: selection.sampledTraceIds,
     };
     log.info(`SUMMARY: ${JSON.stringify(summary, null, 2)}`);
     await Actor.setValue('OUTPUT', summary);
+    // Actor.exit()/fail() end the process; the datasetRun flow below never runs in this mode.
     // Fail the run on a broken completion gate, after OUTPUT is written: a
     // SUCCEEDED run selecting nothing forever is invisible, while an Apify
     // run-status alert already covers a FAILED one (#271 needs no extra monitor).
@@ -174,7 +220,9 @@ if (mode === 'online') {
                 'The checkpoint was not moved; see OUTPUT.',
         );
     }
-    // Actor.exit() ends the process; the datasetRun flow below never runs in this mode.
+    // A failed rollup, an all-failed judge batch or an all-failed write batch exits non-zero so the schedule shows a
+    // failed run and the window is retried.
+    if (finished.error !== null) await Actor.fail(`Online run incomplete: ${finished.error}`);
     await Actor.exit();
 }
 // Type narrowing only: the datasetRun guard above already threw when it was missing.
