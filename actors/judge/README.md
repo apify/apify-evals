@@ -69,8 +69,11 @@ apify call artogahr/eval-judge --memory 1024 --timeout 1800 -i '{
 }'
 ```
 
-Langfuse keys come from the Actor's environment; `artifactStore` is the
-`eval-artifacts` store picker (read access for snapshots and logs).
+Langfuse keys come from the Actor's environment. The `langfuseBaseUrl`,
+`langfusePublicKey` and `langfuseSecretKey` inputs override them, so a run
+recorded in another Langfuse project is graded by passing that project's
+credentials (the keys are secret inputs, encrypted on the run). `artifactStore`
+is the `eval-artifacts` store picker (read access for snapshots and logs).
 
 OUTPUT: `{datasetRunId, items, judged, passed, passRate, foundRate, worksRate, fixAreas, skippedAlreadyJudged, skippedNoTrace, errors, degraded, version, scoreboard}`; `SCOREBOARD` is the same per-Actor table as markdown.
 
