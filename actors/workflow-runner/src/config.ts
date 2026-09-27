@@ -38,3 +38,29 @@ export function resolveTrigger(triggerInput: string | undefined, origin: string 
 export function shouldNotify(notify: boolean | undefined, trigger: string): boolean {
     return notify ?? trigger === 'schedule';
 }
+
+/** Langfuse credential inputs and the env vars they override. */
+export const LANGFUSE_CREDENTIALS = [
+    ['langfuseBaseUrl', 'LANGFUSE_BASE_URL'],
+    ['langfusePublicKey', 'LANGFUSE_PUBLIC_KEY'],
+    ['langfuseSecretKey', 'LANGFUSE_SECRET_KEY'],
+] as const;
+
+type LangfuseCredentialInput = Partial<Record<(typeof LANGFUSE_CREDENTIALS)[number][0], string>>;
+
+/**
+ * Langfuse credentials to pass to the judge. The judge falls back to its own
+ * deployed env, which points at one project; a runner started with override
+ * credentials writes to another, so the judge must get the same set or it
+ * looks up a dataset run that does not exist. When any override is given, the
+ * full resolved set (`env` already holds input over env) is passed so the
+ * judge never mixes its own base URL with the runner's keys. The key fields
+ * are `isSecret` in the judge schema, so the platform encrypts them.
+ */
+export function judgeLangfuseInput(
+    input: LangfuseCredentialInput,
+    env: Record<string, string | undefined>,
+): LangfuseCredentialInput {
+    if (!LANGFUSE_CREDENTIALS.some(([inputKey]) => input[inputKey])) return {};
+    return Object.fromEntries(LANGFUSE_CREDENTIALS.map(([inputKey, envKey]) => [inputKey, env[envKey]]));
+}

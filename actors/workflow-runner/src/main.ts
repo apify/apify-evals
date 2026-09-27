@@ -6,7 +6,13 @@ import { type DatasetItemMetadata, validateDatasetItemMetadata } from '@apify-ev
 import { Actor, log } from 'apify';
 
 import { killTrackedChildren } from './adapters/shared.js';
-import { resolveHealthThreshold, resolveTrigger, shouldNotify } from './config.js';
+import {
+    LANGFUSE_CREDENTIALS,
+    judgeLangfuseInput,
+    resolveHealthThreshold,
+    resolveTrigger,
+    shouldNotify,
+} from './config.js';
 
 const execFile = promisify(execFileCb);
 
@@ -117,11 +123,7 @@ if (input.experimentName && input.experimentName !== datasetName) {
 // Credentials: input wins, env fallback. Env must be set BEFORE the Langfuse
 // modules load, because parts of the SDK capture process.env at module load;
 // the dynamic imports below guarantee that ordering.
-for (const [inputKey, envKey] of [
-    ['langfuseBaseUrl', 'LANGFUSE_BASE_URL'],
-    ['langfusePublicKey', 'LANGFUSE_PUBLIC_KEY'],
-    ['langfuseSecretKey', 'LANGFUSE_SECRET_KEY'],
-] as const) {
+for (const [inputKey, envKey] of LANGFUSE_CREDENTIALS) {
     if (input[inputKey]) process.env[envKey] = input[inputKey];
     if (!process.env[envKey]) throw new Error(`Missing ${envKey} (set it as Actor input or env var)`);
 }
@@ -373,8 +375,9 @@ for (const model of models) {
             : datasetRunUrl;
 
     // Judge: a separate Actor (re-gradable, spec D9) that the runner starts so a
-    // single Run click produces scored results. Its Langfuse credentials come from
-    // its own Actor env vars; only the run id and the artifact grant are passed.
+    // single Run click produces scored results. It uses its own Actor env for
+    // Langfuse unless this run was given override credentials, which are passed
+    // on so both Actors talk to the same project.
     let judgeOutput: JudgeOutput | null = null;
     let judgeRunUrl: string | null = null;
     let judgeError: string | null = null;
@@ -390,6 +393,7 @@ for (const model of models) {
                     judgeModel,
                     writeRunScores: fullScope,
                     ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}),
+                    ...judgeLangfuseInput(input, process.env),
                 },
                 { memory: 1024, timeout: 1800 },
             );

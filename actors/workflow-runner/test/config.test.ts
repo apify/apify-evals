@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_HEALTH_THRESHOLD, resolveHealthThreshold, resolveTrigger, shouldNotify } from '../src/config.js';
+import {
+    DEFAULT_HEALTH_THRESHOLD,
+    judgeLangfuseInput,
+    resolveHealthThreshold,
+    resolveTrigger,
+    shouldNotify,
+} from '../src/config.js';
 
 describe('resolveHealthThreshold', () => {
     it('parses the string the Console sends', () => {
@@ -53,5 +59,29 @@ describe('shouldNotify', () => {
     it('lets an explicit input win either way', () => {
         expect(shouldNotify(false, 'schedule')).toBe(false);
         expect(shouldNotify(true, 'web')).toBe(true);
+    });
+});
+
+describe('judgeLangfuseInput', () => {
+    const env = {
+        LANGFUSE_BASE_URL: 'https://other.langfuse.dev',
+        LANGFUSE_PUBLIC_KEY: 'pk-other',
+        LANGFUSE_SECRET_KEY: 'sk-other',
+    };
+
+    it('passes nothing when the runner uses its own environment', () => {
+        expect(judgeLangfuseInput({}, env)).toEqual({});
+    });
+
+    it('forwards the full resolved credential set when any override was given', () => {
+        const expected = {
+            langfuseBaseUrl: 'https://other.langfuse.dev',
+            langfusePublicKey: 'pk-other',
+            langfuseSecretKey: 'sk-other',
+        };
+        expect(judgeLangfuseInput({ langfusePublicKey: 'pk-other', langfuseSecretKey: 'sk-other' }, env)).toEqual(
+            expected,
+        );
+        expect(judgeLangfuseInput({ langfuseBaseUrl: 'https://other.langfuse.dev' }, env)).toEqual(expected);
     });
 });
