@@ -25,10 +25,38 @@ const STORE_FIX_AREAS = [
     { id: 'agent-or-model', owner: 'none', description: 'The Actor did its part; the failure is the agent’s reasoning or the model.' },
 ];
 
+/** Items that name no profile and are not store scenarios (foreign datasets).
+ * No store vocabulary: the item's expected output carries the pass criteria. */
+export const GENERIC_PROFILE_NAME = 'generic';
+
+const GENERIC_FIX_AREAS = [
+    { id: 'tool-description', owner: 'subject', description: 'A tool’s description or docs misled the agent about what it does or when to use it.' },
+    { id: 'tool-schema', owner: 'subject', description: 'The agent built wrong or missing tool arguments given the tool’s input schema.' },
+    { id: 'tool-output', owner: 'subject', description: 'A tool returned data the agent could not find or use, or that did not match what the tool promises.' },
+    { id: 'error-messages', owner: 'subject', description: 'A tool failed or returned an error the agent could not act on.' },
+    { id: 'agent-or-model', owner: 'none', description: 'The tools did their part; the failure is the agent’s reasoning or the model.' },
+];
+
+const GENERIC_PROFILE: JudgeProfile = {
+    name: GENERIC_PROFILE_NAME,
+    fixAreas: GENERIC_FIX_AREAS,
+    wrongSubjectLabel: 'wrong-subject',
+    fixAreaIds: [...GENERIC_FIX_AREAS.map((f) => f.id), 'none'],
+    forcedFixAreas: {
+        ...STORE_PROFILE_FOR_VERDICT.forcedFixAreas,
+        'subject.used': { find: 'tool-description', use: 'tool-description' },
+        'apify.input': 'tool-schema',
+        'apify.items': 'tool-output',
+        reference: 'tool-output',
+        'apify.run': 'error-messages',
+    },
+};
+
 const cache = new Map<string, JudgeProfile>();
 
 export function loadJudgeProfile(name: string | undefined): JudgeProfile {
     const key = name ?? 'store-actors';
+    if (key === GENERIC_PROFILE_NAME) return GENERIC_PROFILE;
     const hit = cache.get(key);
     if (hit) return hit;
     let profile: JudgeProfile = { name: 'store-actors', fixAreas: STORE_FIX_AREAS, ...STORE_PROFILE_FOR_VERDICT };

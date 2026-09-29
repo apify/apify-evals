@@ -105,10 +105,12 @@ export function renderFacts(opts: {
 }): string {
     const { intendedSubject, skill, artifact, session } = opts;
     const lines: string[] = [];
-    lines.push(`- Scenario type: ${skill === 'find' ? 'find (the agent had to discover the subject in store search)' : skill === 'use' ? 'use (the subject was named in the prompt)' : 'unknown'}`);
-    lines.push(`- Intended subject: ${intendedSubject ?? 'unknown'}`);
+    // Store find/use framing only when the item declares it; foreign datasets
+    // are judged on their expected output alone.
+    if (skill) lines.push(`- Scenario type: ${skill === 'find' ? 'find (the agent had to discover the subject in store search)' : 'use (the subject was named in the prompt)'}`);
+    if (intendedSubject) lines.push(`- Intended subject: ${intendedSubject}`);
     const runs = artifact?.evidence.actorRuns ?? [];
-    if (runs.length === 0) lines.push('- Actor runs triggered by the agent: none');
+    if (runs.length === 0 && skill) lines.push('- Actor runs triggered by the agent: none');
     for (const r of runs) {
         const items = r.datasetId ? artifact?.evidence.datasets[r.datasetId]?.length : undefined;
         lines.push(`- Actor run: ${r.actor} · ${r.status ?? 'status unknown'}${items !== undefined ? ` · ${items} dataset items` : r.itemCount !== undefined ? ` · ${r.itemCount} items` : ''}${r.runId ? ` · run ${r.runId}` : ''}`);
@@ -125,5 +127,6 @@ export function renderFacts(opts: {
     }
     if (session.timedOut) lines.push('- The session hit the time limit.');
     if (session.subtype === 'error_max_turns') lines.push('- The agent ran out of turns.');
+    if (lines.length === 0) lines.push('- None beyond the conversation below.');
     return lines.join('\n');
 }

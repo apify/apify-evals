@@ -41,7 +41,7 @@ import { mergeVerdict, type MergedVerdict } from './verdict.js';
  */
 
 export const RUBRIC_VERSION = '1203-draft-3';
-export const JUDGE_IMPL_VERSION = '0.3.0';
+export const JUDGE_IMPL_VERSION = '0.4.0';
 
 /** Fix areas come from the suite profile (see profile.ts); this is the type only. */
 export type FixArea = string;
@@ -308,8 +308,11 @@ Judge the agent conversation below against the task and the expected outcome.
 ## Task given to the agent
 {{input}}
 
-## What a correct run looks like (reference for you, not a string to match)
+## Expected outcome (the pass criteria for this item)
 {{expectedOutput}}
+This comes from the dataset and is the authority on what counts as success
+for this item. It describes a correct run; it is not a string to match. When
+it states explicit PASS or FAIL conditions, apply them exactly.
 
 ## Facts (recorded by the harness, verified against the Apify API)
 {{facts}}
@@ -328,7 +331,7 @@ tool returned data of that kind at all.
 
 Score these dimensions IN ORDER. For each, first write one sentence of evidence
 citing the conversation or the facts, then the verdict: "pass", "fail", or "not_applicable".
-- toolSelection: did the agent choose appropriate tools/actors for the task?
+- toolSelection: did the agent choose appropriate tools for the task?
   Use "not_applicable" when the task required no tools.
 - argumentCorrectness: were tool inputs well-formed and sensible for the task?
   Use "not_applicable" when no tools were called.
@@ -338,10 +341,11 @@ citing the conversation or the facts, then the verdict: "pass", "fail", or "not_
   Use "not_applicable" when the conversation contains no errors.
 - planEfficiency: was the path reasonably direct (no pointless repetition)?
   Use "not_applicable" for trivial one-call tasks.
-- taskCompletion: judged LAST. Did the final answer fulfil the task, grounded
-  in retrieved data? An honest report of failure to retrieve data is still a
-  "fail" for taskCompletion (the task was not completed), but should not fail
-  errorRecovery.
+- taskCompletion: judged LAST. Did the run meet the expected outcome above,
+  with the final answer grounded in retrieved data? An honest report of failure
+  to retrieve data is still a "fail" for taskCompletion (the task was not
+  completed) unless the expected outcome says reporting that failure is the
+  correct result. It should not fail errorRecovery.
 
 Then name the ONE area the subject's team should change first ("fixArea"),
 derived from the verdicts above and citing the specific tool call or output
@@ -384,6 +388,21 @@ export const JUDGE_REPLY_SCHEMA = {
     },
     required: ['dimensions', 'fixArea'],
 };
+
+/** The task as the agent saw it: the prompt text when the input carries one
+ * (`prompt` in repo suites, `query` in foreign ones), else the raw JSON. */
+function renderTask(input: unknown): string {
+    if (typeof input === 'string') return input;
+    const obj = input as Record<string, unknown> | null;
+    const text = obj?.prompt ?? obj?.query;
+    return typeof text === 'string' && Object.keys(obj ?? {}).length === 1 ? text : JSON.stringify(input);
+}
+
+/** Datasets may store the expected output as text or as structured JSON. */
+function renderExpected(expected: unknown): string {
+    if (expected === null || expected === undefined || expected === '') return '(none provided)';
+    return typeof expected === 'string' ? expected : JSON.stringify(expected, null, 2);
+}
 
 /** Single pass with function replacements: immune to $-patterns in values and
  * to template tokens smuggled inside dataset content. */
@@ -505,8 +524,8 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
 
     const facts = renderFacts({ intendedSubject, skill, artifact, session: obs.metadata });
     const prompt = compileTemplate(promptTemplate, {
-        input: JSON.stringify(item.input),
-        expectedOutput: String(item.expectedOutput ?? '(none provided)'),
+        input: renderTask(item.input),
+        expectedOutput: renderExpected(item.expectedOutput),
         facts,
         conversation: JSON.stringify(conversation),
         finalResult,
