@@ -116,7 +116,7 @@
             "editor": "select",
             "enum": ["v1", "v2"],
             "enumTitles": ["v1 narrative", "v2 Actor table + charts"],
-            "default": "v1"
+            "default": "v2"
         },
         "reportKeyPrefix": {
             "title": "Report key prefix",
