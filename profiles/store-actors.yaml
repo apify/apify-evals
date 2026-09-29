@@ -1,0 +1,43 @@
+# Profile for suites that test whether AI agents can find and use Apify Actors.
+# A profile says what is under test, how the agent is set up per skill, which
+# fix areas the judge may name, and how Found / Works are defined.
+name: store-actors
+subjectKind: actor
+description: Apify-maintained Actors driven through the Apify MCP server.
+skills:
+  find:
+    label: Found
+    legacy: actor-discovery
+    description: The agent must pick the intended Actor in store search, then use it.
+    tools: [search-actors, fetch-actor-details, call-actor, get-actor-run, get-dataset-items]
+    maxTurns: 14
+    promptSuffix: |-
+      End your reply with exactly one line:
+      Actor: <username/name of the Apify Actor you used>
+  use:
+    label: Works
+    legacy: actor-usage
+    description: The Actor is pinned in the prompt; the agent must drive it correctly.
+    tools: [fetch-actor-details, call-actor, get-actor-run, get-dataset-items]
+    maxTurns: 12
+wrongSubjectLabel: wrong-actor
+fixAreas:
+  - id: input-schema
+    owner: subject
+    description: The agent built wrong or missing Actor input (required fields missed, wrong types, wrong mode flags).
+  - id: readme-docs
+    owner: subject
+    description: The agent misunderstood what the Actor does or which mode or sibling to use, although it read the Actor details.
+  - id: output-format
+    owner: subject
+    description: The Actor returned data but the agent could not find or use the right fields, or the output did not match what the Actor promises.
+  - id: error-messages
+    owner: subject
+    description: The Actor failed or returned an error the agent could not act on.
+  - id: discoverability
+    owner: store-search
+    description: The agent could not find, or picked the wrong, Actor in store search.
+  - id: agent-or-model
+    owner: none
+    description: The Actor did its part; the failure is the agent's reasoning or the model.
+evidence: [apify-runs-from-mcp]

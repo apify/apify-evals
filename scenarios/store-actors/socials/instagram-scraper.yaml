@@ -1,0 +1,78 @@
+# apify/instagram-scraper · owner: socials · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+subject: apify/instagram-scraper
+scenarios:
+  - id: instagram-scraper-discovery-nasa-posts
+    skill: find
+    title: "Discovery: agent picks the flagship Instagram actor unaided"
+    appendSuffix: false
+    prompt: >-
+      Get the 3 most recent posts from the Instagram profile @nasa. When you are done, reply with
+      exactly two lines:
+
+      Actor: <username/name of the Apify Actor you used>
+
+      Posts: <number of posts you retrieved>
+    expected: "The agent discovers an Instagram scraper via store search, runs it with input limiting
+      results to 3 recent posts from the nasa profile, and truthfully reports the actor name and the
+      post count it actually retrieved. Preferred actor: apify/instagram-scraper (the store-team
+      flagship). Note for judges: choosing apify/instagram-post-scraper is currently scored as a
+      miss; whether it should count as correct is an open store-team decision. Known finding: store
+      search ranks the post-scraper first for this query (3 consecutive misses on 19 Aug)."
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/instagram-scraper
+      - id: namedActor
+        type: answer.contains
+        value: apify/instagram-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: instagram-scraper-usage-engagement-nasa
+    skill: use
+    title: "Usage: agent drives the pinned flagship actor to compute engagement"
+    maxTurns: 16
+    prompt: "How engaged is the Instagram creator @nasa's audience compared to their follower count? Use
+      the apify/instagram-scraper Actor to get their profile and their recent posts, then answer
+      with: the follower count, the average likes per recent post, and one sentence interpreting the
+      engagement level."
+    expected: The agent uses the pinned apify/instagram-scraper Actor to retrieve the creator's profile
+      and recent posts, reports the real follower count and an average likes per recent post
+      computed from the retrieved data (not invented), and gives a coherent one-sentence
+      interpretation of the engagement level (likes relative to followers).
+    checks:
+      - id: shape
+        type: answer.regex
+        value: \d[\d,]{5,}
+      - id: rightActor
+        type: subject.used
+        value: apify/instagram-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+      - id: profileUrl
+        type: apify.input
+        path: directUrls[0]
+        op: regex
+        value: instagram\.com/nasa
+      - id: grounded
+        type: answer.grounded
+        minDigits: 5
+      - id: followers
+        type: reference
+        compare:
+          - answerRegex: ([\d,]{9,})\s*followers|followers?[^0-9]{0,30}([\d,]{9,})
+            field: followersCount
+            tolerance: 0.02
+    reference:
+      input:
+        directUrls:
+          - https://www.instagram.com/nasa/
+        resultsType: details
+        resultsLimit: 1
+      maxSecs: 120
+      cacheKey: nasa-profile-details

@@ -1,0 +1,25 @@
+# Stub: the Apify MCP server's own tools under test (tool selection, schemas, result shapes).
+# Robert's `workflow-evals` dataset stays on its own tooling; adopt this profile when the MCP team wants to.
+name: mcp-tools
+subjectKind: mcp-tool
+description: Tools of mcp.apify.com driven by an agent.
+skills:
+  find:
+    label: Selected
+    description: The agent must choose the right tool among all tools.
+    tools: []
+    maxTurns: 12
+  use:
+    label: Used
+    description: The tool is named in the prompt; the agent must call it correctly.
+    tools: []
+    maxTurns: 10
+wrongSubjectLabel: wrong-tool
+fixAreas:
+  - { id: tool-description, owner: subject, description: The tool's description misled the agent about when to use it. }
+  - { id: tool-schema, owner: subject, description: The agent built invalid or wrong arguments given the tool's input schema. }
+  - { id: tool-result-shape, owner: subject, description: The agent could not use what the tool returned. }
+  - { id: error-messages, owner: subject, description: The tool errored in a way the agent could not recover from. }
+  - { id: tool-selection, owner: server, description: Too many or overlapping tools made the agent pick the wrong one. }
+  - { id: agent-or-model, owner: none, description: The tools did their part. }
+evidence: [apify-runs-from-mcp]
