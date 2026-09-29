@@ -57,7 +57,7 @@ const {
     loadRunItems,
     renderScoreboard,
 } = await import('./core.js');
-const { loadJudgeProfile } = await import('./profile.js');
+const { GENERIC_PROFILE_NAME, loadJudgeProfile } = await import('./profile.js');
 
 const apifyToken = process.env.APIFY_TOKEN;
 if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for the judge LLM and artifact reads)');
@@ -213,7 +213,14 @@ async function profileNameFor(traceId: string): Promise<string | undefined> {
         };
         const meta = res.data?.[0]?.metadata;
         const parsed = typeof meta === 'string' ? (JSON.parse(meta) as Record<string, unknown>) : (meta as Record<string, unknown> | undefined);
-        name = typeof parsed?.itemProfile === 'string' ? parsed.itemProfile : undefined;
+        // Explicit profile first. Repo store scenarios carry an actor or skill
+        // but no profile; anything else (foreign datasets) is judged generically.
+        name =
+            typeof parsed?.itemProfile === 'string'
+                ? parsed.itemProfile
+                : parsed?.itemActor || parsed?.itemSkill
+                  ? 'store-actors'
+                  : GENERIC_PROFILE_NAME;
     } catch {
         name = undefined;
     }
