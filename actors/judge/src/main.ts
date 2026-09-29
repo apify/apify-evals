@@ -416,13 +416,14 @@ if (wantReport) {
         if (!suite) throw new Error('could not resolve the dataset name for the run');
         const prefix = input.reportKeyPrefix ?? `report-${suite}`;
         const storeId = input.reportStore ?? process.env.REPORT_STORE_ID ?? 'eval-reports';
+        const variant: 'v1' | 'v2' = input.reportVariant ?? 'v2';
         const built = await buildReport(langfuse, {
             suite,
-            days: input.reportVariant === 'v2' ? 28 : 7,
+            days: variant === 'v2' ? 28 : 7,
             rootDir: resolve(process.cwd(), '..', '..'),
             projectId,
             baseUrl: input.langfuseBaseUrl ?? process.env.LANGFUSE_BASE_URL,
-            variant: input.reportVariant ?? 'v1',
+            variant,
             latestJsonUrl: `https://api.apify.com/v2/key-value-stores/${storeId}/records/${prefix}-latest.json`,
         });
         // Reports go to a separate, publicly readable store: the artifacts store
