@@ -97,19 +97,29 @@ const SCHEDULED = (t: string | null) => (t ?? '').toLowerCase().startsWith('sche
  * per task.
  */
 export function canonicalExperimentIds(observations: Observation[]): Set<string> {
-    const byDay = new Map<string, Map<string, Observation>>();
+    const byDay = new Map<string, Map<string, { first: Observation; count: number }>>();
     for (const o of observations) {
         if (o.fullScope !== true || (o.repeats ?? 1) > 1) continue;
-        const day = byDay.get(o.day) ?? new Map<string, Observation>();
-        if (!day.has(o.experimentId)) day.set(o.experimentId, o);
+        const day = byDay.get(o.day) ?? new Map<string, { first: Observation; count: number }>();
+        const entry = day.get(o.experimentId);
+        if (entry) entry.count++;
+        else day.set(o.experimentId, { first: o, count: 1 });
         byDay.set(o.day, day);
     }
     const out = new Set<string>();
     for (const runs of byDay.values()) {
         const list = [...runs.values()];
-        const scheduled = list.filter((o) => SCHEDULED(o.trigger));
-        if (scheduled.length > 0) for (const o of scheduled) out.add(o.experimentId);
-        else if (list.length === 1) out.add(list[0].experimentId);
+        const scheduled = list.filter((e) => SCHEDULED(e.first.trigger));
+        if (scheduled.length > 0) {
+            // One canonical run per day. A platform migration restarts the
+            // scheduled Actor run and starts a second experiment (same run id,
+            // later start), so prefer the most complete one; on a tie the later
+            // start, which is the run that finished.
+            scheduled.sort(
+                (a, b) => b.count - a.count || b.first.startTime.localeCompare(a.first.startTime),
+            );
+            out.add(scheduled[0].first.experimentId);
+        } else if (list.length === 1) out.add(list[0].first.experimentId);
     }
     return out;
 }
