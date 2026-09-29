@@ -1,0 +1,200 @@
+{
+    "title": "Agent evals runner",
+    "description": "Runs every scenario of a suite through an AI agent, judges the results and returns a Langfuse results link. Defaults run the whole store-actors suite; filter by your Actors or your team to run only yours.",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "datasetName": {
+            "title": "Suite (Langfuse dataset)",
+            "type": "string",
+            "description": "Name of the Langfuse dataset holding the scenarios. Scenarios are authored in the repo under scenarios/<suite>/ and synced.",
+            "editor": "textfield",
+            "default": "store-actors",
+            "prefill": "store-actors"
+        },
+        "model": {
+            "title": "Model",
+            "type": "string",
+            "description": "The model the agent runs on (OpenRouter id via the Apify proxy; no API key needed). Every model runs inside the Claude Code harness.",
+            "editor": "select",
+            "default": "anthropic/claude-haiku-4.5",
+            "enum": [
+                "anthropic/claude-haiku-4.5",
+                "anthropic/claude-sonnet-4.6",
+                "openai/gpt-5-mini",
+                "openai/gpt-5.4",
+                "google/gemini-3-flash",
+                "deepseek/deepseek-v4-pro"
+            ],
+            "enumTitles": [
+                "Claude Haiku 4.5 (default, cheap)",
+                "Claude Sonnet 4.6",
+                "GPT-5 mini",
+                "GPT-5.4",
+                "Gemini 3 Flash",
+                "DeepSeek V4 Pro"
+            ]
+        },
+        "subjects": {
+            "title": "Only these Actors (optional)",
+            "type": "array",
+            "description": "Actor ids like compass/crawler-google-places, or just the name (crawler-google-places). Empty = every scenario in the suite. A filtered run is compared in the compare view but does not move the OKR trend.",
+            "editor": "stringList",
+            "default": []
+        },
+        "owners": {
+            "title": "Only this team (optional)",
+            "type": "array",
+            "description": "Team names as in the scenario folders: google, socials, video, universe.",
+            "editor": "stringList",
+            "default": []
+        },
+        "repeats": {
+            "title": "Repeats per scenario",
+            "type": "integer",
+            "description": "Run each scenario this many times. Use 3 when checking whether a change to your Actor helped; a single run can flip on a flaky scrape. The judge writes pass@N and consistency per scenario.",
+            "default": 1,
+            "minimum": 1,
+            "maximum": 10
+        },
+        "judge": {
+            "title": "Judge the results",
+            "type": "boolean",
+            "description": "Start the Judge Actor when the agents finish so the results link already shows verdicts and fix areas. Turn off only to re-judge later with a different judge model.",
+            "default": true
+        },
+        "models": {
+            "title": "Model matrix (optional)",
+            "type": "array",
+            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set.",
+            "editor": "stringList",
+            "default": [],
+            "sectionCaption": "Advanced",
+            "sectionDescription": "Defaults are right for the daily run and for checking your own Actor."
+        },
+        "judgeModel": {
+            "title": "Judge model",
+            "type": "string",
+            "description": "Model that grades the agent runs. Keep it fixed across runs you want to compare.",
+            "editor": "textfield",
+            "default": "anthropic/claude-sonnet-4.6"
+        },
+        "runName": {
+            "title": "Run name (optional)",
+            "type": "string",
+            "description": "Defaults to \"<suite> \u00b7 <model> \u00b7 <scope> \u00b7 <date time> \u00b7 <trigger>\".",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "concurrency": {
+            "title": "Parallel agent sessions",
+            "type": "integer",
+            "description": "Sessions running at once inside this Actor run. 4 per 4 GB of memory is safe; 16 fits in 8 GB.",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 50
+        },
+        "perItemTimeoutSecs": {
+            "title": "Per-scenario timeout (seconds)",
+            "type": "integer",
+            "description": "A session past this is killed; the scenario becomes inconclusive (infrastructure), not a failure.",
+            "default": 300,
+            "minimum": 30
+        },
+        "itemLimit": {
+            "title": "Scenario limit (0 = all)",
+            "type": "integer",
+            "description": "Cap the number of scenarios after filtering. Handy for smoke tests.",
+            "default": 0,
+            "minimum": 0
+        },
+        "healthThreshold": {
+            "title": "Health threshold",
+            "type": "string",
+            "description": "Share of sessions that must complete for the run to count as healthy (exit code 0). Below it the run fails with exit code 10 so schedule alerts fire. Decimal between 0 and 1.",
+            "editor": "textfield",
+            "default": "0.9"
+        },
+        "categories": {
+            "title": "Category filter (deprecated)",
+            "type": "array",
+            "description": "Older alias of \"Only these Actors\" matching the scenario's category slug.",
+            "editor": "stringList",
+            "default": []
+        },
+        "mcpUrl": {
+            "title": "MCP server URL",
+            "type": "string",
+            "description": "Apify MCP server the agent uses. Each scenario narrows it with ?tools=.",
+            "editor": "textfield",
+            "default": "https://mcp.apify.com",
+            "sectionCaption": "Maintainer",
+            "sectionDescription": "Deployment plumbing. Teams never need this section."
+        },
+        "useOpenRouterProxy": {
+            "title": "LLM via Apify OpenRouter proxy",
+            "type": "boolean",
+            "description": "On the platform this is the only option. Turn off only for local runs with your own Claude login.",
+            "default": true
+        },
+        "skipPreflight": {
+            "title": "Skip preflight",
+            "type": "boolean",
+            "description": "Skip the MCP tools/list and LLM proxy check that fails a broken environment in seconds.",
+            "default": false
+        },
+        "trigger": {
+            "title": "Trigger label",
+            "type": "string",
+            "description": "Shown in the run name. Defaults to the platform origin (schedule, web, api, cli).",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "notify": {
+            "title": "Post Slack digest",
+            "type": "boolean",
+            "description": "Post the per-team digest to Slack after this run (needs SLACK_WEBHOOK_URL or SLACK_WEBHOOKS_BY_OWNER in the Actor environment). Leave unset to post on scheduled runs only.",
+            "nullable": true
+        },
+        "harness": {
+            "title": "Harness override (JSON)",
+            "type": "object",
+            "description": "{kind, model, maxTurns}. kind picks the adapter (claude-code only for now).",
+            "editor": "json",
+            "nullable": true
+        },
+        "artifactStore": {
+            "title": "Eval artifacts store",
+            "type": "string",
+            "description": "Named key-value store for full agent logs, evidence snapshots and tool-schema snapshots. Leave empty to use the store from the Actor environment (ARTIFACT_STORE_ID).",
+            "editor": "resourcePicker",
+            "resourceType": "keyValueStore",
+            "resourcePermissions": ["READ", "WRITE"],
+            "nullable": true
+        },
+        "langfuseBaseUrl": {
+            "title": "Langfuse base URL override",
+            "type": "string",
+            "description": "Normally set by the Actor's environment.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "langfusePublicKey": {
+            "title": "Langfuse public key override",
+            "type": "string",
+            "description": "Normally set by the Actor's environment.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        },
+        "langfuseSecretKey": {
+            "title": "Langfuse secret key override",
+            "type": "string",
+            "description": "Normally set by the Actor's environment.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        }
+    },
+    "required": ["datasetName"]
+}
