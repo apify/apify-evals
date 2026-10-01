@@ -66,9 +66,7 @@
             "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id IoT4ipiOnFHyRsZQH); the picker grants this run access. Leave empty to use the default store by name.",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
-            "resourcePermissions": [
-                "READ"
-            ],
+            "resourcePermissions": ["READ"],
             "nullable": true
         },
         "writeRunScores": {
@@ -90,9 +88,27 @@
             "description": "Share of passing scenarios also sent to the audit queue (0 to 1).",
             "editor": "textfield",
             "default": "0.1"
+        },
+        "datasetName": {
+            "title": "Suite (dataset) name",
+            "type": "string",
+            "description": "Name of the Langfuse dataset the run belongs to; used to build the report. Resolved from the run when empty.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "report": {
+            "title": "Build the report",
+            "type": "boolean",
+            "description": "After a full-scope run, regenerate the suite report (last 7 days) into the artifacts store as report-<suite>-latest.html and a dated copy.",
+            "default": true
+        },
+        "reportStore": {
+            "title": "Report store",
+            "type": "string",
+            "description": "Key-value store the suite report is written to. Should be publicly readable so developers can open the link without an Apify login. Defaults to the Actor's REPORT_STORE_ID (eval-reports).",
+            "editor": "textfield",
+            "nullable": true
         }
     },
-    "required": [
-        "datasetRunId"
-    ]
+    "required": ["datasetRunId"]
 }

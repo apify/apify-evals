@@ -7,6 +7,7 @@ FROM apify/actor-node:24 AS builder
 COPY --chown=myuser:myuser package*.json ./
 COPY --chown=myuser:myuser shared/package*.json ./shared/
 COPY --chown=myuser:myuser contract/package*.json ./contract/
+COPY --chown=myuser:myuser report/package*.json ./report/
 COPY --chown=myuser:myuser actors/runner/package*.json ./actors/runner/
 COPY --chown=myuser:myuser actors/workflow-runner/package*.json ./actors/workflow-runner/
 COPY --chown=myuser:myuser actors/judge/package*.json ./actors/judge/
@@ -37,6 +38,7 @@ RUN npm install --global @openai/codex@0.154.0 --audit=false \
 COPY package*.json ./
 COPY shared/package*.json ./shared/
 COPY contract/package*.json ./contract/
+COPY report/package*.json ./report/
 COPY actors/runner/package*.json ./actors/runner/
 COPY actors/workflow-runner/package*.json ./actors/workflow-runner/
 COPY actors/judge/package*.json ./actors/judge/

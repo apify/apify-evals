@@ -9,8 +9,7 @@
  */
 import type { LangfuseClient } from '@langfuse/client';
 
-import { loadProfile, type Profile } from '../profiles.js';
-import { loadSuite } from '../scenario-format.js';
+import type { ReportProfile } from './profile.js';
 
 export interface ExpectedScenario {
     id: string;
@@ -245,9 +244,11 @@ export function derive(
 }
 
 export interface CollectOptions {
-    rootDir: string;
     suite: string;
     days: number;
+    /** What should have run: from the dataset (see expectedFromDataset) or the repo files. */
+    expected: ExpectedScenario[];
+    profile: ReportProfile;
     now?: Date;
     /** Project id for trace links; read from the first score or passed in. */
     projectId?: string;
@@ -258,21 +259,7 @@ export async function collectReportData(langfuse: LangfuseClient, opts: CollectO
     const now = opts.now ?? new Date();
     const from = new Date(now.getTime() - opts.days * 86_400_000);
     const baseUrl = opts.baseUrl ?? process.env.LANGFUSE_BASE_URL ?? 'https://langfuse.apify.dev';
-    const profile: Profile = loadProfile(opts.rootDir, opts.suite);
-    const { items: files } = loadSuite(opts.rootDir, opts.suite);
-    const expected: ExpectedScenario[] = files.map((it) => {
-        const m = it.metadata as unknown as Record<string, unknown>;
-        const subject = (m.subject as { id?: string } | undefined)?.id ?? String(m.actor ?? '');
-        return {
-            id: it.id,
-            subject,
-            owner: String(m.owner ?? m.team ?? ''),
-            skill: String(m.skill ?? ''),
-            title: String(m.title ?? it.id),
-            tags: Array.isArray(m.tags) ? (m.tags as unknown[]).map(String) : [],
-        };
-    });
-
+    const { profile, expected } = opts;
     const dataset = (await langfuse.dataset.get(opts.suite)) as unknown as { id: string };
     const raw: RawItem[] = [];
     let cursor: string | undefined;
@@ -348,12 +335,7 @@ export async function collectReportData(langfuse: LangfuseClient, opts: CollectO
 
     return {
         suite: opts.suite,
-        profile: {
-            name: profile.name,
-            subjectKind: profile.subjectKind,
-            skills: Object.fromEntries(Object.entries(profile.skills).map(([k, v]) => [k, { label: v.label }])),
-            wrongSubjectLabel: profile.wrongSubjectLabel,
-        },
+        profile,
         projectId,
         baseUrl,
         generatedAt: now.toISOString(),
@@ -362,4 +344,27 @@ export async function collectReportData(langfuse: LangfuseClient, opts: CollectO
         observations,
         experiments: [...experiments.values()].sort((a, b) => a.startTime.localeCompare(b.startTime)),
     };
+}
+
+/** The expected population from the Langfuse dataset the runner reads (what
+ * the sync wrote from the repo files), so the judge needs no repo checkout. */
+export async function expectedFromDataset(langfuse: LangfuseClient, suite: string): Promise<ExpectedScenario[]> {
+    const dataset = (await langfuse.dataset.get(suite)) as unknown as {
+        items?: { id: string; metadata?: Record<string, unknown> | null; status?: string }[];
+    };
+    return (dataset.items ?? [])
+        .filter((it) => it.status !== 'ARCHIVED')
+        .map((it) => {
+            const m = it.metadata ?? {};
+            const subject = (m.subject as { id?: string } | undefined)?.id ?? String(m.actor ?? '');
+            return {
+                id: it.id,
+                subject,
+                owner: String(m.owner ?? m.team ?? ''),
+                skill: String(m.skill ?? ''),
+                title: String(m.title ?? it.id),
+                tags: Array.isArray(m.tags) ? (m.tags as unknown[]).map(String) : [],
+            };
+        })
+        .sort((a, b) => a.id.localeCompare(b.id));
 }
