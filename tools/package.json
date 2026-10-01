@@ -8,7 +8,8 @@
         "scenarios:check": "tsx src/scenarios-sync.ts --check",
         "scenarios:sync": "tsx src/scenarios-sync.ts",
         "test": "vitest run",
-        "judge:calibrate": "tsx src/judge-calibrate.ts"
+        "judge:calibrate": "tsx src/judge-calibrate.ts",
+        "report": "tsx src/report.ts"
     },
     "dependencies": {
         "@apify-evals/contract": "*",
