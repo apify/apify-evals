@@ -69,19 +69,11 @@ describe('judgeLangfuseInput', () => {
         LANGFUSE_SECRET_KEY: 'sk-other',
     };
 
-    it('passes nothing when the runner uses its own environment', () => {
-        expect(judgeLangfuseInput({}, env)).toEqual({});
-    });
-
-    it('forwards the full resolved credential set when any override was given', () => {
-        const expected = {
+    it('always forwards the full resolved credential set so the judge reads the same project', () => {
+        expect(judgeLangfuseInput(env)).toEqual({
             langfuseBaseUrl: 'https://other.langfuse.dev',
             langfusePublicKey: 'pk-other',
             langfuseSecretKey: 'sk-other',
-        };
-        expect(judgeLangfuseInput({ langfusePublicKey: 'pk-other', langfuseSecretKey: 'sk-other' }, env)).toEqual(
-            expected,
-        );
-        expect(judgeLangfuseInput({ langfuseBaseUrl: 'https://other.langfuse.dev' }, env)).toEqual(expected);
+        });
     });
 });

@@ -24,6 +24,7 @@ interface Input {
     auditQueue?: string;
     auditPassSample?: number | string;
     langfuseBaseUrl?: string;
+    /** Required: the judge has no default Langfuse project; the keys select it. */
     langfusePublicKey?: string;
     langfuseSecretKey?: string;
 }
@@ -42,16 +43,19 @@ const {
 } = input;
 if (!datasetRunId) throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
 const auditPassSample = Math.min(1, Math.max(0, Number(auditPassSampleInput) || 0));
+/** Score the human reviewer sets in the audit queue; the calibrate tool reads it. */
+const AUDIT_SCORE_NAME = 'human.verdict';
 
-// Env must be set before the Langfuse SDK loads (it captures env at module load).
-for (const [inputKey, envKey] of [
-    ['langfuseBaseUrl', 'LANGFUSE_BASE_URL'],
-    ['langfusePublicKey', 'LANGFUSE_PUBLIC_KEY'],
-    ['langfuseSecretKey', 'LANGFUSE_SECRET_KEY'],
-] as const) {
-    if (input[inputKey]) process.env[envKey] = input[inputKey];
-    if (!process.env[envKey]) throw new Error(`Missing ${envKey} (set it as Actor input or env var)`);
+// Langfuse project keys are mandatory input (one deployment serves many
+// projects); only the base URL falls back to the environment. Env must be set
+// before the Langfuse SDK loads (it captures env at module load).
+for (const key of ['langfusePublicKey', 'langfuseSecretKey'] as const) {
+    if (!input[key]) throw new Error(`Missing required input ${key} (the Langfuse project keys select the project)`);
 }
+process.env.LANGFUSE_PUBLIC_KEY = input.langfusePublicKey;
+process.env.LANGFUSE_SECRET_KEY = input.langfuseSecretKey;
+if (input.langfuseBaseUrl) process.env.LANGFUSE_BASE_URL = input.langfuseBaseUrl;
+if (!process.env.LANGFUSE_BASE_URL) throw new Error('Missing LANGFUSE_BASE_URL (set langfuseBaseUrl input or env var)');
 
 const { LangfuseClient } = await import('@langfuse/client');
 const { LangfuseSpanProcessor } = await import('@langfuse/otel');

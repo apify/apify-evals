@@ -66,17 +66,17 @@ reachable artifact do the checks fall back to the runner's single legacy
 ## Run directly (re-grading)
 
 ```sh
-apify call artogahr/eval-judge --memory 1024 --timeout 1800 -i '{
+apify call platform-services/eval-judge --memory 1024 --timeout 1800 -i '{
     "datasetRunId": "<Langfuse experiment id, from the runner OUTPUT>",
     "judgeModel": "anthropic/claude-sonnet-4.6",
     "force": true
 }'
 ```
 
-Langfuse keys come from the Actor's environment. The `langfuseBaseUrl`,
-`langfusePublicKey` and `langfuseSecretKey` inputs override them, so a run
-recorded in another Langfuse project is graded by passing that project's
-credentials (the keys are secret inputs, encrypted on the run). `artifactStore`
+`langfusePublicKey` and `langfuseSecretKey` are required input: one deployment
+serves every Langfuse project, and the keys select the project holding the run
+(secret inputs, encrypted on the run). `langfuseBaseUrl` defaults to the shared
+instance and falls back to `LANGFUSE_BASE_URL` in the environment. `artifactStore`
 is the `eval-artifacts` store picker (read access for snapshots and logs).
 
 OUTPUT: `{datasetRunId, items, judged, passed, passRate, foundRate, worksRate, fixAreas, skippedAlreadyJudged, skippedNoTrace, errors, degraded, version, scoreboard}`; `SCOREBOARD` is the same per-Actor table as markdown.
