@@ -91,7 +91,7 @@ The run status reports system health, never scenario results (spec D14). Exit 0:
 
 ### Secrets and permissions
 
-Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for another Langfuse project, and when any is set the runner passes the resolved set to the judge so both Actors use the same project. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
+Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse project keys are required input (`langfusePublicKey`, `langfuseSecretKey`, secret fields): one deployment serves every Langfuse project and the keys select one; the runner passes them to the judge so both Actors use the same project. `langfuseBaseUrl` defaults to the shared instance and falls back to `LANGFUSE_BASE_URL` in the environment. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
 
 Both Actors must run with **full permissions** (Actor settings → Permissions, or `apify api PUT actors/<id> -d '{"actorPermissionLevel":"FULL_PERMISSIONS"}'`). A new Actor defaults to limited permissions, and a limited run token cannot start other Actors or create tasks, so every MCP call the agent makes fails with `insufficient-permissions` and the runner cannot open the named store. It is a one-time setting per Actor; it survives every `apify push`.
 
@@ -99,18 +99,18 @@ Both Actors must run with **full permissions** (Actor settings → Permissions, 
 
 Order matters: the runner calls the judge by name and both read the same store and secrets.
 
-1. `apify login` as the account that will own the Actors, then store the two Langfuse secrets locally so `apify push` uploads them: `apify secrets add langfusePublicKey <pk>` and `apify secrets add langfuseSecretKey <sk>`. `LANGFUSE_BASE_URL` is plain text in both `actor.json` files.
+1. `apify login` as the account that will own the Actors. No Langfuse secrets are needed at push time: the project keys are per-run input, so put them into each task or schedule. `LANGFUSE_BASE_URL` is plain text in both `actor.json` files.
 2. Create the artifact store once, `apify key-value-stores create eval-artifacts`, and put its id into `ARTIFACT_STORE_ID` in both `actor.json` files.
 3. Deploy the judge, then the runner: `scripts/deploy.sh judge && scripts/deploy.sh workflow-runner`. Set `JUDGE_ACTOR` in the runner's `actor.json` to `<account>/<judge name>` before pushing if the account or name differs from the defaults.
-4. Set both Actors to full permissions (see above). Verify with one small run: `apify call <account>/<runner> --memory 8192 --timeout 3600 -i '{"datasetName":"store-actors","subjects":["compass/crawler-google-places"],"itemLimit":1}'` and open the `resultsUrl` from OUTPUT.
-5. Recreate the schedule and the team tasks. The daily schedule is `0 6 * * *` Europe/Prague, action `RUN_ACTOR` on the runner with input `{"datasetName":"store-actors"}` and run options 8192 MB, 3600 s; create it with `apify api POST schedules -d '<json>'`. The team tasks (`store-evals-google`, `store-evals-socials`, `store-evals-video`) are the same input plus `"owners":["google"]` and so on; create them with `apify api POST actor-tasks -d '<json>'`. Scenarios are synced from the repo with `npm run scenarios:sync` and need only the Langfuse keys, not the Actors.
+4. Set both Actors to full permissions (see above). Verify with one small run: `apify call <account>/<runner> --memory 8192 --timeout 3600 -i '{"datasetName":"store-actors","subjects":["compass/crawler-google-places"],"itemLimit":1,"langfusePublicKey":"pk-lf-...","langfuseSecretKey":"sk-lf-..."}'` and open the `resultsUrl` from OUTPUT.
+5. Recreate the schedule and the team tasks. The daily schedule is `0 6 * * *` Europe/Prague, action `RUN_ACTOR` on the runner with input `{"datasetName":"store-actors","langfusePublicKey":"pk-lf-...","langfuseSecretKey":"sk-lf-..."}` (one schedule per Langfuse project) and run options 8192 MB, 3600 s; create it with `apify api POST schedules -d '<json>'`. The team tasks (`store-evals-google`, `store-evals-socials`, `store-evals-video`) are the same input plus `"owners":["google"]` and so on; create them with `apify api POST actor-tasks -d '<json>'`. Scenarios are synced from the repo with `npm run scenarios:sync` and need only the Langfuse keys, not the Actors.
 6. Switch the old account's schedule off so the suite runs once a day, not twice.
 
 ### Deploy and run
 
 ```sh
 scripts/deploy.sh judge && scripts/deploy.sh workflow-runner   # from the repo root
-apify call artogahr/eval-workflow-runner-poc --memory 8192 --timeout 3600 -i '{"datasetName":"store-actors"}'
+apify call platform-services/eval-runner --memory 8192 --timeout 3600 -i '{"datasetName":"store-actors"}'
 ```
 
 Local runs: `apify run` in this directory with `useOpenRouterProxy: false` (the proxy only accepts tokens from inside Actor runs).

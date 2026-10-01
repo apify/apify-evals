@@ -173,28 +173,26 @@
             "nullable": true
         },
         "langfuseBaseUrl": {
-            "title": "Langfuse base URL override",
+            "title": "Langfuse base URL",
             "type": "string",
-            "description": "Normally set by the Actor's environment.",
+            "description": "One Langfuse instance serves every project; the keys below pick the project. Falls back to LANGFUSE_BASE_URL in the Actor environment.",
             "editor": "textfield",
-            "nullable": true
+            "default": "https://langfuse.apify.dev"
         },
         "langfusePublicKey": {
-            "title": "Langfuse public key override",
+            "title": "Langfuse public key",
             "type": "string",
-            "description": "Normally set by the Actor's environment.",
+            "description": "Public key of the Langfuse project this run writes to (pk-lf-...). Required: the Actor has no default project. Stored encrypted; passed on to the judge.",
             "editor": "textfield",
-            "isSecret": true,
-            "nullable": true
+            "isSecret": true
         },
         "langfuseSecretKey": {
-            "title": "Langfuse secret key override",
+            "title": "Langfuse secret key",
             "type": "string",
-            "description": "Normally set by the Actor's environment.",
+            "description": "Secret key of the same Langfuse project (sk-lf-...). Stored encrypted; passed on to the judge.",
             "editor": "textfield",
-            "isSecret": true,
-            "nullable": true
+            "isSecret": true
         }
     },
-    "required": ["datasetName"]
+    "required": ["datasetName", "langfusePublicKey", "langfuseSecretKey"]
 }
