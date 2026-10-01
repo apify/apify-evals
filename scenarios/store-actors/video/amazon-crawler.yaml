@@ -1,0 +1,68 @@
+# junglee/amazon-crawler · owner: video · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Video team (Sept 2026). Field-shape
+# checks start as warn; promote to fail once the first baseline confirms the field names.
+subject: junglee/amazon-crawler
+tags: [family:amazon]
+scenarios:
+  - id: amazon-crawler-discovery-wireless-earbuds
+    skill: find
+    title: "Discovery: Amazon product search finds the Amazon crawler, not the reviews scraper"
+    prompt: Find the top 10 best-selling wireless earbuds on Amazon with their prices and ratings.
+    expected: The agent recognizes this as an Amazon search or category scraping task, chooses
+      junglee/amazon-crawler, scrapes a wireless-earbuds search or category page, and returns 10
+      products with title, price, and rating pulled from the actual results, not invented values.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: junglee/amazon-crawler
+      - id: namedActor
+        type: answer.contains
+        value: junglee/amazon-crawler
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+      - id: shape
+        type: answer.regex
+        value: \d+[.,]\d{2}
+  - id: amazon-crawler-usage-earbuds-search-url
+    skill: use
+    title: "Usage: pinned Amazon crawler, search URL with a per-URL item cap"
+    prompt: Using the junglee/amazon-crawler Actor, scrape https://www.amazon.com/s?k=wireless+earbuds and
+      report the top 10 products with price and rating.
+    expected: The agent calls junglee/amazon-crawler with the given search URL in categoryOrProductUrls,
+      caps results with maxItemsPerStartUrl around 10, runs it successfully, and lists the 10
+      products in order with their price and rating exactly as scraped.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: junglee/amazon-crawler
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: searchUrl
+        type: apify.input
+        path: categoryOrProductUrls[0].url
+        op: regex
+        value: amazon\.com/s\?k=wireless\+earbuds
+      - id: cap
+        type: apify.input
+        path: maxItemsPerStartUrl
+        op: lte
+        value: 10
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 10 }
+        severity: warn
+      - id: field
+        type: apify.items
+        field: price
+        op: exists
+        severity: warn
+      - id: shape
+        type: answer.regex
+        value: \d+[.,]\d{2}

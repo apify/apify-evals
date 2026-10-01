@@ -1,0 +1,80 @@
+# apify/web-scraper · owner: universe · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Universe team (Sept 2026), tightened for
+# the two-minute budget (first page only, page caps) and a concrete target URL for the usage case.
+subject: apify/web-scraper
+tags: [family:generic-scrapers]
+scenarios:
+  - id: web-scraper-discovery-waterstones-headless
+    skill: find
+    title: "Discovery: JavaScript-rendered catalog with a headless browser finds the Web Scraper"
+    prompt: I need product names and prices from
+      https://www.waterstones.com/category/fiction/science-fiction-fantasy-horror. It's a large
+      catalog site that needs JavaScript execution, so make sure to use a real browser. Run it
+      against the first category page only and show me 10 results so I can check the extraction
+      looks right before I scale it up.
+    expected: The agent discovers apify/web-scraper (the headless-browser scraper with a custom page
+      function), uses the category URL as start, writes a page function extracting names and
+      prices, caps pages, and shows about 10 real items. Cheerio Scraper is the wrong sibling
+      because the user asked for a browser; Website Content Crawler is wrong because custom fields
+      are needed.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/web-scraper
+      - id: namedActor
+        type: answer.contains
+        value: apify/web-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+      - id: pageFunction
+        type: apify.input
+        path: pageFunction
+        op: exists
+      - id: pageCap
+        type: apify.input
+        path: maxPagesPerCrawl
+        op: lte
+        value: 5
+        severity: warn
+  - id: web-scraper-usage-coinmarketcap-top-ten
+    skill: use
+    title: "Usage: pinned Web Scraper, one dynamic page with a custom page function"
+    prompt: Using the apify/web-scraper Actor, scrape https://coinmarketcap.com/ and give me the names and
+      current prices of the top 10 cryptocurrencies by market cap listed there. One page only.
+    expected: The agent uses apify/web-scraper with coinmarketcap.com as the start URL, a page function
+      that extracts name and price rows from the rendered table, a one-page cap, and reports 10
+      real names and prices from the run rather than from memory.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: apify/web-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: startUrl
+        type: apify.input
+        path: startUrls[0].url
+        op: regex
+        value: coinmarketcap\.com
+      - id: pageFunction
+        type: apify.input
+        path: pageFunction
+        op: exists
+      - id: pageCap
+        type: apify.input
+        path: maxPagesPerCrawl
+        op: lte
+        value: 3
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1 }
+        severity: warn
+      - id: shape
+        type: answer.regex
+        value: \$\s?\d[\d,]*\.\d{2}

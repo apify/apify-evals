@@ -1,0 +1,76 @@
+# streamers/youtube-shorts-scraper · owner: video · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Video team (Sept 2026). Field-shape
+# checks start as warn; promote to fail once the first baseline confirms the field names.
+subject: streamers/youtube-shorts-scraper
+tags: [family:youtube]
+scenarios:
+  - id: youtube-shorts-scraper-discovery-mrbeast-popular
+    skill: find
+    title: "Discovery: popular Shorts of a channel find the Shorts scraper, not the YouTube scraper"
+    prompt: What are the 10 most popular Shorts on the MrBeast YouTube channel?
+    expected: The agent recognizes this as a YouTube Shorts lookup for a named channel, chooses
+      streamers/youtube-shorts-scraper, scrapes the MrBeast channel sorted by popularity with a cap
+      around 10, and returns Shorts with view and like counts pulled from the actual output. The
+      general YouTube scraper is the wrong sibling; the signal is Shorts.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: streamers/youtube-shorts-scraper
+      - id: namedActor
+        type: answer.contains
+        value: streamers/youtube-shorts-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+      - id: shape
+        type: answer.regex
+        value: \d[\d,.]{3,}
+  - id: youtube-shorts-scraper-usage-mrbeast-top-ten
+    skill: use
+    title: "Usage: pinned Shorts scraper, channel sorted by popularity with a 10-item cap"
+    prompt: Using the streamers/youtube-shorts-scraper Actor, get the 10 most popular Shorts from the
+      MrBeast channel and report each one's view and like counts.
+    expected: The agent calls streamers/youtube-shorts-scraper with channels set to ["MrBeast"], the
+      channel Shorts sort set to popular, maxResultsShorts around 10, runs it successfully, and lists
+      each Short with its view and like counts exactly as returned.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: streamers/youtube-shorts-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: channelInput
+        type: apify.input
+        path: channels[0]
+        op: regex
+        value: '[Mm]r[Bb]east'
+      - id: sortPopular
+        type: apify.input
+        path: sortChannelShortsBy
+        op: equals
+        value: POPULAR
+        severity: warn
+      - id: cap
+        type: apify.input
+        path: maxResultsShorts
+        op: lte
+        value: 10
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 10 }
+        severity: warn
+      - id: field
+        type: apify.items
+        field: viewCount
+        op: exists
+        severity: warn
+      - id: grounded
+        type: answer.grounded
+        minDigits: 5
+        severity: warn
