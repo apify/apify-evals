@@ -18,6 +18,8 @@ export interface ExpectedScenario {
     skill: 'find' | 'use' | string;
     title: string;
     tags: string[];
+    /** The user task as the agent sees it (dataset item input.prompt). */
+    prompt?: string;
 }
 
 export interface ScoreValue {
@@ -350,7 +352,7 @@ export async function collectReportData(langfuse: LangfuseClient, opts: CollectO
  * the sync wrote from the repo files), so the judge needs no repo checkout. */
 export async function expectedFromDataset(langfuse: LangfuseClient, suite: string): Promise<ExpectedScenario[]> {
     const dataset = (await langfuse.dataset.get(suite)) as unknown as {
-        items?: { id: string; metadata?: Record<string, unknown> | null; status?: string }[];
+        items?: { id: string; input?: unknown; metadata?: Record<string, unknown> | null; status?: string }[];
     };
     return (dataset.items ?? [])
         .filter((it) => it.status !== 'ARCHIVED')
@@ -364,6 +366,12 @@ export async function expectedFromDataset(langfuse: LangfuseClient, suite: strin
                 skill: String(m.skill ?? ''),
                 title: String(m.title ?? it.id),
                 tags: Array.isArray(m.tags) ? (m.tags as unknown[]).map(String) : [],
+                prompt:
+                    typeof it.input === 'string'
+                        ? it.input
+                        : typeof (it.input as { prompt?: unknown } | undefined)?.prompt === 'string'
+                          ? String((it.input as { prompt: string }).prompt)
+                          : undefined,
             };
         })
         .sort((a, b) => a.id.localeCompare(b.id));
