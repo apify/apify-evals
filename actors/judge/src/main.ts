@@ -373,11 +373,23 @@ if (auditQueue && judged.length > 0) {
         };
         let queue = queues.data?.find((q) => q.name === auditQueue);
         if (!queue) {
+            // A queue needs at least one score config; a fresh Langfuse project has none.
+            const configs = await langfuse.api.scoreConfigs.get({ limit: 100 });
+            let verdictConfig = configs.data.find((c) => c.name === AUDIT_SCORE_NAME);
+            verdictConfig ??= await langfuse.api.scoreConfigs.create({
+                name: AUDIT_SCORE_NAME,
+                dataType: 'CATEGORICAL',
+                categories: [
+                    { value: 1, label: 'agree' },
+                    { value: 0, label: 'disagree' },
+                    { value: 2, label: 'unsure' },
+                ],
+                description: 'Human review of the judge verdict: agree, disagree or unsure.',
+            });
             queue = (await langfuse.api.annotationQueues.createQueue({
                 name: auditQueue,
-                description:
-                    'Judge audit: review judge.verdict / judge.fixArea and score human.verdict (agree / disagree / unsure).',
-                scoreConfigIds: [],
+                description: `Judge audit: review judge.verdict / judge.fixArea and score ${AUDIT_SCORE_NAME} (agree / disagree / unsure).`,
+                scoreConfigIds: [verdictConfig.id],
             })) as { id: string; name: string };
         }
         let queued = 0;
