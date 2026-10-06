@@ -520,7 +520,7 @@ schemas) write nothing.
 
 **Score id.** `<traceId>-<scoreName>-p<promptVersion>-i<judgeImplVersion>-<judgeModel>`,
 for example
-`abc…-agent_judge_toolSelection-p3-i0-1-0-deepseek-deepseek-v4-flash`.
+`abc…-agent_judge_toolSelection-p3-i0-4-0-deepseek-deepseek-v4-flash`.
 `promptVersion` is the Langfuse prompt version resolved for the batch and
 `judgeImplVersion` is `JUDGE_IMPL_VERSION` from `core.ts` (there is no separate
 hand-bumped judge version). The impl version and the model id are sanitised
