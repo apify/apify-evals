@@ -1,0 +1,25 @@
+{
+    "actId": "<ACTOR_ID of eval-judge, see schedule/README.md>",
+    "name": "apify-ai-online-evals",
+    "title": "Apify AI online evals",
+    "description": "Judges a 20% sample of finished production apify-ai turns (ai-team#249, #271). Run by the apify-ai-online-evals-daily schedule. Holds the Apify AI Agent Langfuse project keys as secret input; the Actor env keys belong to the dataset-run project.",
+    "options": {
+        "build": "latest",
+        "timeoutSecs": 7200,
+        "memoryMbytes": 1024,
+        "restartOnError": false
+    },
+    "input": {
+        "mode": "online",
+        "environment": "prod",
+        "sampleRate": 0.2,
+        "maxItems": 100,
+        "judgeModel": "deepseek/deepseek-v4-flash",
+        "promptLabel": "production",
+        "concurrency": 4,
+        "langfuseBaseUrl": "https://langfuse.apify.dev",
+        "langfuseProject": "Apify AI Agent",
+        "langfusePublicKey": "<pk-lf-... of Apify AI Agent, set in the Console, see schedule/README.md>",
+        "langfuseSecretKey": "<sk-lf-... of Apify AI Agent, set in the Console, see schedule/README.md>"
+    }
+}

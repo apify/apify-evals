@@ -73,11 +73,12 @@ apify call artogahr/eval-judge --memory 1024 --timeout 1800 -i '{
 }'
 ```
 
-Langfuse keys come from the Actor's environment. The `langfuseBaseUrl`,
-`langfusePublicKey` and `langfuseSecretKey` inputs override them, so a run
-recorded in another Langfuse project is graded by passing that project's
-credentials (the keys are secret inputs, encrypted on the run). `artifactStore`
-is the `eval-artifacts` store picker (read access for snapshots and logs).
+Langfuse keys come from the Actor's environment (the dataset-run project). The
+`langfuseBaseUrl`, `langfusePublicKey` and `langfuseSecretKey` inputs override
+them, so a run recorded in another Langfuse project is graded by passing that
+project's credentials (the keys are secret inputs, encrypted on the run). Online
+mode needs other keys, see "Langfuse project" below. `artifactStore` is the
+`eval-artifacts` store picker (read access for snapshots and logs).
 
 OUTPUT: `{datasetRunId, items, judged, passed, passRate, foundRate, worksRate, fixAreas, skippedAlreadyJudged, skippedNoTrace, errors, degraded, version, scoreboard}`; `SCOREBOARD` is the same per-Actor table as markdown.
 
@@ -291,8 +292,17 @@ dollar of judge calls and well under the run timeout at concurrency 4 on a
 busy day), `environment` (default `prod`, see above), `windowStart` /
 `windowEnd` (ISO 8601 overrides, see above; give them an explicit offset,
 `2026-09-01T00:00:00Z`, because a string without one is parsed as the Actor's
-local time). `judgeModel`, `promptLabel` and the Langfuse keys apply as in
-datasetRun mode.
+local time). `judgeModel` and `promptLabel` apply as in datasetRun mode.
+
+**Langfuse project.** Online mode needs the keys of the "Apify AI Agent"
+project as `langfusePublicKey` / `langfuseSecretKey` input. The Actor env keys
+are the dataset-run project ("MCP Agent Evals"), and they must stay there: the
+workflow runner starts the judge without keys. Before any read or write, online
+mode resolves the keys' project (`GET /api/public/projects`) and fails the run
+unless its name or id equals `langfuseProject` (default `Apify AI Agent`;
+`src/online-project.ts`). So a run that falls back to the env keys stops with a
+clear message instead of selecting from, and scoring into, the wrong project.
+The daily schedule runs a Task that holds these keys (`schedule/README.md`).
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
 tracesInWindow, completedTraces, sampled, scoresSkipped, judged,
@@ -669,12 +679,14 @@ new scores land beside the old ones under new ids.
 created by code; both are committed as configuration plus the manual steps, and
 neither exists in Apify or Langfuse yet.
 
-- `schedule/online-daily.json` is the `POST /v2/schedules` body for the daily
-  online run (06:00 UTC, `isExclusive`, 2 h timeout, 1 GB, the online-mode
-  defaults pinned in `runInput`). `schedule/README.md` explains each field, the
-  Actor env secrets the run needs (`LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`,
-  `LANGFUSE_SECRET_KEY`; `APIFY_TOKEN` is implicit), the exact curl to create it,
-  and the Apify run-status alert that reports a dead run.
+- `schedule/online-task.json` is the `POST /v2/actor-tasks` body for the
+  online Task (2 h timeout, 1 GB, the online-mode defaults pinned in its
+  input, the Apify AI Agent Langfuse keys as secret input, placeholders only).
+  `schedule/online-daily.json` is the `POST /v2/schedules` body that runs the
+  Task daily (06:00 UTC, `isExclusive`, `RUN_ACTOR_TASK`). `schedule/README.md`
+  explains each field, why the keys live in the Task and not in the Actor env
+  (`APIFY_TOKEN` is implicit), the exact steps to create both, and the Apify
+  run-status alert that reports a dead run.
 - `monitors/agent-judge-pass-rate.md` is the Langfuse alert on `avg` of the
   BOOLEAN `agent_judge` score over a 1-day window: `WARNING` below 0.8, `ALERT`
   below 0.6, `NO_DATA` after 6 h without verdicts, delivered to Slack through a
