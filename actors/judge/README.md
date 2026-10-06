@@ -181,10 +181,18 @@ is 30 min, so any turn that started before that point has finished, and 3 min
 completion span land. An empty or inverted window selects nothing and leaves
 the checkpoint alone.
 
-**Checkpoint.** The window's upper bound is written to the Actor's default
-key-value store under `ONLINE_CHECKPOINT` as
-`{upperBound, runId, writtenAt}`, so the next run starts where this one
-stopped and a missed run backfills. `selectTraces()` computes the record and
+**Checkpoint.** The window's upper bound is written as
+`{upperBound, runId, writtenAt}` to the NAMED key-value store
+`apify-ai-online-state` (`CHECKPOINT_STORE_NAME`), one record per Langfuse
+environment under `ONLINE_CHECKPOINT-<environment>` (for example
+`ONLINE_CHECKPOINT-prod`). The next run starts where this one stopped and a
+missed run backfills. The store must be named: every platform run gets a new
+default key-value store, so a checkpoint there would never reach the next run.
+The key carries the environment so a `staging` run never reads or moves the
+`prod` checkpoint. A named store belongs to the Apify account that runs the
+Actor and is kept until someone deletes it. To inspect or reset the checkpoint,
+open Console > Storage > Key-value stores > `apify-ai-online-state` and read or
+delete the environment's record; with no record the next run looks back 24 h. `selectTraces()` computes the record and
 returns it as `checkpoint`; the online flow passes `writeCheckpoint: false`
 and writes it only after the window's scores and rollup are in Langfuse
 (`finishOnlineRun()`), so a run that dies anywhere before that point is
@@ -643,7 +651,8 @@ broken), nothing is rolled up, the checkpoint is NOT written and the run fails w
 `AllJudgementsFailedError`, so a broken judge holds the window instead of
 advancing past it with nothing scored. A failed rollup is handled the same way
 (logged, no checkpoint, non-zero exit). In every case the schedule shows a
-failed run and the window is retried; the retry
+failed run and the next run retries the window, because it reads the
+checkpoint from the named store (see "Checkpoint" above); the retry
 is safe because of the pre-filter and the id replacement. Note that the
 retry's rollup covers only the traces written in the retry: the scores are the
 source of truth, the rollup a convenience for alerting.
