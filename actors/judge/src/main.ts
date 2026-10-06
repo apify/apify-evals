@@ -142,7 +142,7 @@ if (mode === 'online') {
 
     // 1. Select. The checkpoint is NOT written here (writeCheckpoint: false):
     // it moves only after the window's scores and rollup are in Langfuse.
-    const checkpoints = actorCheckpointStore();
+    const checkpoints = actorCheckpointStore(environment);
     const selection = await selectTraces({
         now,
         sampleRate,

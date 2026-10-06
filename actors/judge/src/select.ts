@@ -22,8 +22,19 @@ export const EXPORT_LAG_MS = 3 * 60_000;
 /** First run, or a lost checkpoint: look back one day. */
 export const DEFAULT_LOOKBACK_MS = 24 * 60 * 60_000;
 
-/** Default KV-store record holding the last window's upper bound. */
+/** Named KV store that holds the checkpoint. It must be named: every platform run
+ * gets a new default store, so a checkpoint there is never seen by the next run.
+ * A named store belongs to the Apify account that runs the Actor. */
+export const CHECKPOINT_STORE_NAME = 'apify-ai-online-state';
+
+/** Record prefix in CHECKPOINT_STORE_NAME; the full key is `ONLINE_CHECKPOINT-<environment>`. */
 export const CHECKPOINT_KEY = 'ONLINE_CHECKPOINT';
+
+/** One checkpoint per Langfuse environment, so a staging run never moves prod's.
+ * Langfuse environment names (`[a-z0-9-_]`) are valid KV-store keys as they are. */
+export function checkpointKey(environment: string): string {
+    return `${CHECKPOINT_KEY}-${environment}`;
+}
 
 /** Trace tag every production apify-ai trace carries (apify-ai-agent `TRACE_SOURCE`). */
 export const TRACE_TAG = 'apify-ai';
@@ -345,10 +356,12 @@ export function langfuseObservationFetcher(langfuse: ObservationsApi): Observati
         })) as ObservationPage;
 }
 
-/** The Actor's default key-value store, one JSON record under CHECKPOINT_KEY. */
-export function actorCheckpointStore(): CheckpointStore {
+/** The named store CHECKPOINT_STORE_NAME, one JSON record per environment (`checkpointKey`). */
+export function actorCheckpointStore(environment: string): CheckpointStore {
+    const key = checkpointKey(environment);
+    const open = async () => Actor.openKeyValueStore(CHECKPOINT_STORE_NAME);
     return {
-        read: async () => Actor.getValue<Checkpoint>(CHECKPOINT_KEY),
-        write: async (checkpoint) => Actor.setValue(CHECKPOINT_KEY, checkpoint),
+        read: async () => (await open()).getValue<Checkpoint>(key),
+        write: async (checkpoint) => (await open()).setValue(key, checkpoint),
     };
 }
