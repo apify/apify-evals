@@ -216,7 +216,8 @@ export interface ScoresApi {
 export interface WriteResult {
     /** Traces whose whole score set (both copies) was written. */
     scoresWritten: number;
-    /** Traces with at least one failed write; the run goes on and the trace is retried next window. */
+    /** Traces with at least one failed write. The run goes on and the checkpoint moves past them, so they are
+     * not retried; the rollup and OUTPUT count them. */
     failedToWrite: number;
     /** The verdicts behind `scoresWritten`: only these go into the rollup. */
     written: OnlineVerdicts[];
