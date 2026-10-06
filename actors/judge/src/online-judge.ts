@@ -326,7 +326,7 @@ export async function judgeOnlineTrace(opts: JudgeOnlineTraceOptions): Promise<O
     }
 
     const prompt = compileTemplate(promptTemplate, { turn: renderTurnForJudge(turn) });
-    const raw = await (opts.callLlm ?? judgeLlmCall)({ apifyToken, model: judgeModel, prompt });
+    const { json: raw } = await (opts.callLlm ?? judgeLlmCall)({ apifyToken, model: judgeModel, prompt });
     const reply = parseOnlineJudgeReply(raw);
     return {
         verdicts: buildOnlineVerdicts({ turn, reply, argumentCheck, version: { judgeModel, promptVersion } }),
