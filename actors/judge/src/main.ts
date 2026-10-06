@@ -32,6 +32,8 @@ interface Input {
     langfuseBaseUrl?: string;
     langfusePublicKey?: string;
     langfuseSecretKey?: string;
+    /** Online mode only: the Langfuse project (name or id) the keys must belong to. */
+    langfuseProject?: string;
 }
 
 await Actor.init();
@@ -82,7 +84,14 @@ if (mode === 'online') {
     const { mcpToolSchemaSource } = await import('./online-schema.js');
     const { JUDGE_IMPL_VERSION } = await import('./core.js');
     const { finishOnlineRun, langfuseOnlineScoreReader, skipAlreadyJudged } = await import('./online-scores.js');
+    const { assertOnlineProject, DEFAULT_ONLINE_PROJECT, langfuseProjectFetcher } = await import('./online-project.js');
     const langfuse = new LangfuseClient();
+    // Before any read or write: the Actor env keys are the dataset-run project.
+    const project = await assertOnlineProject(
+        langfuseProjectFetcher(langfuse),
+        input.langfuseProject ?? DEFAULT_ONLINE_PROJECT,
+    );
+    log.info(`Langfuse project: ${project.name} (${project.id})`);
     const now = new Date();
 
     /** Score every trace (ai-team#269). Returns the verdicts; writing them is the step after. */
