@@ -9,7 +9,7 @@
     "dockerfile": "../Dockerfile",
     "dockerContextDir": "../../..",
     "meta": {
-        "generatedBy": "Claude Code with Claude Fable 5"
+        "generatedBy": "Codex with GPT-6"
     },
     "environmentVariables": {
         "LANGFUSE_BASE_URL": "https://langfuse.apify.dev",
