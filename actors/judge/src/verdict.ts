@@ -56,7 +56,15 @@ export interface MergeOutput {
 
 export const STORE_PROFILE_FOR_VERDICT: ProfileForVerdict = {
     wrongSubjectLabel: 'wrong-actor',
-    fixAreaIds: ['input-schema', 'readme-docs', 'output-format', 'error-messages', 'discoverability', 'agent-or-model', 'none'],
+    fixAreaIds: [
+        'input-schema',
+        'readme-docs',
+        'output-format',
+        'error-messages',
+        'discoverability',
+        'agent-or-model',
+        'none',
+    ],
     forcedFixAreas: {
         'subject.used': { find: 'discoverability', use: 'readme-docs' },
         'apify.input': 'input-schema',
@@ -114,7 +122,13 @@ export function mergeVerdict(input: MergeInput): MergeOutput {
             fixArea = candidate === 'none' ? 'agent-or-model' : candidate;
             fixAreaSource = 'model';
         }
-        if (verdict === 'pass' && llm.fixArea && llm.fixArea !== 'none' && profile.fixAreaIds.includes(llm.fixArea) && llm.anyDimensionFailed) {
+        if (
+            verdict === 'pass' &&
+            llm.fixArea &&
+            llm.fixArea !== 'none' &&
+            profile.fixAreaIds.includes(llm.fixArea) &&
+            llm.anyDimensionFailed
+        ) {
             // Passed, but the model saw a real issue on the way: keep the hint.
             fixArea = llm.fixArea;
             fixAreaSource = 'model';
@@ -123,12 +137,20 @@ export function mergeVerdict(input: MergeInput): MergeOutput {
 
     // Disagreement: only meaningful when there were gating checks and infra was fine.
     const disagreement: 0 | 1 =
-        infraOk && gating.length > 0 && ((llmPass && failed.length > 0) || (!llmPass && failed.length === 0 && llm.taskCompletion === 'fail'))
+        infraOk &&
+        gating.length > 0 &&
+        ((llmPass && failed.length > 0) || (!llmPass && failed.length === 0 && llm.taskCompletion === 'fail'))
             ? 1
             : 0;
 
     const overall: MergeOutput['overall'] = verdict === 'inconclusive' ? null : verdict === 'pass' ? 1 : 0;
-    const found: MergeOutput['found'] = skill === 'find' && verdict !== 'inconclusive' ? (subjectMiss ? 0 : 1) : null;
+    // Found is only measured when a subject.used check actually applied; a find
+    // scenario without one is "not measured", never a free pass.
+    const subjectChecked = checks.some((c) => c.type === 'subject.used' && c.applicable);
+    if (skill === 'find' && verdict !== 'inconclusive' && !subjectChecked)
+        reasons.push('discovery not measured: no applicable subject.used check on this scenario');
+    const found: MergeOutput['found'] =
+        skill === 'find' && verdict !== 'inconclusive' && subjectChecked ? (subjectMiss ? 0 : 1) : null;
     const works: MergeOutput['works'] = skill === 'use' && verdict !== 'inconclusive' ? (overall as 0 | 1) : null;
 
     return {

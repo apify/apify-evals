@@ -35,7 +35,9 @@ describe('mergeVerdict', () => {
     it('a failed input check beats a model pass and forces input-schema', () => {
         const r = mergeVerdict({
             ...base,
-            checks: [check({ id: 'limit', type: 'apify.input', value: 0, passed: false, comment: 'resultsLimit = 20' })],
+            checks: [
+                check({ id: 'limit', type: 'apify.input', value: 0, passed: false, comment: 'resultsLimit = 20' }),
+            ],
         });
         expect(r.verdict).toBe('fail');
         expect(r.fixArea).toBe('input-schema');
@@ -54,6 +56,25 @@ describe('mergeVerdict', () => {
         const use = mergeVerdict({ ...base, skill: 'use', checks: [miss] });
         expect(use.fixArea).toBe('readme-docs');
         expect(use.works).toBe(0);
+    });
+
+    it('a find scenario without an applicable subject check is not measured, never a free pass', () => {
+        const r = mergeVerdict({ ...base, skill: 'find', checks: [check({ id: 'shape' })] });
+        expect(r.verdict).toBe('pass');
+        expect(r.found).toBeNull();
+        expect(r.reasons.join(' ')).toContain('discovery not measured');
+        const measured = mergeVerdict({
+            ...base,
+            skill: 'find',
+            checks: [check({ id: 'rightActor', type: 'subject.used', value: 1, passed: true })],
+        });
+        expect(measured.found).toBe(1);
+        const notApplicable = mergeVerdict({
+            ...base,
+            skill: 'find',
+            checks: [check({ id: 'rightActor', type: 'subject.used', applicable: false })],
+        });
+        expect(notApplicable.found).toBeNull();
     });
 
     it('infrastructure failure is inconclusive and writes no overall', () => {
@@ -89,7 +110,11 @@ describe('mergeVerdict', () => {
     });
 
     it('an unknown model fix area falls back to agent-or-model', () => {
-        const r = mergeVerdict({ ...base, llm: { taskCompletion: 'fail', fixArea: 'system-prompt', anyDimensionFailed: true }, checks: [] });
+        const r = mergeVerdict({
+            ...base,
+            llm: { taskCompletion: 'fail', fixArea: 'system-prompt', anyDimensionFailed: true },
+            checks: [],
+        });
         expect(r.fixArea).toBe('agent-or-model');
         expect(r.disagreement).toBe(0);
     });
