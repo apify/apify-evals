@@ -1,0 +1,72 @@
+# clockworks/tiktok-profile-scraper · owner: video · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Video team (Sept 2026). Field-shape
+# checks start as warn; promote to fail once the first baseline confirms the field names.
+subject: clockworks/tiktok-profile-scraper
+tags: [family:tiktok]
+scenarios:
+  - id: tiktok-profile-scraper-discovery-apifylife-followers
+    skill: find
+    title: "Discovery: follower count plus recent videos for a handle finds the Profile scraper"
+    prompt: How many followers does @apifylife have on TikTok, and what are their 5 most recent videos?
+    expected: The agent recognizes this as a TikTok profile lookup, chooses
+      clockworks/tiktok-profile-scraper, scrapes the @apifylife profile, and returns the follower
+      count together with the 5 most recent videos (captions or links with basic engagement numbers)
+      drawn from the retrieved data. It does not fabricate a follower count if the scrape fails. The
+      general TikTok scraper is the wrong sibling here; the signal is a single profile handle.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: clockworks/tiktok-profile-scraper
+      - id: namedActor
+        type: answer.contains
+        value: clockworks/tiktok-profile-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+      - id: shape
+        type: answer.regex
+        value: \d[\d,.]{2,}
+  - id: tiktok-profile-scraper-usage-apifylife-latest-five
+    skill: use
+    title: "Usage: pinned Profile scraper, latest five videos with play counts"
+    prompt: Using the clockworks/tiktok-profile-scraper Actor, scrape the TikTok profile @apifylife and
+      report its follower count plus the 5 most recent videos with their play counts.
+    expected: The agent calls clockworks/tiktok-profile-scraper with profiles set to ["apifylife"] and
+      resultsPerPage around 5, sorted by latest, runs it successfully, and reports the follower
+      count from the profile data plus the 5 most recent videos with play counts pulled from the
+      actual output.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: clockworks/tiktok-profile-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: profileInput
+        type: apify.input
+        path: profiles[0]
+        op: regex
+        value: apifylife
+      - id: cap
+        type: apify.input
+        path: resultsPerPage
+        op: lte
+        value: 5
+        severity: warn
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 5 }
+        severity: warn
+      - id: field
+        type: apify.items
+        field: authorMeta.fans
+        op: exists
+        severity: warn
+      - id: grounded
+        type: answer.grounded
+        minDigits: 3
+        severity: warn
