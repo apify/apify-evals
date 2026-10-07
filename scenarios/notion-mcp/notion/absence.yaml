@@ -1,0 +1,38 @@
+# The absence protocol: one empty search proves nothing; never claim a gap after one call.
+subject: notion/absence
+scenarios:
+    - id: notion-absence-find-parental-leave
+      skill: find
+      title: 'Find: establish whether a parental leave policy page exists'
+      prompt: |
+          Do we have a dedicated parental leave policy page in Apify's Notion? If yes, link it. If not,
+          tell me what you searched for and where the topic is mentioned instead, in at most 5 sentences.
+      expected: |
+          The agent runs at least two differently phrased searches (e.g. "parental leave", "maternity
+          leave", a scoped search under Work @ Apify) before concluding. It either links a dedicated
+          page or states honestly that none was found, names the searches it ran, points to where the
+          topic is mentioned (the time-off policy) and who would know. It never asserts absence after
+          a single search.
+      checks:
+          - { id: searchedTwice, type: tool.called, name: 'notion-search|API-post-search', min: 2 }
+          - { id: budget, type: tool.called, max: 6, severity: warn }
+          - {
+                id: honest,
+                type: answer.regex,
+                value: '(?i)(searched|search(es)? for|not found|found nothing|no dedicated|here is the page|notion\.so/)',
+            }
+    - id: notion-absence-use-soc2
+      skill: use
+      title: 'Use: search twice before answering whether SOC 2 is documented'
+      prompt: |
+          Using two Notion searches with different wording (for example "SOC 2" and "security
+          compliance audit"), find out whether Apify documents its SOC 2 status in Notion. Link the best
+          page or say nothing was found, and list both queries you used.
+      expected: |
+          The agent makes exactly two search calls with different queries, finds the SOC 2 material
+          under IT & Security, links the page and lists both queries. It does not fall back to a single
+          search or guess.
+      checks:
+          - { id: twoSearches, type: tool.called, name: 'notion-search|API-post-search', min: 2, max: 2 }
+          - { id: soc2, type: answer.contains, value: 'SOC 2' }
+          - { id: queries, type: answer.regex, value: '(?i)(quer(y|ies)|searched)' }

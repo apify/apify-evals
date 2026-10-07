@@ -1,0 +1,60 @@
+# Keyword search in Apify's Notion. Tool names differ between the hosted connector
+# (notion-search) and the open-source server (API-post-search); checks accept both.
+subject: notion/search
+scenarios:
+    - id: notion-search-find-travel-policy
+      skill: find
+      title: 'Find: locate the travel policy and cite it'
+      prompt: |
+          Where is Apify's travel policy documented in Notion? Give me the page link, when it was
+          last edited, and in 3 bullet points what it covers.
+      expected: |
+          The agent searches Notion for the travel policy, opens the canonical page (under Work @ Apify
+          or Apify Wiki, not an archive or a personal workspace), and answers with the real page URL,
+          the last-edited date taken from page metadata, and three accurate bullets. It stays within a
+          handful of tool calls and does not edit anything.
+      checks:
+          - { id: searched, type: tool.called, name: 'notion-search|API-post-search' }
+          - {
+                id: fetched,
+                type: tool.called,
+                name: 'notion-fetch|API-retrieve-page-markdown|API-retrieve-a-page|API-get-block-children',
+            }
+          - { id: url, type: answer.regex, value: 'notion\.so/[A-Za-z0-9-]+' }
+          - { id: topic, type: answer.contains, value: travel }
+          - { id: budget, type: tool.called, max: 6, severity: warn }
+          - {
+                id: readOnly,
+                type: tool.called,
+                name: 'notion-(create|update|move|duplicate)-[a-z-]+|API-(post-page|patch-[a-z-]+|update-[a-z-]+|delete-[a-z-]+|create-[a-z-]+|move-page)',
+                min: 0,
+                max: 0,
+            }
+    - id: notion-search-use-benefits-keyword
+      skill: use
+      title: 'Use: one keyword search for the benefits page, 25 results max'
+      prompt: |
+          Run exactly one Notion search for "employee benefits" with at most 25 results and tell me
+          which result looks like the canonical benefits page and why (title, location, last edited).
+          Do not open any page.
+      expected: |
+          The agent makes a single search call with a page size of at most 25, picks the result that
+          is the canonical benefits page (under Work @ Apify rather than a duplicate, draft or archived
+          copy), and justifies the pick from the result fields (title, parent or path, last-edited
+          timestamp) without fetching any page.
+      checks:
+          - {
+                id: searched,
+                type: tool.called,
+                name: 'notion-search|API-post-search',
+                inputRegex: '(?i)benefit',
+                max: 1,
+            }
+          - {
+                id: noFetch,
+                type: tool.called,
+                name: 'notion-fetch|API-retrieve-page-markdown|API-retrieve-a-page|API-get-block-children',
+                min: 0,
+                max: 0,
+            }
+          - { id: topic, type: answer.contains, value: benefit }

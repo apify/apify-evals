@@ -15,19 +15,19 @@ overwritten by the next sync.
 ## Write a scenario
 
 ```yaml
-subject: compass/crawler-google-places        # the thing under test (Actor id for the store suite)
+subject: compass/crawler-google-places # the thing under test (Actor id for the store suite)
 scenarios:
-  - id: crawler-google-places-use-prague-coffee   # stable, lowercase, dashes; never rename (history hangs off it)
-    skill: use                                     # find = the agent must discover the subject; use = subject is pinned
-    title: "Usage: pinned Google Maps scraper, place search with contact fields"
-    prompt: |
-      Using the compass/crawler-google-places Actor, find 10 highly-rated coffee shops in Prague
-      with name, address, phone number, and rating. Report how many you retrieved and the top one.
-    expected: |
-      The agent runs the pinned Actor with a sensible search string, Prague as location and a
-      10-place cap, and reports real names, addresses, phone numbers and ratings from the data.
-    checks:
-      - { id: shape, type: answer.regex, value: '\+?\d[\d ()-]{7,}' }
+    - id: crawler-google-places-use-prague-coffee # stable, lowercase, dashes; never rename (history hangs off it)
+      skill: use # find = the agent must discover the subject; use = subject is pinned
+      title: 'Usage: pinned Google Maps scraper, place search with contact fields'
+      prompt: |
+          Using the compass/crawler-google-places Actor, find 10 highly-rated coffee shops in Prague
+          with name, address, phone number, and rating. Report how many you retrieved and the top one.
+      expected: |
+          The agent runs the pinned Actor with a sensible search string, Prague as location and a
+          10-place cap, and reports real names, addresses, phone numbers and ratings from the data.
+      checks:
+          - { id: shape, type: answer.regex, value: '\+?\d[\d ()-]{7,}' }
 ```
 
 You write five things: `id`, `skill`, `prompt`, `expected`, `checks`. The sync
@@ -63,24 +63,43 @@ mode, what a grounded answer contains. It is never grepped. Live values
 (follower counts, prices) do not belong in deterministic checks; put them in
 `expected` as prose, or use a `reference` run.
 
+### Suites on other MCP servers, with or without agent skills
+
+The profile decides which MCP server the agent talks to. Without `mcp` it is
+the Apify MCP server narrowed per scenario with `?tools=`. A profile can name
+any server (see `profiles/notion-mcp.yaml`): `transport: stdio` with
+`command`/`args`/`env`, or `transport: http` with `url`/`headers`. Values may
+hold `${VAR}` placeholders filled from the runner's environment (or the
+`mcpEnv` input), so no secret is stored on a dataset item. `tools: ['*']`
+gives the agent every tool of that server; a list pre-approves just those.
+
+A profile can also list `agentSkills`: directories under `skills/` (see
+`skills/README.md`) the runner may inject into sessions. The runner's
+`skillSets` input picks the variants (`none`, `a`, `a+b`); `skillCombinations`
+runs every subset. Each variant is its own Langfuse dataset run, tagged
+`skills:<label>`, so the compare view answers which skills help. `fixAreas`
+can include an area owned by `skills` (the Notion suite uses
+`skill-instructions`), and `forcedFixAreas` maps failed check types onto the
+profile's own areas for the judge.
+
 ## Checks
 
 Every check has an `id` (its score is `check.<id>`), a `type`, and optionally
 `severity: warn` (shown, never gates the verdict). A failed `fail`-severity
 check makes the verdict `fail` even when the judge liked the answer.
 
-| type | asserts | fields |
-| --- | --- | --- |
-| `answer.contains` | the final answer contains a string (case-insensitive) | `value` |
-| `answer.regex` | the final answer matches | `value` |
-| `answer.grounded` | numbers in the answer appear in the subject's output | `minDigits` (4), `tolerancePct` (1), `ignoreFromPrompt` (true) |
-| `subject.used` | which subject the agent actually called (from tool calls) | `value` or `pattern`, `allowOthers` |
-| `apify.run` | the Actor runs the agent triggered | `status` (SUCCEEDED), `maxRuns` |
-| `apify.input` | the input the agent built | `path` + `op` (`equals`, `notEquals`, `lte`, `gte`, `in`, `regex`, `exists`) + `value`, or `required: [...]` |
-| `apify.items` | the run's dataset items | `count: {min,max}`, `requiredFields`, `field`+`op`+`value` (every item), `jsonSchema`, `field`+`set: {mode: equals|superset|intersects, value: [...]}` |
-| `tool.called` | a tool was called (CLI / SDK suites) | `name`, `inputRegex`, `min` |
-| `workspace.file` | a file exists in the agent's workspace (SDK suite) | `path` glob, `jsonSchema` |
-| `reference` | compare against a fresh run of the subject made by the eval | see below |
+| type              | asserts                                                                                                       | fields                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------- | -------------------------- |
+| `answer.contains` | the final answer contains a string (case-insensitive)                                                         | `value`                                                                                                            |
+| `answer.regex`    | the final answer matches                                                                                      | `value`                                                                                                            |
+| `answer.grounded` | numbers in the answer appear in the subject's output                                                          | `minDigits` (4), `tolerancePct` (1), `ignoreFromPrompt` (true)                                                     |
+| `subject.used`    | which subject the agent actually called (from tool calls)                                                     | `value` or `pattern`, `allowOthers`                                                                                |
+| `apify.run`       | the Actor runs the agent triggered                                                                            | `status` (SUCCEEDED), `maxRuns`                                                                                    |
+| `apify.input`     | the input the agent built                                                                                     | `path` + `op` (`equals`, `notEquals`, `lte`, `gte`, `in`, `regex`, `exists`) + `value`, or `required: [...]`       |
+| `apify.items`     | the run's dataset items                                                                                       | `count: {min,max}`, `requiredFields`, `field`+`op`+`value` (every item), `jsonSchema`, `field`+`set: {mode: equals | superset | intersects, value: [...]}` |
+| `tool.called`     | tool calls by name (regex, alternatives allowed) and input; no `name` = every call, so `max` is a call budget | `name`, `inputRegex`, `min`, `max`                                                                                 |
+| `workspace.file`  | a file exists in the agent's workspace (SDK suite)                                                            | `path` glob, `jsonSchema`                                                                                          |
+| `reference`       | compare against a fresh run of the subject made by the eval                                                   | see below                                                                                                          |
 
 `contains` and `regex` still work as aliases of `answer.contains` / `answer.regex`.
 
@@ -89,11 +108,11 @@ check makes the verdict `fail` even when the judge liked the answer.
 For live values, let the eval run the subject itself and compare with tolerance:
 
 ```yaml
-    reference:
-      input: { directUrls: ["https://www.instagram.com/nasa/"], resultsType: details, resultsLimit: 1 }
-      maxSecs: 120
-      cacheKey: nasa-profile            # one reference run per experiment, shared by repeats
-      compare:
+reference:
+    input: { directUrls: ['https://www.instagram.com/nasa/'], resultsType: details, resultsLimit: 1 }
+    maxSecs: 120
+    cacheKey: nasa-profile # one reference run per experiment, shared by repeats
+    compare:
         - { answerRegex: 'followers?[^0-9]{0,20}([\d,]+)', field: followersCount, tolerance: 0.02 }
 ```
 

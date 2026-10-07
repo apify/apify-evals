@@ -1,0 +1,44 @@
+subject: notion/fetch
+scenarios:
+    - id: notion-fetch-find-onboarding-first-week
+      skill: find
+      title: 'Find: read the onboarding page and summarise the first week'
+      prompt: |
+          What does a new Apify employee do in their first week according to our Notion onboarding
+          docs? Answer in at most 5 bullet points and link the page you used, with its last-edited date.
+      expected: |
+          The agent finds the current onboarding page (Work @ Apify, "Welcome on board" or the
+          onboarding hub), reads it, and summarises the first-week steps in up to five bullets grounded
+          in the page. It links the page and states the last-edited date from page metadata, not from a
+          cache header.
+      checks:
+          - { id: searched, type: tool.called, name: 'notion-search|API-post-search' }
+          - {
+                id: fetched,
+                type: tool.called,
+                name: 'notion-fetch|API-retrieve-page-markdown|API-retrieve-a-page|API-get-block-children',
+            }
+          - { id: url, type: answer.regex, value: 'notion\.so/[A-Za-z0-9-]+' }
+          - { id: date, type: answer.regex, value: '\b20\d\d\b', severity: warn }
+          - { id: budget, type: tool.called, max: 6, severity: warn }
+    - id: notion-fetch-use-ancestor-path
+      skill: use
+      title: 'Use: fetch one page and report where it sits in the workspace'
+      prompt: |
+          Search Notion for the "Compensation guide" page, fetch the top result once, and tell me:
+          its title, the full path of parent pages above it (root first), and whether it sits under an
+          archive. Use at most 3 tool calls.
+      expected: |
+          The agent searches, fetches the single best candidate, and reports the title plus the
+          ancestor path from the fetch result (for the hosted connector the ancestor-path block; for
+          the open-source server the parent chain), and says clearly whether an Archive page is among
+          the ancestors. Three tool calls or fewer.
+      checks:
+          - {
+                id: fetched,
+                type: tool.called,
+                name: 'notion-fetch|API-retrieve-page-markdown|API-retrieve-a-page',
+                min: 1,
+            }
+          - { id: budget, type: tool.called, max: 3 }
+          - { id: path, type: answer.regex, value: '(?i)(archive|not under|under)' }

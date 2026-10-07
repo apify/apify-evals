@@ -1,0 +1,40 @@
+subject: notion/data-source
+scenarios:
+    - id: notion-data-source-find-meeting-notes
+      skill: find
+      title: 'Find: enumerate recent rows of the meeting notes database'
+      prompt: |
+          List the 5 most recently edited entries in Apify's "All meeting notes" database in Notion,
+          with title and date. Query the database directly instead of searching page by page.
+      expected: |
+          The agent locates the "All meeting notes" database and queries its data source (rows mode,
+          sorted by last edited, page size 5) rather than running several searches. It returns five
+          real titles with dates from the query result.
+      checks:
+          - { id: queried, type: tool.called, name: 'notion-query-data-sources|API-query-data-source' }
+          - { id: fiveRows, type: answer.regex, value: '(?s)(^|\n)\s*(5[.)]|-|\*).*', severity: warn }
+          - { id: budget, type: tool.called, max: 6, severity: warn }
+    - id: notion-data-source-use-filter
+      skill: use
+      title: 'Use: query the meeting notes data source with a filter and a sort'
+      prompt: |
+          Using the data-source query tool on Apify's "All meeting notes" database, fetch at most 5 rows
+          created in the last 30 days, sorted newest first. Report their titles in that order.
+      expected: |
+          The agent resolves the database's data source, calls the query tool with a created-time
+          filter for the last 30 days, a descending sort and a page size of at most 5, and reports the
+          titles in result order.
+      checks:
+          - {
+                id: queried,
+                type: tool.called,
+                name: 'notion-query-data-sources|API-query-data-source',
+                inputRegex: '(?i)(filter|sort)',
+            }
+          - {
+                id: limited,
+                type: tool.called,
+                name: 'notion-query-data-sources|API-query-data-source',
+                inputRegex: '(?i)"(page_size|limit)"\s*:\s*[1-5]\b',
+                severity: warn,
+            }

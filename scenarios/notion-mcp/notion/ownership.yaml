@@ -1,0 +1,39 @@
+# "Who owns X" and "is this current" are the skill's measured weak spot.
+subject: notion/ownership
+scenarios:
+    - id: notion-ownership-find-okrs-current-quarter
+      skill: find
+      title: 'Find: the current OKRs page, not a superseded quarter'
+      prompt: |
+          Which Notion page holds Apify's current company OKRs? Give the link, say which quarter it
+          covers, and explain in one sentence why you believe it is the current one and not an older
+          quarter's page.
+      expected: |
+          The agent navigates to the OKR hub under Apify Wiki / Company, identifies the page for the
+          current quarter (the hub names it), and justifies currency from location and last-edited
+          date rather than link count or search rank. It does not return a Q2/2026 or Senior-team page
+          as current.
+      checks:
+          - { id: searched, type: tool.called, name: 'notion-search|API-post-search' }
+          - { id: url, type: answer.regex, value: 'notion\.so/[A-Za-z0-9-]+' }
+          - { id: quarter, type: answer.regex, value: '(?i)\bQ[1-4]\b|\b(H[12]|quarter)\b' }
+          - { id: budget, type: tool.called, max: 6, severity: warn }
+    - id: notion-ownership-use-who-owns-it-security
+      skill: use
+      title: 'Use: say who owns the IT & Security docs, or that no owner is recorded'
+      prompt: |
+          Open Apify's "IT & Security" hub page in Notion and tell me who owns it. If the page has no
+          ownership block, say that no owner is recorded and name the team behind the area it sits under.
+      expected: |
+          The agent fetches the IT & Security page, looks for an ownership callout (owner, last
+          reviewed, review interval) and reports it; when absent, it says plainly that no owner is
+          recorded and points to the team behind the area index page it sits under (Apify Wiki), without
+          inventing a name.
+      checks:
+          - {
+                id: fetched,
+                type: tool.called,
+                name: 'notion-fetch|API-retrieve-page-markdown|API-retrieve-a-page|API-get-block-children',
+            }
+          - { id: answer, type: answer.regex, value: '(?i)(owner|owns|no owner|not recorded)' }
+          - { id: budget, type: tool.called, max: 6, severity: warn }

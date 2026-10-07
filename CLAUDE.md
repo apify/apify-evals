@@ -27,9 +27,16 @@ button.
   comment and an evaluator observation. `src/profile.ts` loads the suite
   profile's fix areas.
 - `scenarios/<suite>/<owner>/<subject>.yaml` — scenario source of truth;
-  `profiles/<suite>.yaml` — what a suite tests, tools per skill, fix areas.
-  `tools/` syncs scenarios to Langfuse (`npm run scenarios:sync`) and
-  validates them (`npm run scenarios:check`). See `scenarios/README.md`.
+  `profiles/<suite>.yaml` — what a suite tests, tools per skill, fix areas,
+  optionally the MCP server (`mcp`, default Apify) and injectable
+  `agentSkills`. `tools/` syncs scenarios to Langfuse (`npm run
+scenarios:sync`) and validates them (`npm run scenarios:check`). See
+  `scenarios/README.md`.
+- `skills/<name>/SKILL.md` — agent skills the runner can inject (copied into
+  the image). The `skillSets` / `skillCombinations` inputs run one experiment
+  per skill set so the compare view shows which skills help. The `notion-mcp`
+  suite (open-source Notion MCP server over stdio, `NOTION_TOKEN`) is the
+  first user; the vendored Notion skills live here.
 - `actors/runner/`, `shared/`, `docs/`, `spikes/`, `scenarios/*.md` — the
   legacy markdown-scenario runner (Czech docs). Not part of the live system.
 
