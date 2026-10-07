@@ -105,12 +105,8 @@ function application(raw) {
   }
   const frac=x=>x.den?`${x.num}/${x.den}`:'No eligible results';
   function beforeAfterTable(tasks,ds,s) {
-    const runDates=days.filter(d=>d>=ds[0]&&d<=ds.at(-1));
-    const outside=s.mark&&!runDates.includes(s.mark);
-    const why=s.mark>=ds[0]&&s.mark<=ds.at(-1)?'not a run date':'outside this period';
-    const options=['<option value="">none</option>',...(outside?[`<option value="${esc(s.mark)}" selected>${esc(longDate(s.mark))} (${why})</option>`]:[]),...runDates.map(d=>`<option value="${d}"${d===s.mark?' selected':''}>${esc(longDate(d))}</option>`)].join('');
-    const form=`<form class="marker-form" hidden><label>Change marker <select name="mark">${options}</select></label><button type="submit">Apply</button>${s.mark?`<a href="${esc(href(s,{mark:''}))}">Clear</a>`:''}</form>`;
-    if(!s.mark)return `<section class="comparison before-after" aria-labelledby="before-after-title"><div class="comparison-head"><h2 id="before-after-title">Did a change help?</h2>${form}</div><p class="comparison-note">Pick the date a change went live (a README fix, a schema change) to compare results before and from that date. Run dates in the selected period are listed.</p></section>`;
+    const form=`<form class="marker-form" hidden><label>Change marker <input type="date" name="mark" min="${days[0]}" max="${latest}" value="${esc(s.mark)}"></label>${s.mark?`<a href="${esc(href(s,{mark:''}))}">Clear</a>`:''}</form>`;
+    if(!s.mark)return `<section class="comparison before-after" aria-labelledby="before-after-title"><div class="comparison-head"><h2 id="before-after-title">Did a change help?</h2>${form}</div><p class="comparison-note">Pick the date a change went live (a README fix, a schema change) to compare results before and from that date. Any date between ${esc(longDate(days[0]))} and ${esc(longDate(latest))} works; it does not need to be a run date.</p></section>`;
     const span=dd=>dd.length?windowLabel(dd[0],dd.at(-1)):'none';
     const ba=beforeAfter(tasks,ds,s.mark);
     const notes=[];

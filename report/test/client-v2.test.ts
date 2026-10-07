@@ -157,7 +157,7 @@ describe('report v2 change markers', () => {
         expect(html).not.toContain('Compared with the previous run');
         // the form is hidden until the browser enables it, and lists only run dates in the period
         expect(html).toContain('<form class="marker-form" hidden>');
-        expect(html).toContain('<option value="2026-09-24" selected>September 24, 2026</option>');
+        expect(html).toContain('value="2026-09-24">');
     });
 
     it('shows percentage points only when both sides have enough results', () => {
@@ -211,21 +211,16 @@ describe('report v2 change markers', () => {
 });
 
 describe('report v2 marker picker', () => {
-    it('lists only run dates of the selected period and keeps a marker from outside it', () => {
+    it('is a native date input bounded by the loaded data, with no submit button', () => {
         const app = application(
             model(
                 [obs('a-use', '2026-09-21', 'fail'), obs('a-use', '2026-09-25', 'pass'), obs('a-use', '2026-09-30', 'pass')],
                 ['2026-09-21', '2026-09-25', '2026-09-30'],
             ),
         );
-        const html = app.render(app.state('#range=7'));
-        const select = html.slice(html.indexOf('<select name="mark">'), html.indexOf('</select>'));
-        expect(select.match(/<option/g)?.length).toBe(3); // none + the two run dates inside the 7-day window
-        expect(select).toContain('2026-09-25');
-        expect(select).toContain('2026-09-30');
-        expect(select).not.toMatch(/2026-09-2[2-4]/);
-        const kept = app.render(app.state('#range=7&mark=2026-09-21'));
-        expect(kept).toContain('<option value="2026-09-21" selected>September 21, 2026 (outside this period)</option>');
-        expect(kept).toContain('No results before the marker in this period');
+        const html = app.render(app.state('#range=7&mark=2026-09-24'));
+        expect(html).toContain('<input type="date" name="mark" min="2026-09-21" max="2026-09-30" value="2026-09-24">');
+        expect(html).not.toContain('<button');
+        expect(html).toContain('Before vs after September 24, 2026');
     });
 });
