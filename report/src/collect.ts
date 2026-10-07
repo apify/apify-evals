@@ -64,12 +64,7 @@ export interface Observation {
 
 export interface ReportData {
     suite: string;
-    profile: {
-        name: string;
-        subjectKind: string;
-        skills: Record<string, { label: string }>;
-        wrongSubjectLabel: string;
-    };
+    profile: ReportProfile;
     projectId: string | null;
     baseUrl: string;
     generatedAt: string;

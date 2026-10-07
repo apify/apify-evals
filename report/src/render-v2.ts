@@ -30,6 +30,8 @@ export interface V2Model {
     excludedAttempts: number;
     latestJsonUrl?: string;
     expected: ReportData['expected'];
+    /** Fix areas of the suite profile, for labels and descriptions in the client. */
+    fixAreas: ReportData['profile']['fixAreas'];
     observations: Pick<
         Observation,
         | 'scenarioId'
@@ -88,6 +90,7 @@ export function buildV2Model(data: ReportData, agg: Aggregate, latestJsonUrl?: s
         excludedAttempts: agg.diagnostics.length,
         latestJsonUrl,
         expected: data.expected,
+        fixAreas: data.profile.fixAreas,
         observations,
     };
 }

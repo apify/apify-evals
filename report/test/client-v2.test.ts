@@ -42,6 +42,10 @@ function model(observations: unknown[], days: string[]) {
         generatedAt: '2026-09-25T06:00:00Z',
         days,
         excludedAttempts: 0,
+        fixAreas: [
+            { id: 'discoverability', label: 'Store search / Actor selection', owner: 'store-search', description: 'd' },
+            { id: 'output-format', label: 'Output format', owner: 'subject', description: 'o' },
+        ],
         expected: [task('a-find', 'x/a', 'find'), task('a-use', 'x/a', 'use'), task('b-find', 'x/b', 'find'), task('b-use', 'x/b', 'use')],
         observations,
     };
@@ -104,5 +108,73 @@ describe('report v2 comparison', () => {
         expect(html).toContain('× 1 failed check</a>');
         expect(html).toContain('What these numbers mean');
         expect(html).toContain('How this is measured');
+    });
+});
+
+describe('report v2 failure patterns', () => {
+    it('counts fix areas and reported alternatives over failed attempts only', () => {
+        const app = application(
+            model(
+                [
+                    { ...obs('a-find', '2026-09-24', 'wrong-actor', 0), fixArea: 'discoverability', subjectCalled: 'other/thing' },
+                    { ...obs('a-find', '2026-09-25', 'wrong-actor', 0), fixArea: 'discoverability', subjectCalled: 'other/thing' },
+                    // a named task never contributes an alternative, even when one is recorded
+                    { ...obs('a-use', '2026-09-25', 'fail'), fixArea: 'output-format', subjectCalled: 'leak/named' },
+                    // passes and infrastructure failures never count, whatever their fix area or alternative
+                    { ...obs('b-find', '2026-09-25', 'pass', 0), fixArea: 'output-format', subjectCalled: 'leak/passed' },
+                    { ...obs('b-use', '2026-09-25', 'fail', null, false), fixArea: 'error-messages' },
+                    { ...obs('b-find', '2026-09-23', 'wrong-actor', 0, false), fixArea: 'discoverability', subjectCalled: 'leak/infra' },
+                    // a failed discovery with no Actor run and no diagnosis; and one where nothing was recorded (null)
+                    { ...obs('b-find', '2026-09-24', 'fail', 0), fixArea: null, subjectCalled: 'none' },
+                    { ...obs('b-find', '2026-09-22', 'fail', 0), fixArea: 'none', subjectCalled: null },
+                ],
+                ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25'],
+            ),
+        );
+        const html = app.render(app.state(''));
+        const section = html.slice(html.indexOf('<section class="patterns"'), html.indexOf('</section>', html.indexOf('<section class="patterns"')));
+        expect(section).toContain('Where failures land');
+        expect(section).toContain('5 failed attempts over');
+        for (const leak of ['leak/named', 'leak/passed', 'leak/infra']) expect(section).not.toContain(leak);
+        expect(section).not.toContain('Error messages');
+        expect(section).toMatch(/Store search \/ Actor selection<\/th><td>2<\/td><td>1<\/td>/);
+        expect(section).toMatch(/Output format<\/th><td>1<\/td><td>1<\/td>/);
+        expect(section).toContain('No suggested fix recorded</th><td>2</td>');
+        expect(section).toContain('other/thing</a></span><b>2</b><small>instead of A</small>');
+        expect(section).toContain('No Actor reported in 1 failed discovery attempt.');
+        // row line: plurality fix area for Actor A; Actor B has no diagnosed failure, so no line
+        expect(html).toContain('Top suggested fix: Store search / Actor selection (2 of 3 failures)');
+        expect(html.match(/class="pattern"/g)?.length).toBe(1);
+        // evidence shows the label, not the id
+        expect(html).toContain('<p class="fix-area" title="d">Store search / Actor selection</p>');
+    });
+
+    it('lists tied fix areas and marks our own Actors as ours even when their team is filtered out', () => {
+        const m = model(
+            [
+                { ...obs('a-find', '2026-09-25', 'wrong-actor', 0), fixArea: 'discoverability', subjectCalled: 'y/c' },
+                { ...obs('a-use', '2026-09-25', 'fail'), fixArea: 'output-format' },
+            ],
+            ['2026-09-25'],
+        );
+        m.expected.push({ ...task('c-find', 'y/c', 'find'), owner: 'video' });
+        const app = application(m);
+        const html = app.render(app.state('#team=google'));
+        expect(html).toContain('Top suggested fixes: Store search / Actor selection, Output format (1 each of 2 failures)');
+        expect(html).toContain('y/c</a> <span class="ours">ours</span>');
+    });
+
+    it('caps the scope list at eight alternatives without claiming the rest had fewer attempts', () => {
+        const observations = Array.from({ length: 9 }, (_, i) => ({
+            ...obs('a-find', `2026-09-${String(10 + i).padStart(2, '0')}`, 'wrong-actor', 0),
+            fixArea: 'discoverability',
+            subjectCalled: `alt/${String.fromCharCode(97 + i)}`,
+        }));
+        const app = application(model(observations, observations.map((o) => o.day)));
+        const html = app.render(app.state('#range=28'));
+        const section = html.slice(html.indexOf('<section class="patterns"'), html.indexOf('</section>', html.indexOf('<section class="patterns"')));
+        expect(section.match(/<li>/g)?.length).toBe(8);
+        expect(section).toContain('Showing 8 of 9 alternatives');
+        expect(section).not.toContain('fewer attempts');
     });
 });

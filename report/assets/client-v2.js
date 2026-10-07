@@ -17,9 +17,13 @@ function application(raw) {
     {id:'notcounted',label:'Not counted',help:'A failure in the evaluation infrastructure prevented this task from counting.'},
     {id:'noresult',label:'No result',help:'An expected task has no recorded attempt or is still awaiting a verdict.'},
     {id:'failedchecks',label:'Failed checks',help:'These recorded checks failed in the selected attempt; the comments explain what each check tested.'},
-    {id:'change',label:'Change',help:'This compares the same tasks with usable results in both labeled runs.'}
+    {id:'change',label:'Change',help:'This compares the same tasks with usable results in both labeled runs.'},
+    {id:'fixarea',label:'Suggested fix area',help:"The judge's diagnosis of what to change first after a failed attempt. A suggestion, not a proven cause."},
+    {id:'alternative',label:'Alternative reported',help:'In a discovery task that did not pass, the Actor the agent ran instead of the expected one, as recorded by the harness.'}
   ];
   const metricDef = id => METRICS.find(m=>m.id===id) || {label:id,help:''};
+  const fixAreaDefs = raw.fixAreas || [];
+  const fixAreaDef = id => fixAreaDefs.find(f=>f.id===id) || {id, label:id, description:''};
   const canonical = raw.observations;
   const days = raw.days.length ? raw.days.slice() : [...new Set(canonical.map(x=>x.day))].sort();
   const latest = days.at(-1);
@@ -120,6 +124,56 @@ function application(raw) {
     const link=(n,txt)=>n?`<a href="${esc(href(s,{compare:'all',actor:'',task:'',day:'',metric:''}))}">${n} ${txt}</a>`:`${n} ${txt}`;
     return h+`Among the ${paired} tasks scored on both ${longDate(cmp.prev)} and ${longDate(cmp.latest)}, ${link(down,'passed before and failed now')}; ${link(up,'failed before and passed now')}.`;
   }
+  const byTaskId = new Map(raw.expected.map(t=>[t.id,t]));
+  const ourActors = new Set(raw.expected.map(t=>t.subject));
+  /** Failed attempts (F or W after the infrastructure override) of these tasks on these dates, with the judge's fix areas and the alternatives the agent reported. */
+  function patterns(tasks,ds) {
+    const fails=listFor(tasks,ds).filter(a=>['F','W'].includes(code(a)));
+    const areas=new Map(); let noFix=0;
+    const alts=new Map(); let noActor=0;
+    for(const a of fails){
+      const t=byTaskId.get(a.scenarioId);
+      const id=a.fixArea&&a.fixArea!=='none'?a.fixArea:null;
+      if(!id)noFix++; else { const e=areas.get(id)||{id,n:0,subjects:new Set()}; e.n++; e.subjects.add(t?.subject); areas.set(id,e); }
+      if(t?.skill!=='find')continue;
+      const sc=a.subjectCalled;
+      if(!sc||sc==='intended')continue;
+      if(sc==='none'){noActor++;continue;}
+      const e=alts.get(sc)||{id:sc,n:0,lost:new Map()}; e.n++; e.lost.set(t.subject,(e.lost.get(t.subject)||0)+1); alts.set(sc,e);
+    }
+    const byN=(x,y)=>y.n-x.n||x.id.localeCompare(y.id);
+    return {failures:fails.length,noFix,areas:[...areas.values()].sort(byN),alts:[...alts.values()].sort(byN),noActor};
+  }
+  const plural=(n,w)=>`${n} ${w}${n===1?'':'s'}`;
+  /** One line for the Actor row: the plurality fix area over the period, ties listed. */
+  function patternLine(a,ds) {
+    const p=patterns(a.tasks,ds);
+    if(!p.failures||!p.areas.length)return '';
+    const top=p.areas[0].n, tops=p.areas.filter(x=>x.n===top);
+    const label=tops.map(x=>fixAreaDef(x.id).label).join(', ');
+    return `<span class="pattern" title="${esc(tops.map(x=>fixAreaDef(x.id).description).filter(Boolean).join(' '))}">Top suggested fix${tops.length>1?'es':''}: ${esc(label)} (${top}${tops.length>1?' each':''} of ${plural(p.failures,'failure')})</span>`;
+  }
+  function altLink(id){ return `<a href="https://apify.com/${esc(id)}" target="_blank" rel="noreferrer">${esc(id)}</a>${ourActors.has(id)?' <span class="ours">ours</span>':''}`; }
+  /** Inside the Actor detail: every fix area and every alternative over the period. */
+  function patternsBlock(a,ds) {
+    const p=patterns(a.tasks,ds);
+    const period=windowLabel(ds[0],ds.at(-1));
+    if(!p.failures)return `<div class="patterns-detail"><h5>Over ${esc(period)}</h5><p class="small">No failed attempts in this period.</p></div>`;
+    const areas=p.areas.map(x=>`<li><span title="${esc(fixAreaDef(x.id).description)}">${esc(fixAreaDef(x.id).label)}</span><b>${x.n}</b></li>`).join('')+(p.noFix?`<li><span class="muted">No suggested fix recorded</span><b>${p.noFix}</b></li>`:'');
+    const alts=p.alts.map(x=>`<li><span>${altLink(x.id)}</span><b>${x.n}</b></li>`).join('')+(p.noActor?`<li><span class="muted">No Actor reported</span><b>${p.noActor}</b></li>`:'');
+    return `<div class="patterns-detail"><div><h5>Judge's suggested fix areas · ${plural(p.failures,'failed attempt')} over ${esc(period)}</h5><ul class="pattern-list">${areas}</ul><p class="small">Diagnoses, not proven causes. Read the evidence before changing the Actor.</p></div><div><h5>Alternatives the agent reported instead</h5>${alts?`<ul class="pattern-list">${alts}</ul>`:'<p class="small">None recorded on discovery tasks in this period.</p>'}</div></div>`;
+  }
+  /** Scope-level section: where failures land across the selected Actors. */
+  function patternsSection(tasks,ds) {
+    const p=patterns(tasks,ds), period=windowLabel(ds[0],ds.at(-1));
+    let h=`<section class="patterns" aria-labelledby="patterns-title"><div class="section-title"><div><h2 id="patterns-title">Where failures land</h2><p>${plural(p.failures,'failed attempt')} over ${esc(period)}. Fix areas are the judge's diagnoses, not proven causes.</p></div></div>`;
+    if(!p.failures)return h+'<p class="muted">No failed attempts in this period.</p></section>';
+    const areaRows=p.areas.map(x=>`<tr><th scope="row" title="${esc(fixAreaDef(x.id).description)}">${esc(fixAreaDef(x.id).label)}</th><td>${x.n}</td><td>${x.subjects.size}</td></tr>`).join('')+(p.noFix?`<tr><th scope="row" class="muted">No suggested fix recorded</th><td>${p.noFix}</td><td></td></tr>`:'');
+    const altItems=p.alts.slice(0,8).map(x=>{const lost=[...x.lost.entries()].sort((m,n)=>n[1]-m[1]||m[0].localeCompare(n[0])).map(([id,n])=>`${esc(nice(id))}${x.lost.size>1?' ('+n+')':''}`).join(', ');return `<li><span>${altLink(x.id)}</span><b>${x.n}</b><small>instead of ${lost}</small></li>`;}).join('');
+    const more=p.alts.length>8?`<p class="small">Showing 8 of ${p.alts.length} alternatives; the full list is in each Actor's details.</p>`:'';
+    h+=`<div class="patterns-columns"><div><h3>Suggested fix areas</h3><table class="pattern-table"><thead><tr><th scope="col">Area</th><th scope="col">Attempts</th><th scope="col">Actors</th></tr></thead><tbody>${areaRows}</tbody></table></div><div><h3>Alternatives reported instead of ours</h3>${altItems?`<ul class="pattern-list wide">${altItems}</ul>${more}`:'<p class="small">None recorded on discovery tasks in this period.</p>'}${p.noActor?`<p class="small">No Actor reported in ${plural(p.noActor,'failed discovery attempt')}.</p>`:''}</div></div></section>`;
+    return h;
+  }
   function metric(a,tasks,ds,skill,s) {
     if(!tasks.length)return '<span class="muted">No task</span>';
     const now=tasks.map(t=>get(t,latest)), c=tally(tasks,ds), cs=now.map(code);
@@ -146,7 +200,7 @@ function application(raw) {
     const checks=(at?.failedChecks||[]).map(k=>`<li><code>${esc(k)}</code><span>${esc(score(at,'check.'+k)?.comment||'Failed')}</span></li>`).join('');
     const diagnosis=score(at,'judge.fixArea')?.comment;
     const selectedText=t.skill==='find'?(selected(at)===1?'Expected Actor selected':selected(at)===0?'Expected Actor not selected':'Selection not measured'):'';
-    return `<article class="evidence${s.task===t.id?' selected-evidence':''}" id="evidence-${esc(t.id)}"><div class="evidence-title"><h4>${taskLabel}</h4>${badge(c)}<span class="muted">${esc(at?.day||latest)}</span></div><p class="task-prompt">${esc(t.prompt)}</p><div class="evidence-columns"><div><h5>Observed result</h5><p>${esc(at?.judgeComment?.replace(/^(FAIL|PASS):\s*/, '')||(c==='I'?(score(at,'check.infra')?.comment||'Infrastructure failure; excluded from rates.'):'No result is available for this date.'))}</p>${selectedText?`<p class="selection-note">${esc(selectedText)}</p>`:''}${at?.subjectCalled && at.subjectCalled!=='intended'?`<p class="small">Reported alternative: <code>${esc(at.subjectCalled)}</code></p>`:''}${checks?`<ul class="checks">${checks}</ul>`:''}</div><div><h5>Judge's suggested fix area</h5><p class="fix-area">${esc(at?.fixArea||'Not available')}</p><p class="small">${esc(diagnosis||'No additional diagnosis recorded.')}</p>${score(at,'judge.disagreement')?.value===1?`<div class="disagreement">Check/judge disagreement. Hard checks: ${score(at,'check.all')?.value===1?'passed':score(at,'check.all')?.value===0?'failed':'not recorded'}. Task-completion rubric: ${score(at,'rubric.taskCompletion')?.value===1?'passed':'failed or unavailable'}.</div>`:''}</div></div><div class="evidence-foot">${at?.traceUrl?`<a href="${esc(at.traceUrl)}" target="_blank" rel="noreferrer">Open full session ↗</a>`:''}<details><summary>Task ID</summary><code>${esc(t.id)}</code></details></div><details class="attempt-history"><summary>All ${ds.length} daily results for this task</summary><table><thead><tr><th>Date</th><th>Outcome</th><th>Evidence</th><th>Session</th></tr></thead><tbody>${[...ds].reverse().map(d=>{const x=get(t,d);return `<tr><td>${d}</td><td>${badge(code(x))}</td><td>${esc(x?.judgeComment||'No result')}</td><td>${x?`<a href="${esc(x.traceUrl)}">Open</a>`:''}</td></tr>`;}).join('')}</tbody></table></details></article>`;
+    return `<article class="evidence${s.task===t.id?' selected-evidence':''}" id="evidence-${esc(t.id)}"><div class="evidence-title"><h4>${taskLabel}</h4>${badge(c)}<span class="muted">${esc(at?.day||latest)}</span></div><p class="task-prompt">${esc(t.prompt)}</p><div class="evidence-columns"><div><h5>Observed result</h5><p>${esc(at?.judgeComment?.replace(/^(FAIL|PASS):\s*/, '')||(c==='I'?(score(at,'check.infra')?.comment||'Infrastructure failure; excluded from rates.'):'No result is available for this date.'))}</p>${selectedText?`<p class="selection-note">${esc(selectedText)}</p>`:''}${at?.subjectCalled && at.subjectCalled!=='intended'?`<p class="small">Reported alternative: <code>${esc(at.subjectCalled)}</code></p>`:''}${checks?`<ul class="checks">${checks}</ul>`:''}</div><div><h5>Judge's suggested fix area</h5><p class="fix-area" title="${esc(at?.fixArea?fixAreaDef(at.fixArea).description:'')}">${esc(at?.fixArea==='none'?'None, nothing to fix':at?.fixArea?fixAreaDef(at.fixArea).label:'Not available')}</p><p class="small">${esc(diagnosis||'No additional diagnosis recorded.')}</p>${score(at,'judge.disagreement')?.value===1?`<div class="disagreement">Check/judge disagreement. Hard checks: ${score(at,'check.all')?.value===1?'passed':score(at,'check.all')?.value===0?'failed':'not recorded'}. Task-completion rubric: ${score(at,'rubric.taskCompletion')?.value===1?'passed':'failed or unavailable'}.</div>`:''}</div></div><div class="evidence-foot">${at?.traceUrl?`<a href="${esc(at.traceUrl)}" target="_blank" rel="noreferrer">Open full session ↗</a>`:''}<details><summary>Task ID</summary><code>${esc(t.id)}</code></details></div><details class="attempt-history"><summary>All ${ds.length} daily results for this task</summary><table><thead><tr><th>Date</th><th>Outcome</th><th>Evidence</th><th>Session</th></tr></thead><tbody>${[...ds].reverse().map(d=>{const x=get(t,d);return `<tr><td>${d}</td><td>${badge(code(x))}</td><td>${esc(x?.judgeComment||'No result')}</td><td>${x?`<a href="${esc(x.traceUrl)}">Open</a>`:''}</td></tr>`;}).join('')}</tbody></table></details></article>`;
   }
   function render(s) {
     const ds=dates(s.range), scoped=actors.filter(a=>s.team==='all'||a.team===s.team), tasks=scoped.flatMap(a=>a.tasks), totals=tally(tasks,ds), current=tally(tasks,[latest]);
@@ -158,13 +212,14 @@ function application(raw) {
       h+=`<aside class="point-detail"><strong>${esc(s.day)} · ${s.metric==='find'?'Discovery':'Named'} tasks</strong><span>${stat.pass}/${stat.n} passed · ${stat.infra} not counted · ${stat.missing} no result</span><a href="${esc(href(s,{metric:'',day:''}))}">Clear date</a><div>${picked.map(t=>{const a=get(t,s.day);return `<a href="${esc(href(s,{actor:t.subject,task:t.id,metric:'',day:s.day}))}">${badge(code(a))} ${esc(nice(t.subject))}</a>`;}).join('')}</div></aside>`;
     }
     h+=comparison(cmp,s);
+    h+=patternsSection(tasks,ds);
     h+=`<details class="metric-help"><summary>What these numbers mean</summary><dl>${METRICS.map(m=>`<dt>${esc(m.label)}</dt><dd>${esc(m.help)}</dd>`).join('')}</dl></details>`;
     h+=`<section class="actors-section" aria-labelledby="actors-title"><div class="section-title"><div><h2 id="actors-title">Actors <span>${scoped.length}</span></h2><p>Latest outcome first. Counts cover the selected period.</p></div><div class="legend">${Object.keys(names).map(c=>`<span><i class="day-cell ${c}">${symbols[c]}</i>${names[c]}</span>`).join('')}</div></div><div class="column-head"><span>Actor</span><span>Discovery task</span><span>Named task</span><span>Recent outcomes <small class="date-head">${ds.slice(-7).map(d=>`<span>${d.slice(-2)}</span>`).join('')}</small></span></div><div class="actor-list">`;
     let previous='';
     for(const a of ordered){
       if(s.team==='all'&&a.team!==previous){h+=`<div class="team-divider">${cap(a.team)} <span>${scoped.filter(x=>x.team===a.team).length} Actors</span></div>`;previous=a.team;}
       const open=a.id===s.actor;
-      h+=`<details class="actor" data-actor="${esc(a.id)}" id="actor-${a.id.replace(/[^a-z0-9]/gi,'-')}" ${open?'open':''}><summary class="actor-row"><div class="actor-name"><span class="chevron">›</span><div><strong>${esc(a.name)}</strong><span>${esc(a.team)}${a.tasks.length!==2?' · '+a.tasks.length+' tasks':''}</span></div></div><div class="metric"><span class="mobile-label">Discovery</span>${metric(a,a.tasks.filter(t=>t.skill==='find'),ds,'find',s)}</div><div class="metric"><span class="mobile-label">Named task</span>${metric(a,a.tasks.filter(t=>t.skill==='use'),ds,'use',s)}</div>${history(a,ds,s)}</summary><div class="actor-detail"><div class="detail-heading"><span>Tasks and evidence</span><a href="https://apify.com/${esc(a.id)}" target="_blank" rel="noreferrer">${esc(a.id)} ↗</a></div>${a.tasks.map(t=>evidence(t,get(t,s.task===t.id&&ds.includes(s.day)?s.day:latest),s,ds)).join('')}</div></details>`;
+      h+=`<details class="actor" data-actor="${esc(a.id)}" id="actor-${a.id.replace(/[^a-z0-9]/gi,'-')}" ${open?'open':''}><summary class="actor-row"><div class="actor-name"><span class="chevron">›</span><div><strong>${esc(a.name)}</strong><span>${esc(a.team)}${a.tasks.length!==2?' · '+a.tasks.length+' tasks':''}</span>${patternLine(a,ds)}</div></div><div class="metric"><span class="mobile-label">Discovery</span>${metric(a,a.tasks.filter(t=>t.skill==='find'),ds,'find',s)}</div><div class="metric"><span class="mobile-label">Named task</span>${metric(a,a.tasks.filter(t=>t.skill==='use'),ds,'use',s)}</div>${history(a,ds,s)}</summary><div class="actor-detail"><div class="detail-heading"><span>Tasks and evidence</span><a href="https://apify.com/${esc(a.id)}" target="_blank" rel="noreferrer">${esc(a.id)} ↗</a></div>${patternsBlock(a,ds)}${a.tasks.map(t=>evidence(t,get(t,s.task===t.id&&ds.includes(s.day)?s.day:latest),s,ds)).join('')}</div></details>`;
     }
     const disagreements=listFor(tasks,ds).filter(a=>score(a,'judge.disagreement')?.value===1);
     const nFind=tasks.filter(t=>t.skill==='find').length, nUse=tasks.filter(t=>t.skill==='use').length;
