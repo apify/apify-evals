@@ -4,63 +4,65 @@
 subject: apify/facebook-groups-scraper
 tags: [family:facebook]
 scenarios:
-  - id: facebook-groups-scraper-discovery-public-group-posts
-    skill: find
-    title: "Discovery: public Facebook group URL finds the Groups scraper"
-    prompt: Get the 3 most recent posts from the public Facebook group at
-      https://www.facebook.com/groups/874728723021553 and report what each post is about.
-    expected: The agent discovers apify/facebook-groups-scraper (the socials-team Facebook group scraper)
-      via store search, runs it with the group URL and a 3-post cap, and reports the actor name
-      along with post text drawn from the real retrieved data (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/facebook-groups-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/facebook-groups-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: facebook-groups-scraper-usage-recent-activity
-    skill: use
-    title: "Usage: pinned Groups scraper, sorted by newest activity with comment counts"
-    prompt: Using the apify/facebook-groups-scraper Actor, get 3 posts sorted by newest activity from the
-      public Facebook group https://www.facebook.com/groups/874728723021553 and report each post's
-      text and how many comments it has.
-    expected: The agent runs the pinned actor with startUrls set to the group URL, a 3-post limit and the
-      view option set to recent activity, and reports real post text and comment counts drawn from
-      the retrieved dataset items (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/facebook-groups-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: groupUrl
-        type: apify.input
-        path: startUrls[0].url
-        op: regex
-        value: facebook\.com/groups/874728723021553
-      - id: threePosts
-        type: apify.input
-        path: resultsLimit
-        op: lte
-        value: 3
-        severity: warn
-      - id: sortOrder
-        type: apify.input
-        path: viewOption
-        op: equals
-        value: RECENT_ACTIVITY
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 3 }
-      - id: grounded
-        type: answer.grounded
-        minDigits: 1
+    - id: facebook-groups-scraper-discovery-public-group-posts
+      skill: find
+      title: 'facebook-groups / find / public-group-posts'
+      notes: 'Discovery: public Facebook group URL finds the Groups scraper'
+      prompt: Get the 3 most recent posts from the public Facebook group at
+          https://www.facebook.com/groups/874728723021553 and report what each post is about.
+      expected: The agent discovers apify/facebook-groups-scraper (the socials-team Facebook group scraper)
+          via store search, runs it with the group URL and a 3-post cap, and reports the actor name
+          along with post text drawn from the real retrieved data (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/facebook-groups-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/facebook-groups-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: facebook-groups-scraper-usage-recent-activity
+      skill: use
+      title: 'facebook-groups / use / recent-activity'
+      notes: 'Usage: pinned Groups scraper, sorted by newest activity with comment counts'
+      prompt: Using the apify/facebook-groups-scraper Actor, get 3 posts sorted by newest activity from the
+          public Facebook group https://www.facebook.com/groups/874728723021553 and report each post's
+          text and how many comments it has.
+      expected: The agent runs the pinned actor with startUrls set to the group URL, a 3-post limit and the
+          view option set to recent activity, and reports real post text and comment counts drawn from
+          the retrieved dataset items (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/facebook-groups-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: groupUrl
+            type: apify.input
+            path: startUrls[0].url
+            op: regex
+            value: facebook\.com/groups/874728723021553
+          - id: threePosts
+            type: apify.input
+            path: resultsLimit
+            op: lte
+            value: 3
+            severity: warn
+          - id: sortOrder
+            type: apify.input
+            path: viewOption
+            op: equals
+            value: RECENT_ACTIVITY
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 3 }
+          - id: grounded
+            type: answer.grounded
+            minDigits: 1

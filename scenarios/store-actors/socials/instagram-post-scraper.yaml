@@ -7,63 +7,65 @@
 subject: apify/instagram-post-scraper
 tags: [family:instagram]
 scenarios:
-  - id: instagram-post-scraper-discovery-natgeo-latest-post
-    skill: find
-    title: "Discovery: single latest post from a profile finds the Post scraper"
-    prompt: Get the most recent post from the Instagram profile @natgeo and report its caption's first
-      sentence and how many comments it has.
-    expected: The agent discovers apify/instagram-post-scraper via store search, runs it with the natgeo
-      username and a 1-post cap, and reports the actor name and a comment count drawn from the real
-      retrieved post data (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/instagram-post-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/instagram-post-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: instagram-post-scraper-usage-natgeo-three-posts
-    skill: use
-    title: "Usage: pinned Post scraper, three recent posts with like counts"
-    prompt: Using the apify/instagram-post-scraper Actor, get the 3 most recent posts from the Instagram
-      profile @natgeo, skipping pinned posts, and report each post's caption's first sentence and
-      its like count.
-    expected: The agent runs the pinned actor with username set to ["natgeo"], a 3-post limit and pinned
-      posts skipped, and reports real captions and like counts drawn from the retrieved dataset
-      items (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/instagram-post-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: usernameInput
-        type: apify.input
-        path: username[0]
-        op: regex
-        value: natgeo
-      - id: threePosts
-        type: apify.input
-        path: resultsLimit
-        op: lte
-        value: 3
-        severity: warn
-      - id: skipPinned
-        type: apify.input
-        path: skipPinnedPosts
-        op: equals
-        value: true
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 3 }
-      - id: grounded
-        type: answer.grounded
-        minDigits: 1
+    - id: instagram-post-scraper-discovery-natgeo-latest-post
+      skill: find
+      title: 'instagram-post / find / natgeo-latest-post'
+      notes: 'Discovery: single latest post from a profile finds the Post scraper'
+      prompt: Get the most recent post from the Instagram profile @natgeo and report its caption's first
+          sentence and how many comments it has.
+      expected: The agent discovers apify/instagram-post-scraper via store search, runs it with the natgeo
+          username and a 1-post cap, and reports the actor name and a comment count drawn from the real
+          retrieved post data (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/instagram-post-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/instagram-post-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: instagram-post-scraper-usage-natgeo-three-posts
+      skill: use
+      title: 'instagram-post / use / natgeo-three-posts'
+      notes: 'Usage: pinned Post scraper, three recent posts with like counts'
+      prompt: Using the apify/instagram-post-scraper Actor, get the 3 most recent posts from the Instagram
+          profile @natgeo, skipping pinned posts, and report each post's caption's first sentence and
+          its like count.
+      expected: The agent runs the pinned actor with username set to ["natgeo"], a 3-post limit and pinned
+          posts skipped, and reports real captions and like counts drawn from the retrieved dataset
+          items (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/instagram-post-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: usernameInput
+            type: apify.input
+            path: username[0]
+            op: regex
+            value: natgeo
+          - id: threePosts
+            type: apify.input
+            path: resultsLimit
+            op: lte
+            value: 3
+            severity: warn
+          - id: skipPinned
+            type: apify.input
+            path: skipPinnedPosts
+            op: equals
+            value: true
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 3 }
+          - id: grounded
+            type: answer.grounded
+            minDigits: 1

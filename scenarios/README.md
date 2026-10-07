@@ -38,6 +38,14 @@ scenario: `title`, `maxTurns`, `timeoutSecs`, `tools`, `allowBash`,
 `appendSuffix: false`, `notes` (for humans, never shown to the judge), `tags`,
 `reference`.
 
+### Titles are chart labels
+
+`title` is what Langfuse shows as the trace name and the only per-scenario label
+charts can use, so keep it short and uniform: `<actor short name> / find|use /
+<two-or-three-word topic>`, under 60 characters (the lint rejects longer). Put
+the descriptive sentence ("finds the reviews scraper, not the places scraper")
+in `notes`, which humans see and the judge never does.
+
 ### Two scenario types per subject, always
 
 - **find**: the prompt does not name the subject; the agent gets the search

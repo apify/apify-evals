@@ -5,64 +5,66 @@
 subject: junglee/amazon-reviews-scraper
 tags: [family:amazon]
 scenarios:
-  - id: amazon-reviews-scraper-discovery-product-complaints
-    skill: find
-    title: "Discovery: review themes for one Amazon product URL find the Reviews scraper"
-    prompt: "Get the 30 most helpful reviews for this Amazon product and tell me the top complaints and
-      praises: https://www.amazon.com/dp/B0CWXNS552"
-    expected: The agent recognizes this as a review-extraction task for a single Amazon product URL,
-      chooses junglee/amazon-reviews-scraper, sorts by helpful with a cap around 30, and summarizes
-      recurring complaint and praise themes drawn from the actual scraped review text. The general
-      Amazon crawler is the wrong sibling; the signal is reviews of one product.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: junglee/amazon-reviews-scraper
-      - id: namedActor
-        type: answer.contains
-        value: junglee/amazon-reviews-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-  - id: amazon-reviews-scraper-usage-helpful-thirty
-    skill: use
-    title: "Usage: pinned Reviews scraper, helpful-sorted pull with a 30-review cap"
-    prompt: Using the junglee/amazon-reviews-scraper Actor, pull the 30 most helpful reviews for
-      https://www.amazon.com/dp/B0CWXNS552 and summarize the top 3 complaints and top 3 praises.
-    expected: The agent calls junglee/amazon-reviews-scraper with the product URL in productUrls,
-      maxReviews around 30, sort set to helpful, runs it successfully, and summarizes 3 complaint
-      themes and 3 praise themes grounded in the actual review text returned, not generic guesses.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: junglee/amazon-reviews-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: productUrl
-        type: apify.input
-        path: productUrls[0].url
-        op: regex
-        value: B0CWXNS552
-      - id: cap
-        type: apify.input
-        path: maxReviews
-        op: lte
-        value: 30
-        severity: warn
-      - id: sortHelpful
-        type: apify.input
-        path: sort
-        op: equals
-        value: helpful
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 30 }
-        severity: warn
-      - id: shape
-        type: answer.regex
-        value: \d+
+    - id: amazon-reviews-scraper-discovery-product-complaints
+      skill: find
+      title: 'amazon-reviews / find / product-complaints'
+      notes: 'Discovery: review themes for one Amazon product URL find the Reviews scraper'
+      prompt: 'Get the 30 most helpful reviews for this Amazon product and tell me the top complaints and
+          praises: https://www.amazon.com/dp/B0CWXNS552'
+      expected: The agent recognizes this as a review-extraction task for a single Amazon product URL,
+          chooses junglee/amazon-reviews-scraper, sorts by helpful with a cap around 30, and summarizes
+          recurring complaint and praise themes drawn from the actual scraped review text. The general
+          Amazon crawler is the wrong sibling; the signal is reviews of one product.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: junglee/amazon-reviews-scraper
+          - id: namedActor
+            type: answer.contains
+            value: junglee/amazon-reviews-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+    - id: amazon-reviews-scraper-usage-helpful-thirty
+      skill: use
+      title: 'amazon-reviews / use / helpful-thirty'
+      notes: 'Usage: pinned Reviews scraper, helpful-sorted pull with a 30-review cap'
+      prompt: Using the junglee/amazon-reviews-scraper Actor, pull the 30 most helpful reviews for
+          https://www.amazon.com/dp/B0CWXNS552 and summarize the top 3 complaints and top 3 praises.
+      expected: The agent calls junglee/amazon-reviews-scraper with the product URL in productUrls,
+          maxReviews around 30, sort set to helpful, runs it successfully, and summarizes 3 complaint
+          themes and 3 praise themes grounded in the actual review text returned, not generic guesses.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: junglee/amazon-reviews-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: productUrl
+            type: apify.input
+            path: productUrls[0].url
+            op: regex
+            value: B0CWXNS552
+          - id: cap
+            type: apify.input
+            path: maxReviews
+            op: lte
+            value: 30
+            severity: warn
+          - id: sortHelpful
+            type: apify.input
+            path: sort
+            op: equals
+            value: helpful
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 30 }
+            severity: warn
+          - id: shape
+            type: answer.regex
+            value: \d+

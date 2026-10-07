@@ -4,71 +4,73 @@
 subject: apify/instagram-reel-scraper
 tags: [family:instagram]
 scenarios:
-  - id: instagram-reel-scraper-discovery-natgeo-reels-shares
-    skill: find
-    title: "Discovery: Reels with share counts finds the Reel scraper"
-    prompt: Get the 3 most recent Instagram Reels posted by @natgeo and report each reel's caption's
-      first sentence, its play count and how many times the reels were shared.
-    expected: The agent discovers apify/instagram-reel-scraper (the socials-team Instagram Reels Actor)
-      via store search, runs it with the natgeo username, a 3-reel cap and share counts enabled, and
-      reports the actor name and real reel captions, play counts and share counts drawn from the
-      retrieved data (not invented). The signal is Reels plus share counts; a generic post scraper is
-      the wrong sibling.
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/instagram-reel-scraper
-      - id: namedActor
-        type: answer.contains
-        value: apify/instagram-reel-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 3
-        severity: warn
-      - id: sharesFlag
-        type: apify.input
-        path: includeSharesCount
-        op: equals
-        value: true
-        severity: warn
-  - id: instagram-reel-scraper-usage-natgeo-skip-pinned
-    skill: use
-    title: "Usage: pinned Reel scraper, three recent reels skipping pinned ones"
-    prompt: Using the apify/instagram-reel-scraper Actor, get the 3 most recent Reels from the Instagram
-      profile @natgeo, skipping any pinned reels, and report each reel's caption's first sentence,
-      play count, and duration in seconds.
-    expected: The agent runs the pinned actor with username set to ["natgeo"], a 3-reel limit, and pinned
-      posts skipped, and reports real captions, play counts, and durations drawn from the retrieved
-      dataset items (not invented).
-    checks:
-      - id: rightActor
-        type: subject.used
-        value: apify/instagram-reel-scraper
-      - id: ranOk
-        type: apify.run
-        status: SUCCEEDED
-        maxRuns: 2
-      - id: usernameInput
-        type: apify.input
-        path: username[0]
-        op: regex
-        value: natgeo
-      - id: threeReels
-        type: apify.input
-        path: resultsLimit
-        op: lte
-        value: 3
-        severity: warn
-      - id: skipPinned
-        type: apify.input
-        path: skipPinnedPosts
-        op: equals
-        value: true
-        severity: warn
-      - id: items
-        type: apify.items
-        count: { min: 1, max: 3 }
-      - id: grounded
-        type: answer.grounded
-        minDigits: 1
+    - id: instagram-reel-scraper-discovery-natgeo-reels-shares
+      skill: find
+      title: 'instagram-reel / find / natgeo-reels-shares'
+      notes: 'Discovery: Reels with share counts finds the Reel scraper'
+      prompt: Get the 3 most recent Instagram Reels posted by @natgeo and report each reel's caption's
+          first sentence, its play count and how many times the reels were shared.
+      expected: The agent discovers apify/instagram-reel-scraper (the socials-team Instagram Reels Actor)
+          via store search, runs it with the natgeo username, a 3-reel cap and share counts enabled, and
+          reports the actor name and real reel captions, play counts and share counts drawn from the
+          retrieved data (not invented). The signal is Reels plus share counts; a generic post scraper is
+          the wrong sibling.
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/instagram-reel-scraper
+          - id: namedActor
+            type: answer.contains
+            value: apify/instagram-reel-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 3
+            severity: warn
+          - id: sharesFlag
+            type: apify.input
+            path: includeSharesCount
+            op: equals
+            value: true
+            severity: warn
+    - id: instagram-reel-scraper-usage-natgeo-skip-pinned
+      skill: use
+      title: 'instagram-reel / use / natgeo-skip-pinned'
+      notes: 'Usage: pinned Reel scraper, three recent reels skipping pinned ones'
+      prompt: Using the apify/instagram-reel-scraper Actor, get the 3 most recent Reels from the Instagram
+          profile @natgeo, skipping any pinned reels, and report each reel's caption's first sentence,
+          play count, and duration in seconds.
+      expected: The agent runs the pinned actor with username set to ["natgeo"], a 3-reel limit, and pinned
+          posts skipped, and reports real captions, play counts, and durations drawn from the retrieved
+          dataset items (not invented).
+      checks:
+          - id: rightActor
+            type: subject.used
+            value: apify/instagram-reel-scraper
+          - id: ranOk
+            type: apify.run
+            status: SUCCEEDED
+            maxRuns: 2
+          - id: usernameInput
+            type: apify.input
+            path: username[0]
+            op: regex
+            value: natgeo
+          - id: threeReels
+            type: apify.input
+            path: resultsLimit
+            op: lte
+            value: 3
+            severity: warn
+          - id: skipPinned
+            type: apify.input
+            path: skipPinnedPosts
+            op: equals
+            value: true
+            severity: warn
+          - id: items
+            type: apify.items
+            count: { min: 1, max: 3 }
+          - id: grounded
+            type: answer.grounded
+            minDigits: 1
