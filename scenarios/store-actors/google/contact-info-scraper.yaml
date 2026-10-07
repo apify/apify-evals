@@ -1,0 +1,58 @@
+# vdrmota/contact-info-scraper · owner: google · suite: store-actors
+# Edit here, then `npm run scenarios:sync`. See scenarios/README.md for the format.
+# Source: Notion "Store eval scenarios" rows drafted by the Google team (Sept 2026).
+subject: vdrmota/contact-info-scraper
+scenarios:
+  - id: contact-info-scraper-discovery-notion-website
+    skill: find
+    title: "Discovery: single website URL finds the contact info scraper"
+    prompt: find contact info for this website https://www.notion.so
+    expected: The agent discovers vdrmota/contact-info-scraper and runs it with the supplied URL as the
+      start URL and a shallow crawl, returning emails, phone numbers, and social profile links from
+      the retrieved data. A Google Maps Actor is not appropriate, because the input is a URL rather
+      than a place search. Apify AI chat traffic shows that when users supply a URL at all, 77%
+      supply exactly one, so a single-URL lookup is the representative shape. Contact types with no
+      results are reported as empty rather than invented.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: vdrmota/contact-info-scraper
+      - id: namedActor
+        type: answer.contains
+        value: vdrmota/contact-info-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 3
+        severity: warn
+  - id: contact-info-scraper-usage-two-domains-shallow
+    skill: use
+    title: "Usage: pinned contact info scraper, two start URLs with depth limited to one"
+    prompt: Using the vdrmota/contact-info-scraper Actor, get contact details from https://www.apify.com
+      and https://www.notion.so without crawling deeper than one level. Report emails and social
+      profiles per domain.
+    expected: The agent runs the pinned Actor with both URLs as start URLs and the crawl depth limited to
+      one level, then reports emails and social profiles grouped by domain from the retrieved data.
+      Contact types with no results are reported as empty rather than invented.
+    checks:
+      - id: rightActor
+        type: subject.used
+        value: vdrmota/contact-info-scraper
+      - id: ranOk
+        type: apify.run
+        status: SUCCEEDED
+        maxRuns: 2
+      - id: urls
+        type: apify.input
+        required: [startUrls]
+      - id: depth
+        type: apify.input
+        path: maxDepth
+        op: lte
+        value: 1
+      - id: items
+        type: apify.items
+        count: { min: 1, max: 40 }
+      - id: fields
+        type: apify.items
+        requiredFields: [url, domain, emails]
