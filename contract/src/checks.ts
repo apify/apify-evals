@@ -53,7 +53,7 @@ export interface Evidence {
     /** datasetId -> items (capped by the collector). Missing id = not fetched. */
     datasets: Record<string, unknown[]>;
     reference?: ReferenceEvidence | null;
-    workspaceFiles?: { path: string; content?: string }[];
+    workspaceFiles?: { path: string; size?: number; content?: string }[];
     session: {
         timedOut: boolean;
         stdoutTruncated: boolean;

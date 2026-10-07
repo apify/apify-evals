@@ -11,7 +11,14 @@ import { log } from 'apify';
 import { toolsUrl } from '../artifacts.js';
 import type { AdapterResult, SessionContext } from '../harness.js';
 import { parseCodexEvents, parseCodexLine } from './codex-events.js';
-import { EXIT_GRACE_MS, killProcessTree, MAX_MCP_RESTARTS, MAX_STDOUT_BYTES, STDERR_CAP } from './shared.js';
+import {
+    EXIT_GRACE_MS,
+    killProcessTree,
+    MAX_MCP_RESTARTS,
+    MAX_STDOUT_BYTES,
+    STDERR_CAP,
+    snapshotWorkspace,
+} from './shared.js';
 
 /** Kept together so the provider can change without touching process handling. */
 export const CODEX_PROVIDER = {
@@ -181,7 +188,9 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
             const auth = join(process.env.CODEX_HOME ?? join(process.env.HOME ?? '', '.codex'), 'auth.json');
             if (existsSync(auth)) symlinkSync(auth, join(home, 'auth.json'));
         }
-        return await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected);
+        const result = await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected);
+        if (ctx.item.metadata?.allowBash) result.workspaceFiles = snapshotWorkspace(work);
+        return result;
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

@@ -320,6 +320,10 @@ for (const model of models) {
     if (safeRepeats > 1) nameParts.push(`×${safeRepeats}`);
     nameParts.push(stamp);
     if (trigger !== 'unknown') nameParts.push(trigger);
+    // Experiment names are unique per dataset: two runs started in the same
+    // minute would otherwise merge into one experiment (three did on 22 Sept).
+    const runTag = (process.env.APIFY_ACTOR_RUN_ID ?? '').slice(-5).toLowerCase();
+    if (runTag) nameParts.push(runTag);
     const effectiveRunName = runName ?? nameParts.join(' · ');
 
     const started = Date.now();
@@ -411,6 +415,7 @@ for (const model of models) {
                 judgeActor,
                 {
                     datasetRunId,
+                    datasetName,
                     judgeModel,
                     writeRunScores: fullScope,
                     ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}),

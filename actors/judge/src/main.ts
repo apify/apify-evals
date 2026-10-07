@@ -8,6 +8,14 @@ interface Input {
     concurrency?: number;
     /** Run-level scores feed the OKR trend; the runner passes false for filtered (partial) runs. */
     writeRunScores?: boolean;
+    /** Named key-value store for evidence, logs and the report (eval-artifacts). */
+    artifactStore?: string;
+    /** Public key-value store the suite report is written to (eval-reports). Defaults to REPORT_STORE_ID. */
+    reportStore?: string;
+    /** Suite (Langfuse dataset) name, used to build the report after a full run; resolved from the run when omitted. */
+    datasetName?: string;
+    /** Build and store the suite report after a full-scope run (default true). */
+    report?: boolean;
     /** Langfuse annotation queue that receives every non-pass plus a sample of passes for human review ('' disables). */
     auditQueue?: string;
     auditPassSample?: number | string;
@@ -137,13 +145,7 @@ function recordJudgeCall(rec: {
             if (typeof rec.usage.completion_tokens === 'number') usageDetails.output = rec.usage.completion_tokens;
             if (typeof rec.usage.total_tokens === 'number') usageDetails.total = rec.usage.total_tokens;
         }
-        const obs = (
-            startObservation as unknown as (
-                n: string,
-                a: unknown,
-                o: unknown,
-            ) => { end: (t?: Date) => void }
-        )(
+        const obs = (startObservation as unknown as (n: string, a: unknown, o: unknown) => { end: (t?: Date) => void })(
             'judge',
             {
                 model: rec.model,
@@ -155,7 +157,12 @@ function recordJudgeCall(rec: {
             {
                 asType: 'evaluator',
                 startTime: new Date(rec.startedAt),
-                parentSpanContext: { traceId: rec.traceId, spanId: rec.parentObservationId, traceFlags: 1, isRemote: true },
+                parentSpanContext: {
+                    traceId: rec.traceId,
+                    spanId: rec.parentObservationId,
+                    traceFlags: 1,
+                    isRemote: true,
+                },
             },
         );
         obs.end(new Date(rec.endedAt));
@@ -208,7 +215,12 @@ async function profileNameFor(traceId: string): Promise<string | undefined> {
     if (profileCache.has(traceId)) return profileCache.get(traceId);
     let name: string | undefined;
     try {
-        const res = (await langfuse.api.observations.getMany({ traceId, name: 'agent', fields: 'core,metadata', limit: 1 })) as unknown as {
+        const res = (await langfuse.api.observations.getMany({
+            traceId,
+            name: 'agent',
+            fields: 'core,metadata',
+            limit: 1,
+        })) as unknown as {
             data?: { metadata?: unknown }[];
         };
         const meta = res.data?.[0]?.metadata;
@@ -240,14 +252,20 @@ const skippedCount = results.filter((r) => r.status === 'skipped-already-judged'
 // inconclusive (infrastructure) results are reported separately, never
 // charged as failures.
 const passed = conclusive.filter((r) => r.verdict === 'pass').length;
-const found = scoreboard.reduce((acc, row) => ({ pass: acc.pass + row.found.pass, total: acc.total + row.found.total }), {
-    pass: 0,
-    total: 0,
-});
-const works = scoreboard.reduce((acc, row) => ({ pass: acc.pass + row.works.pass, total: acc.total + row.works.total }), {
-    pass: 0,
-    total: 0,
-});
+const found = scoreboard.reduce(
+    (acc, row) => ({ pass: acc.pass + row.found.pass, total: acc.total + row.found.total }),
+    {
+        pass: 0,
+        total: 0,
+    },
+);
+const works = scoreboard.reduce(
+    (acc, row) => ({ pass: acc.pass + row.works.pass, total: acc.total + row.works.total }),
+    {
+        pass: 0,
+        total: 0,
+    },
+);
 const rate = (x: { pass: number; total: number }) => (x.total === 0 ? null : x.pass / x.total);
 const passRate = conclusive.length === 0 ? null : passed / conclusive.length;
 const foundRate = rate(found);
@@ -275,8 +293,22 @@ for (const [scenario, group] of byScenario) {
     for (const r of group) {
         const obs = items.find((i) => i.traceId === r.traceId);
         if (!obs) continue;
-        await langfuse.api.scores.create({ traceId: r.traceId, observationId: obs.observationId, name: 'eval.passAtN', value: passes > 0 ? 1 : 0, comment: `${passes}/${group.length} repeats passed`, metadata: version as Record<string, unknown> });
-        await langfuse.api.scores.create({ traceId: r.traceId, observationId: obs.observationId, name: 'eval.consistency', value: Number(majority.toFixed(3)), comment: `${passes}/${group.length} passed; majority agreement ${Math.round(majority * 100)}%`, metadata: version as Record<string, unknown> });
+        await langfuse.api.scores.create({
+            traceId: r.traceId,
+            observationId: obs.observationId,
+            name: 'eval.passAtN',
+            value: passes > 0 ? 1 : 0,
+            comment: `${passes}/${group.length} repeats passed`,
+            metadata: version as Record<string, unknown>,
+        });
+        await langfuse.api.scores.create({
+            traceId: r.traceId,
+            observationId: obs.observationId,
+            name: 'eval.consistency',
+            value: Number(majority.toFixed(3)),
+            comment: `${passes}/${group.length} passed; majority agreement ${Math.round(majority * 100)}%`,
+            metadata: version as Record<string, unknown>,
+        });
     }
 }
 
@@ -294,11 +326,31 @@ if (judged.length > 0 && writeRunScores) {
             metadata: version as Record<string, unknown>,
         });
     if (passRate !== null) await runScore('pass_rate', passRate, `${passed}/${conclusive.length} scenarios passed`);
-    if (foundRate !== null) await runScore('found_rate', foundRate, `${found.pass}/${found.total} discovery scenarios used the intended subject`);
-    if (worksRate !== null) await runScore('works_rate', worksRate, `${works.pass}/${works.total} usage scenarios passed`);
-    await runScore('inconclusive_rate', judged.length ? inconclusive / judged.length : 0, `${inconclusive}/${judged.length} scenarios inconclusive (infrastructure)`);
-    if (checksTotal > 0) await runScore('checks_pass_rate', checksPassed / checksTotal, `${checksPassed}/${checksTotal} deterministic checks passed`);
-    if (conclusive.length > 0) await runScore('judge_disagreement_rate', disagreements / conclusive.length, `${disagreements}/${conclusive.length} model vs checks disagreements`);
+    if (foundRate !== null)
+        await runScore(
+            'found_rate',
+            foundRate,
+            `${found.pass}/${found.total} discovery scenarios used the intended subject`,
+        );
+    if (worksRate !== null)
+        await runScore('works_rate', worksRate, `${works.pass}/${works.total} usage scenarios passed`);
+    await runScore(
+        'inconclusive_rate',
+        judged.length ? inconclusive / judged.length : 0,
+        `${inconclusive}/${judged.length} scenarios inconclusive (infrastructure)`,
+    );
+    if (checksTotal > 0)
+        await runScore(
+            'checks_pass_rate',
+            checksPassed / checksTotal,
+            `${checksPassed}/${checksTotal} deterministic checks passed`,
+        );
+    if (conclusive.length > 0)
+        await runScore(
+            'judge_disagreement_rate',
+            disagreements / conclusive.length,
+            `${disagreements}/${conclusive.length} model vs checks disagreements`,
+        );
     await runScore('actor_runs_cost_usd', actorRunsCostUsd, `USD spent by the Actors the agents triggered in this run`);
 } else if (judged.length > 0) {
     log.info('run-level scores skipped (partial scope run)');
@@ -308,12 +360,15 @@ if (judged.length > 0 && writeRunScores) {
 // turns that into calibration.agreement. Failures here never fail the run.
 if (auditQueue && judged.length > 0) {
     try {
-        const queues = (await langfuse.api.annotationQueues.listQueues({ limit: 100 })) as unknown as { data?: { id: string; name: string }[] };
+        const queues = (await langfuse.api.annotationQueues.listQueues({ limit: 100 })) as unknown as {
+            data?: { id: string; name: string }[];
+        };
         let queue = queues.data?.find((q) => q.name === auditQueue);
         if (!queue) {
             queue = (await langfuse.api.annotationQueues.createQueue({
                 name: auditQueue,
-                description: 'Judge audit: review judge.verdict / judge.fixArea and score human.verdict (agree / disagree / unsure).',
+                description:
+                    'Judge audit: review judge.verdict / judge.fixArea and score human.verdict (agree / disagree / unsure).',
                 scoreConfigIds: [],
             })) as { id: string; name: string };
         }
@@ -340,6 +395,79 @@ try {
 await Actor.setValue('SCOREBOARD', renderScoreboard(scoreboard, datasetRunId, skippedCount), {
     contentType: 'text/markdown',
 });
+
+// The suite report: regenerated after every full-scope run from the last 7
+// days, written to the artifacts store under a stable "latest" key and a dated
+// one. Developers read this, not Langfuse.
+let reportUrl: string | null = null;
+// Default: after a full-scope batch that judged something new. `report: true`
+// forces a rebuild (e.g. to regenerate after a report change) even when every
+// item was already judged.
+const wantReport = input.report === true || (input.report !== false && writeRunScores && judged.length > 0);
+if (wantReport) {
+    try {
+        const { buildReport } = await import('@apify-evals/report');
+        const { resolve } = await import('node:path');
+        const suite = input.datasetName ?? (await datasetNameForRun(datasetRunId));
+        if (!suite) throw new Error('could not resolve the dataset name for the run');
+        const built = await buildReport(langfuse, {
+            suite,
+            days: 7,
+            rootDir: resolve(process.cwd(), '..', '..'),
+            projectId,
+            baseUrl: input.langfuseBaseUrl ?? process.env.LANGFUSE_BASE_URL,
+        });
+        // Reports go to a separate, publicly readable store: the artifacts store
+        // holds full agent logs and stays private.
+        const store = await Actor.openKeyValueStore(
+            input.reportStore ?? process.env.REPORT_STORE_ID ?? 'eval-reports',
+            {
+                forceCloud: true,
+            },
+        );
+        const day = new Date().toISOString().slice(0, 10);
+        const records: [string, string, string][] = [
+            [`report-${suite}-latest.html`, built.html, 'text/html'],
+            [`report-${suite}-latest.json`, built.json, 'application/json'],
+            [`report-${suite}-${day}.html`, built.html, 'text/html'],
+            [`report-${suite}-${day}.json`, built.json, 'application/json'],
+        ];
+        for (const [key, body, contentType] of records) await store.setValue(key, body, { contentType });
+        reportUrl = `https://api.apify.com/v2/key-value-stores/${store.id}/records/report-${suite}-latest.html`;
+        log.info(
+            `REPORT: ${reportUrl} (${built.agg.recurring.length} recurring, ${built.agg.fresh.length} new observations)`,
+        );
+    } catch (err) {
+        log.warning(`report generation failed: ${err}`);
+    }
+}
+
+/** Dataset (suite) name of the run: one item's experimentDatasetId, then the datasets list. */
+async function datasetNameForRun(runId: string): Promise<string | undefined> {
+    const page = (await langfuse.api.experiments.listItems({
+        experimentId: runId,
+        fields: 'core',
+        fromStartTime: '2000-01-01T00:00:00Z',
+        limit: 1,
+    })) as unknown as { data?: { experimentDatasetId?: string | null; metadata?: Record<string, unknown> | null }[] };
+    const first = page.data?.[0];
+    // The items API exposes the dataset id only inside the span metadata today.
+    const datasetId =
+        first?.experimentDatasetId ??
+        (typeof first?.metadata?.dataset_id === 'string' ? first.metadata.dataset_id : undefined);
+    if (!datasetId) return undefined;
+    let dsPage: number | undefined = 1;
+    while (dsPage) {
+        const res = (await langfuse.api.datasets.list({ page: dsPage, limit: 50 })) as unknown as {
+            data?: { id: string; name: string }[];
+            meta?: { totalPages?: number };
+        };
+        const hit = res.data?.find((d) => d.id === datasetId);
+        if (hit) return hit.name;
+        dsPage = res.meta?.totalPages && dsPage < res.meta.totalPages ? dsPage + 1 : undefined;
+    }
+    return undefined;
+}
 const summary = {
     datasetRunId,
     items: items.length,
@@ -357,6 +485,7 @@ const summary = {
     flaky,
     fixAreas,
     skippedAlreadyJudged: skippedCount,
+    reportUrl,
     skippedNoTrace: results.filter((r) => r.status === 'skipped-no-trace').length,
     errors: results.filter((r) => r.status === 'error').length,
     degraded: judged.filter((r) => r.degraded).length,
