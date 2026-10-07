@@ -132,16 +132,21 @@ describe('report v2 failure patterns', () => {
             ),
         );
         const html = app.render(app.state(''));
-        const section = html.slice(html.indexOf('<section class="patterns"'), html.indexOf('</section>', html.indexOf('<section class="patterns"')));
-        expect(section).toContain('Where failures land');
-        expect(section).toContain('5 failed attempts over');
-        for (const leak of ['leak/named', 'leak/passed', 'leak/infra']) expect(section).not.toContain(leak);
-        expect(section).not.toContain('Error messages');
-        expect(section).toMatch(/Store search \/ Actor selection<\/th><td>2<\/td><td>1<\/td>/);
-        expect(section).toMatch(/Output format<\/th><td>1<\/td><td>1<\/td>/);
-        expect(section).toContain('No suggested fix recorded</th><td>2</td>');
-        expect(section).toContain('other/thing</a></span><b>2</b><small>instead of A</small>');
-        expect(section).toContain('No Actor reported in 1 failed discovery attempt.');
+        expect(html).not.toContain('Where failures land');
+        const detail = (actor: string) => {
+            const at = html.indexOf(`data-actor="${actor}"`);
+            return html.slice(html.indexOf('<div class="patterns-detail">', at), html.indexOf('<article class="evidence"', at));
+        };
+        const a = detail('x/a'), b = detail('x/b');
+        expect(a).toContain('3 failed attempts over');
+        for (const leak of ['leak/named', 'leak/passed', 'leak/infra']) expect(a + b).not.toContain(leak);
+        expect(a + b).not.toContain('Error messages');
+        expect(a).toContain('Store search / Actor selection</span><b>2</b>');
+        expect(a).toContain('Output format</span><b>1</b>');
+        expect(a).toContain('other/thing</a></span><b>2</b>');
+        expect(b).toContain('2 failed attempts over');
+        expect(b).toContain('No suggested fix recorded</span><b>2</b>');
+        expect(b).toContain('No Actor reported</span><b>1</b>');
         // row line: plurality fix area for Actor A; Actor B has no diagnosed failure, so no line
         expect(html).toContain('Top suggested fix: Store search / Actor selection (2 of 3 failures)');
         expect(html.match(/class="pattern"/g)?.length).toBe(1);
@@ -162,20 +167,6 @@ describe('report v2 failure patterns', () => {
         const html = app.render(app.state('#team=google'));
         expect(html).toContain('Top suggested fixes: Store search / Actor selection, Output format (1 each of 2 failures)');
         expect(html).toContain('y/c</a> <span class="ours">ours</span>');
-    });
-
-    it('caps the scope list at eight alternatives without claiming the rest had fewer attempts', () => {
-        const observations = Array.from({ length: 9 }, (_, i) => ({
-            ...obs('a-find', `2026-09-${String(10 + i).padStart(2, '0')}`, 'wrong-actor', 0),
-            fixArea: 'discoverability',
-            subjectCalled: `alt/${String.fromCharCode(97 + i)}`,
-        }));
-        const app = application(model(observations, observations.map((o) => o.day)));
-        const html = app.render(app.state('#range=28'));
-        const section = html.slice(html.indexOf('<section class="patterns"'), html.indexOf('</section>', html.indexOf('<section class="patterns"')));
-        expect(section.match(/<li>/g)?.length).toBe(8);
-        expect(section).toContain('Showing 8 of 9 alternatives');
-        expect(section).not.toContain('fewer attempts');
     });
 });
 
@@ -204,8 +195,9 @@ describe('report v2 change markers', () => {
         expect(html).toContain('<li><span>Named-Actor tasks passed</span><b>0/3 → 2/2</b></li>');
         // links keep the marker
         expect(html).toContain('href="#team=google&amp;range=7&amp;mark=2026-09-24"');
-        // the form is hidden until the browser enables it
+        // the form is hidden until the browser enables it, and lists only run dates in the period
         expect(html).toContain('<form class="marker-form" hidden>');
+        expect(html).toContain('<option value="2026-09-24" selected>September 24, 2026</option>');
     });
 
     it('shows percentage points only when both sides have enough results', () => {

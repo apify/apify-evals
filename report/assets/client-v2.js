@@ -139,8 +139,9 @@ function application(raw) {
   }
   const frac=x=>x.den?`${x.num}/${x.den}`:'No eligible results';
   function beforeAfterTable(tasks,ds,s) {
-    const form=`<form class="marker-form" hidden><label>Change marker <input type="date" name="mark" min="${days[0]}" max="${latest}" value="${esc(s.mark)}" required></label><button type="submit">Apply</button>${s.mark?`<a href="${esc(href(s,{mark:''}))}">Clear</a>`:''}</form>`;
-    if(!s.mark)return `<div class="before-after"><div class="comparison-head"><h3>Before vs after a change</h3>${form}</div><p class="comparison-note">Pick the date a change went live to compare results before and from that date.</p></div>`;
+    const options=['<option value="">none</option>',...ds.map(d=>`<option value="${d}"${d===s.mark?' selected':''}>${esc(longDate(d))}</option>`)].join('');
+    const form=`<form class="marker-form" hidden><label>Change marker <select name="mark">${options}</select></label><button type="submit">Apply</button>${s.mark?`<a href="${esc(href(s,{mark:''}))}">Clear</a>`:''}</form>`;
+    if(!s.mark)return `<div class="before-after"><div class="comparison-head"><h3>Before vs after a change</h3>${form}</div><p class="comparison-note">Pick the date a change went live to compare results before and from that date. Only dates in the selected period are listed.</p></div>`;
     const span=dd=>dd.length?windowLabel(dd[0],dd.at(-1)):'none';
     const ba=beforeAfter(tasks,ds,s.mark);
     const notes=[];
@@ -212,17 +213,6 @@ function application(raw) {
     const alts=p.alts.map(x=>`<li><span>${altLink(x.id)}</span><b>${x.n}</b></li>`).join('')+(p.noActor?`<li><span class="muted">No Actor reported</span><b>${p.noActor}</b></li>`:'');
     return `<div class="patterns-detail"><div><h5>Judge's suggested fix areas · ${plural(p.failures,'failed attempt')} over ${esc(period)}</h5><ul class="pattern-list">${areas}</ul><p class="small">Diagnoses, not proven causes. Read the evidence before changing the Actor.</p></div><div><h5>Alternatives the agent reported instead</h5>${alts?`<ul class="pattern-list">${alts}</ul>`:'<p class="small">None recorded on discovery tasks in this period.</p>'}</div>${markerLines(a,ds,s)}</div>`;
   }
-  /** Scope-level section: where failures land across the selected Actors. */
-  function patternsSection(tasks,ds) {
-    const p=patterns(tasks,ds), period=windowLabel(ds[0],ds.at(-1));
-    let h=`<section class="patterns" aria-labelledby="patterns-title"><div class="section-title"><div><h2 id="patterns-title">Where failures land</h2><p>${plural(p.failures,'failed attempt')} over ${esc(period)}. Fix areas are the judge's diagnoses, not proven causes.</p></div></div>`;
-    if(!p.failures)return h+'<p class="muted">No failed attempts in this period.</p></section>';
-    const areaRows=p.areas.map(x=>`<tr><th scope="row" title="${esc(fixAreaDef(x.id).description)}">${esc(fixAreaDef(x.id).label)}</th><td>${x.n}</td><td>${x.subjects.size}</td></tr>`).join('')+(p.noFix?`<tr><th scope="row" class="muted">No suggested fix recorded</th><td>${p.noFix}</td><td></td></tr>`:'');
-    const altItems=p.alts.slice(0,8).map(x=>{const lost=[...x.lost.entries()].sort((m,n)=>n[1]-m[1]||m[0].localeCompare(n[0])).map(([id,n])=>`${esc(nice(id))}${x.lost.size>1?' ('+n+')':''}`).join(', ');return `<li><span>${altLink(x.id)}</span><b>${x.n}</b><small>instead of ${lost}</small></li>`;}).join('');
-    const more=p.alts.length>8?`<p class="small">Showing 8 of ${p.alts.length} alternatives; the full list is in each Actor's details.</p>`:'';
-    h+=`<div class="patterns-columns"><div><h3>Suggested fix areas</h3><table class="pattern-table"><thead><tr><th scope="col">Area</th><th scope="col">Attempts</th><th scope="col">Actors</th></tr></thead><tbody>${areaRows}</tbody></table></div><div><h3>Alternatives reported instead of ours</h3>${altItems?`<ul class="pattern-list wide">${altItems}</ul>${more}`:'<p class="small">None recorded on discovery tasks in this period.</p>'}${p.noActor?`<p class="small">No Actor reported in ${plural(p.noActor,'failed discovery attempt')}.</p>`:''}</div></div></section>`;
-    return h;
-  }
   function metric(a,tasks,ds,skill,s) {
     if(!tasks.length)return '<span class="muted">No task</span>';
     const now=tasks.map(t=>get(t,latest)), c=tally(tasks,ds), cs=now.map(code);
@@ -261,7 +251,6 @@ function application(raw) {
       h+=`<aside class="point-detail"><strong>${esc(s.day)} · ${s.metric==='find'?'Discovery':'Named'} tasks</strong><span>${stat.pass}/${stat.n} passed · ${stat.infra} not counted · ${stat.missing} no result</span><a href="${esc(href(s,{metric:'',day:''}))}">Clear date</a><div>${picked.map(t=>{const a=get(t,s.day);return `<a href="${esc(href(s,{actor:t.subject,task:t.id,metric:'',day:s.day}))}">${badge(code(a))} ${esc(nice(t.subject))}</a>`;}).join('')}</div></aside>`;
     }
     h+=comparison(cmp,s,tasks,ds);
-    h+=patternsSection(tasks,ds);
     h+=`<details class="metric-help"><summary>What these numbers mean</summary><dl>${METRICS.map(m=>`<dt>${esc(m.label)}</dt><dd>${esc(m.help)}</dd>`).join('')}</dl></details>`;
     h+=`<section class="actors-section" aria-labelledby="actors-title"><div class="section-title"><div><h2 id="actors-title">Actors <span>${scoped.length}</span></h2><p>Latest outcome first. Counts cover the selected period.</p></div><div class="legend">${Object.keys(names).map(c=>`<span><i class="day-cell ${c}">${symbols[c]}</i>${names[c]}</span>`).join('')}</div></div><div class="column-head"><span>Actor</span><span>Discovery task</span><span>Named task</span><span>Recent outcomes <small class="date-head">${ds.slice(-7).map(d=>`<span>${d.slice(-2)}</span>`).join('')}</small></span></div><div class="actor-list">`;
     let previous='';
@@ -283,7 +272,9 @@ function reportBoot(){
   function enableForms(){var fs=document.querySelectorAll('form.marker-form');for(var i=0;i<fs.length;i++)fs[i].hidden=false;}
   function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);enableForms();var el=s.actor&&s.task?document.getElementById('evidence-'+s.task):s.compare?document.getElementById('transitions'):s.how?document.getElementById('how-measured'):null;if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});}
   if(location.hash)draw(); else enableForms(); window.addEventListener('hashchange',draw);
-  document.addEventListener('submit',function(e){var f=e.target;if(!(f.matches&&f.matches('form.marker-form')))return;e.preventDefault();var s=reportApp.state(location.hash);s.mark=f.elements.mark.value||'';location.hash='#'+new URLSearchParams(Object.entries(s).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';}));});
+  function applyMarker(f){var s=reportApp.state(location.hash);s.mark=f.elements.mark.value||'';location.hash='#'+new URLSearchParams(Object.entries(s).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';}));}
+  document.addEventListener('submit',function(e){var f=e.target;if(!(f.matches&&f.matches('form.marker-form')))return;e.preventDefault();applyMarker(f);});
+  document.addEventListener('change',function(e){var el=e.target;if(el&&el.name==='mark'&&el.form&&el.form.matches('form.marker-form'))applyMarker(el.form);});
   document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[data-history]');if(a){e.preventDefault();e.stopPropagation();location.hash=a.getAttribute('href').slice(1);}});
   document.addEventListener('toggle',function(e){if(e.target.matches&&e.target.matches('details.actor')){var s=reportApp.state(location.hash);if(e.target.open){s.actor=e.target.dataset.actor;}else if(s.actor===e.target.dataset.actor){s.actor='';}else{return;}history.replaceState(null,'','#'+new URLSearchParams(Object.entries(s).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';})));}},true);
 }
