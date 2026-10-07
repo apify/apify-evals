@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { Ajv } from 'ajv';
 import type { FromSchema } from 'json-schema-to-ts';
 
-export const CONTRACT_VERSION = '1.1.0';
+export const CONTRACT_VERSION = '1.2.0';
 
 /** Contract-wide hash convention for artifact pointers: the stored bytes are
  * exactly the hashed bytes, so any consumer can verify a fetched record. */
@@ -97,6 +97,11 @@ export const agentSpanMetadataSchema = {
         checksTotal: { type: 'integer' },
         infraOk: { type: 'boolean' },
         infraReasons: { type: 'array', items: { type: 'string' } },
+        // Session setup (contract 1.2): which MCP server the agent talked to and
+        // which agent skills were injected (and which of them Claude Code loaded).
+        mcpServer: { type: 'string' },
+        agentSkills: { type: 'array', items: { type: 'string' } },
+        skillsLoaded: { type: 'array', items: { type: 'string' } },
     },
     required: ['harness', 'model', 'harnessBroke', 'fullLogUrl', 'fullLogHash'],
     additionalProperties: true,
@@ -150,6 +155,32 @@ export function normalizeSkill(skill: unknown): 'find' | 'use' | null {
     return null;
 }
 
+/**
+ * The MCP server the agent talks to, from the suite profile (`mcp`). Absent
+ * means the Apify MCP server narrowed per item with `?tools=`. Header and env
+ * values may hold `${VAR}` placeholders that the runner fills from its own
+ * environment, so no secret is ever stored on a dataset item.
+ */
+export const MCP_TRANSPORTS = ['http', 'stdio'] as const;
+
+export const mcpServerSchema = {
+    type: 'object',
+    properties: {
+        name: { type: 'string', pattern: '^[a-z][a-z0-9-]*$' },
+        transport: { enum: [...MCP_TRANSPORTS] },
+        url: { type: 'string' },
+        headers: { type: 'object', additionalProperties: { type: 'string' } },
+        command: { type: 'string' },
+        args: { type: 'array', items: { type: 'string' } },
+        env: { type: 'object', additionalProperties: { type: 'string' } },
+        // Apify MCP only: the per-item tool list goes into the URL (`?tools=`),
+        // so the server itself exposes only those tools.
+        toolsQuery: { type: 'boolean' },
+    },
+    required: ['name', 'transport'],
+    additionalProperties: false,
+} as const;
+
 /** The thing under test. `kind` comes from the suite profile. */
 export const SUBJECT_KINDS = ['actor', 'mcp-tool', 'cli-command', 'sdk-feature', 'agent'] as const;
 
@@ -176,8 +207,12 @@ export const datasetItemMetadataSchema = {
         actor: { type: 'string' },
         team: { type: 'string' },
         category: { type: 'string' },
-        // Harness setup for this scenario.
+        // Harness setup for this scenario. `tools: ['*']` = every tool of the server.
         tools: { type: 'array', items: { type: 'string' } },
+        mcp: mcpServerSchema,
+        // Agent skills (skills/<name>/SKILL.md) the suite may inject; the
+        // runner's skillSets input picks which of them a run gets.
+        agentSkills: { type: 'array', items: { type: 'string' } },
         allowBash: { type: 'boolean' },
         maxTurns: { type: 'integer' },
         timeoutSecs: { type: 'integer' },
@@ -222,6 +257,7 @@ export type ConversationEntry = FromSchema<typeof conversationEntrySchema>;
 export type AgentSpanOutput = FromSchema<typeof agentSpanOutputSchema>;
 export type AgentSpanMetadata = FromSchema<typeof agentSpanMetadataSchema>;
 export type DatasetItemMetadata = FromSchema<typeof datasetItemMetadataSchema>;
+export type McpServerSpec = FromSchema<typeof mcpServerSchema>;
 export type DeterministicCheck = FromSchema<typeof checkSchema>;
 export type ScoreMetadata = FromSchema<typeof scoreMetadataSchema>;
 

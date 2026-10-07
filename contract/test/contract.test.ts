@@ -108,3 +108,27 @@ describe('dataset item metadata', () => {
         expect(validateDatasetItemMetadata({ checks: [{ type: 'jq', value: '.' }] })).toBe(false);
     });
 });
+
+describe('dataset item metadata: MCP server and agent skills', () => {
+    it('accepts a stdio server with env placeholders and a skills list', () => {
+        expect(
+            validateDatasetItemMetadata({
+                tools: ['*'],
+                mcp: {
+                    name: 'notion',
+                    transport: 'stdio',
+                    command: 'notion-mcp-server',
+                    args: ['--transport', 'stdio'],
+                    env: { NOTION_TOKEN: '${NOTION_TOKEN}' },
+                },
+                agentSkills: ['notion-research-documentation'],
+            }),
+        ).toBe(true);
+    });
+
+    it('rejects an unknown transport and an unknown server field', () => {
+        expect(validateDatasetItemMetadata({ mcp: { name: 'x', transport: 'ws' } })).toBe(false);
+        expect(validateDatasetItemMetadata({ mcp: { name: 'x', transport: 'http', token: 'secret' } })).toBe(false);
+        expect(validateDatasetItemMetadata({ mcp: { name: 'Not Valid', transport: 'http' } })).toBe(false);
+    });
+});
