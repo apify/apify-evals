@@ -17,7 +17,7 @@ function application(raw) {
     {id:'notcounted',label:'Not counted',help:'A failure in the evaluation infrastructure prevented this task from counting.'},
     {id:'noresult',label:'No result',help:'An expected task has no recorded attempt or is still awaiting a verdict.'},
     {id:'failedchecks',label:'Failed checks',help:'These recorded checks failed in the selected attempt; the comments explain what each check tested.'},
-    {id:'change',label:'Change',help:'This compares the same tasks with usable results in both labeled runs.'},
+    {id:'change',label:'Change',help:'Percentage points between the after and before fractions, shown only when both sides have at least 3 eligible results.'},
     {id:'fixarea',label:'Suggested fix area',help:"The judge's diagnosis of what to change first after a failed attempt. A suggestion, not a proven cause."},
     {id:'alternative',label:'Alternative reported',help:'In a discovery task that did not pass, the Actor the agent ran instead of the expected one, as recorded by the harness.'},
     {id:'marker',label:'Change marker',help:'A date you choose, such as the day a README fix went live. Results from that date on count as after; results before it count as before. The daily run is at 06:00 UTC, so a change made later in the day belongs on the next date.'}
@@ -57,7 +57,7 @@ function application(raw) {
   }
   function state(hash='') {
     const p=new URLSearchParams(hash.replace(/^#/,''));
-    return {team:teams.includes(p.get('team'))?p.get('team'):'all',range:[7,28,90].includes(+p.get('range'))?+p.get('range'):7,actor:p.has('actor')?p.get('actor'):'',task:p.get('task')||'',day:p.get('day')||'',metric:p.get('metric')||'',compare:['selection','discovery','named','all'].includes(p.get('compare'))?p.get('compare'):'',how:p.get('how')==='1'?'1':'',mark:validDate(p.get('mark'))};
+    return {team:teams.includes(p.get('team'))?p.get('team'):'all',range:[7,28,90].includes(+p.get('range'))?+p.get('range'):7,actor:p.has('actor')?p.get('actor'):'',task:p.get('task')||'',day:p.get('day')||'',metric:p.get('metric')||'',how:p.get('how')==='1'?'1':'',mark:validDate(p.get('mark'))};
   }
   function overall(actor) { const a=actor.tasks.map(t=>get(t,latest)); return a.some(x=>['F','W'].includes(code(x)))?0:a.every(x=>code(x)==='P')?2:1; }
   function chart(tasks,ds,skill,s) {
@@ -90,40 +90,6 @@ function application(raw) {
     const exact=`<details class="chart-values"><summary>Exact counts and coverage</summary><table><thead><tr><th>Date</th>${skill==='find'?'<th>Selected</th>':''}<th>Passed</th><th>Eligible</th><th>Not counted</th><th>No result</th></tr></thead><tbody>${data.map(d=>`<tr><td>${d.day}</td>${skill==='find'?`<td>${d.sel}/${d.sn}</td>`:''}<td>${d.pass}/${d.n}</td><td>${d.n}/${d.total}</td><td>${d.infra}</td><td>${d.missing}</td></tr>`).join('')}</tbody></table></details>`;
     return `<article class="chart"><div class="chart-top"><div><h3>${skill==='find'?'Discovery tasks':'Named-Actor tasks'}</h3><p>${skill==='find'?'The agent chooses an Actor.':'The prompt specifies the Actor.'}</p></div><div class="chart-stat">${last.n?Math.round(last.pass/last.n*100)+'%':'N/A'}<small>${last.pass}/${last.n} passed latest</small></div></div><div class="chart-key"><span style="--series:${color}">● Task passed</span>${skill==='find'?'<span class="dashed">○ Expected Actor selected</span>':''}</div>${svg}<div class="coverage-caption">Bars: eligible / expected evaluations</div>${exact}</article>`;
   }
-  function compare(tasks) {
-    const prev=days.length>1?days[days.length-2]:null;
-    if(!prev)return null;
-    const find=tasks.filter(t=>t.skill==='find'), use=tasks.filter(t=>t.skill==='use');
-    const pairs=(ts,ok)=>ts.map(t=>({t,a:get(t,prev),b:get(t,latest)})).filter(p=>ok(p.a)&&ok(p.b));
-    const mk=(id,ts,ok,val,words)=>{
-      const ps=pairs(ts,ok), before=ps.filter(p=>val(p.a)).length, after=ps.filter(p=>val(p.b)).length;
-      return {id,label:metricDef(id).label,n:ps.length,before,after,delta:after-before,down:ps.filter(p=>val(p.a)&&!val(p.b)),up:ps.filter(p=>!val(p.a)&&val(p.b)),omitted:ts.length-ps.length,words};
-    };
-    const gap=Math.round((new Date(latest+'T00:00:00Z')-new Date(prev+'T00:00:00Z'))/864e5)-1;
-    return {prev,latest,gap,rows:[
-      mk('selection',find,a=>selected(a)!==null,a=>selected(a)===1,{unit:'selected',down:'Selected before, not selected now',up:'Not selected before, selected now'}),
-      mk('discovery',find,valid,a=>code(a)==='P',{unit:'passed',down:'Passed before, failed now',up:'Failed before, passed now'}),
-      mk('named',use,valid,a=>code(a)==='P',{unit:'passed',down:'Passed before, failed now',up:'Failed before, passed now'})
-    ]};
-  }
-  const deltaText = r => r.n===0?'No tasks could be compared':r.delta===0?'No net change':(r.delta>0?'+':'−')+Math.abs(r.delta)+' '+r.words.unit;
-  function transitions(cmp,s) {
-    const rows=s.compare==='all'?cmp.rows.filter(r=>r.id!=='selection'):cmp.rows.filter(r=>r.id===s.compare);
-    const item=p=>`<li>${badge(code(p.a))}<span class="arrow" aria-hidden="true">→</span>${badge(code(p.b))}<span class="who"><strong>${esc(nice(p.t.subject))}</strong> · ${esc(p.t.title)}</span><span class="links"><a data-history="1" href="${esc(href(s,{actor:p.t.subject,task:p.t.id,day:latest,metric:'',compare:''}))}">Latest evidence</a><a data-history="1" href="${esc(href(s,{actor:p.t.subject,task:p.t.id,day:cmp.prev,metric:'',compare:''}))}">Previous</a></span></li>`;
-    const group=(title,list)=>`<div class="transition-group"><h4>${esc(title)} <span>${list.length}</span></h4>${list.length?`<ul>${list.map(item).join('')}</ul>`:'<p class="muted">None</p>'}</div>`;
-    return `<div class="transitions" id="transitions"><div class="transitions-head"><strong>${rows.map(r=>r.label).join(' and ')} · ${longDate(cmp.prev)} → ${longDate(cmp.latest)}</strong><a href="${esc(href(s,{compare:''}))}">Close</a></div>${rows.map(r=>`${rows.length>1?`<h3>${esc(r.label)}</h3>`:''}${group(r.words.down,r.down)}${group(r.words.up,r.up)}`).join('')}</div>`;
-  }
-  function comparison(cmp,s,tasks,ds) {
-    if(!cmp)return `<section class="comparison" aria-labelledby="comparison-title"><div class="comparison-head"><h2 id="comparison-title">Compared with the previous run</h2></div><p class="comparison-note">No earlier run to compare.</p>${beforeAfterTable(tasks,ds,s)}</section>`;
-    const when=cmp.gap>0?`${longDate(cmp.prev)} to ${longDate(cmp.latest)} · no scheduled result on the ${cmp.gap===1?'day':cmp.gap+' days'} between`:windowLabel(cmp.prev,cmp.latest);
-    const rowsHtml=cmp.rows.map(r=>`<tr><th scope="row" title="${esc(metricDef(r.id).help)}">${esc(r.label)}</th><td><span class="comparison-field" aria-hidden="true">Previous</span>${r.n?`${r.before}/${r.n}`:'—'}</td><td><span class="comparison-field" aria-hidden="true">Latest</span>${r.n?`${r.after}/${r.n}`:'—'}</td><td><span class="comparison-field" aria-hidden="true">Change</span>${r.n&&(r.down.length||r.up.length)?`<a href="${esc(href(s,{compare:r.id,actor:'',task:'',day:'',metric:''}))}" aria-current="${s.compare===r.id}">${deltaText(r)}</a>`:deltaText(r)}</td></tr>`).join('');
-    const [sel,disc,named]=cmp.rows;
-    const foot=[];
-    if(disc.omitted||named.omitted)foot.push(`Tasks without a usable result on both dates are left out: ${disc.omitted} discovery, ${named.omitted} named.`);
-    if(sel.omitted>disc.omitted)foot.push(`Selection was not measured for ${sel.omitted-disc.omitted} discovery task${sel.omitted-disc.omitted>1?'s':''}.`);
-    foot.push('Task and scoring versions were not recorded; results are matched by task ID.');
-    return `<section class="comparison" aria-labelledby="comparison-title"><div class="comparison-head"><h2 id="comparison-title">Compared with the previous run</h2><p>${esc(when)}</p></div><p class="comparison-note" id="comparison-note">Matched by task ID; only tasks scored in both runs count here. Click a change to list the tasks behind it.</p><table class="comparison-table" aria-labelledby="comparison-title" aria-describedby="comparison-note"><thead><tr><th scope="col">Measure</th><th scope="col">Previous</th><th scope="col">Latest</th><th scope="col" title="${esc(metricDef('change').help)}">Change</th></tr></thead><tbody>${rowsHtml}</tbody></table><p class="comparison-note comparison-foot">${esc(foot.join(' '))}</p>${s.compare?transitions(cmp,s):''}${beforeAfterTable(tasks,ds,s)}</section>`;
-  }
   /** Pooled eligible results before and from the marked date, over the selected period. */
   function beforeAfter(tasks,ds,mark) {
     const before=ds.filter(d=>d<mark), after=ds.filter(d=>d>=mark);
@@ -139,9 +105,11 @@ function application(raw) {
   }
   const frac=x=>x.den?`${x.num}/${x.den}`:'No eligible results';
   function beforeAfterTable(tasks,ds,s) {
-    const options=['<option value="">none</option>',...ds.map(d=>`<option value="${d}"${d===s.mark?' selected':''}>${esc(longDate(d))}</option>`)].join('');
+    const runDates=days.filter(d=>d>=ds[0]&&d<=ds.at(-1));
+    const outside=s.mark&&!runDates.includes(s.mark);
+    const options=['<option value="">none</option>',...(outside?[`<option value="${esc(s.mark)}" selected>${esc(longDate(s.mark))} (outside this period)</option>`]:[]),...runDates.map(d=>`<option value="${d}"${d===s.mark?' selected':''}>${esc(longDate(d))}</option>`)].join('');
     const form=`<form class="marker-form" hidden><label>Change marker <select name="mark">${options}</select></label><button type="submit">Apply</button>${s.mark?`<a href="${esc(href(s,{mark:''}))}">Clear</a>`:''}</form>`;
-    if(!s.mark)return `<div class="before-after"><div class="comparison-head"><h3>Before vs after a change</h3>${form}</div><p class="comparison-note">Pick the date a change went live to compare results before and from that date. Only dates in the selected period are listed.</p></div>`;
+    if(!s.mark)return `<section class="comparison before-after" aria-labelledby="before-after-title"><div class="comparison-head"><h2 id="before-after-title">Did a change help?</h2>${form}</div><p class="comparison-note">Pick the date a change went live (a README fix, a schema change) to compare results before and from that date. Run dates in the selected period are listed.</p></section>`;
     const span=dd=>dd.length?windowLabel(dd[0],dd.at(-1)):'none';
     const ba=beforeAfter(tasks,ds,s.mark);
     const notes=[];
@@ -154,19 +122,14 @@ function application(raw) {
       return `<tr><th scope="row" title="${esc(metricDef(r.id).help)}">${esc(r.label)}</th>${cell(r.before,'Before')}${cell(r.after,'After')}<td><span class="comparison-field" aria-hidden="true">Change</span>${change}</td></tr>`;
     }).join('');
     const dayCounts=`Calendar: ${span(ba.before)} before, ${span(ba.after)} from the marker. Day counts in the cells are dates with eligible results for that measure`;
-    return `<div class="before-after"><div class="comparison-head"><h3 id="before-after-title">Before vs after ${esc(longDate(s.mark))}</h3>${form}</div><p class="comparison-note">${esc(dayCounts)}. Pooled over every eligible task result in the selected period; not matched by task.</p>${notes.length?`<p class="comparison-note">${esc(notes.join(' '))}</p>`:''}<table class="comparison-table" aria-labelledby="before-after-title"><thead><tr><th scope="col">Measure</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead><tbody>${rows}</tbody></table><p class="comparison-note comparison-foot">Results on the marked date count as after; the daily run is at 06:00 UTC, so a change made later in the day belongs on the next date. Percentage points are shown only when both sides have at least 3 eligible results. A changed scenario set shifts both sides. This comparison does not establish that the change caused the difference.</p></div>`;
+    return `<section class="comparison before-after" aria-labelledby="before-after-title"><div class="comparison-head"><h2 id="before-after-title">Before vs after ${esc(longDate(s.mark))}</h2>${form}</div><p class="comparison-note">${esc(dayCounts)}. Pooled over every eligible task result in the selected period; not matched by task.</p>${notes.length?`<p class="comparison-note">${esc(notes.join(' '))}</p>`:''}<table class="comparison-table" aria-labelledby="before-after-title"><thead><tr><th scope="col">Measure</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead><tbody>${rows}</tbody></table><p class="comparison-note comparison-foot">Results on the marked date count as after; the daily run is at 06:00 UTC, so a change made later in the day belongs on the next date. Percentage points are shown only when both sides have at least 3 eligible results. A changed scenario set shifts both sides. This comparison does not establish that the change caused the difference.</p></section>`;
   }
-  function summary(scoped,current,cmp,s) {
+  function summary(scoped,current) {
     const fail=scoped.filter(a=>overall(a)===0).length;
     let h=`<strong>${fail} of ${scoped.length} Actors had a failing task in the latest run.</strong> `;
     const unusable=current.total-current.n;
     if(unusable>0)h+=`${unusable} of ${current.total} task results in the latest run have no usable verdict. `;
-    if(!cmp)return h+'No earlier comparable run is available.';
-    const [,disc,named]=cmp.rows, down=disc.down.length+named.down.length, up=disc.up.length+named.up.length, paired=disc.n+named.n;
-    if(!paired)return h+`No tasks could be compared with the run on ${longDate(cmp.prev)}.`;
-    if(!down&&!up)return h+`No pass/fail outcomes changed among the ${paired} tasks compared with ${longDate(cmp.prev)}.`;
-    const link=(n,txt)=>n?`<a href="${esc(href(s,{compare:'all',actor:'',task:'',day:'',metric:''}))}">${n} ${txt}</a>`:`${n} ${txt}`;
-    return h+`Among the ${paired} tasks scored on both ${longDate(cmp.prev)} and ${longDate(cmp.latest)}, ${link(down,'passed before and failed now')}; ${link(up,'failed before and passed now')}.`;
+    return h+'Expand an Actor for its evidence, fix areas and alternatives.';
   }
   const byTaskId = new Map(raw.expected.map(t=>[t.id,t]));
   const ourActors = new Set(raw.expected.map(t=>t.subject));
@@ -220,11 +183,11 @@ function application(raw) {
     const word=tasks.length>1?`${now.filter(a=>code(a)==='P').length}/${tasks.length} passed latest`:names[outcome];
     const failed=now.flatMap((at,i)=>(at?.failedChecks||[]).map(k=>({task:tasks[i],k})));
     const firstBad=tasks.find((t,i)=>['F','W'].includes(cs[i]))||tasks[0];
-    const link=(txt,task,aria)=>`<a class="cell-note fail" data-history="1" href="${esc(href(s,{actor:a.id,task:task.id,day:latest,metric:'',compare:''}))}" aria-label="${esc(aria)}">${txt}</a>`;
+    const link=(txt,task,aria)=>`<a class="cell-note fail" data-history="1" href="${esc(href(s,{actor:a.id,task:task.id,day:latest,metric:''}))}" aria-label="${esc(aria)}">${txt}</a>`;
     const kind=skill==='find'?'discovery':'named';
     let note='';
     if(failed.length&&(outcome==='F'||outcome==='W'))note=link(`× ${failed.length} failed check${failed.length>1?'s':''}`,failed[0].task,`${failed.length} failed checks across this Actor's latest ${kind} tasks. Opens the evidence.`);
-    else if(failed.length)note=`<a class="cell-note muted" data-history="1" href="${esc(href(s,{actor:a.id,task:failed[0].task.id,day:latest,metric:'',compare:''}))}" aria-label="${failed.length} recorded check${failed.length>1?'s':''} failed, but the task still passed. Opens the evidence.">${failed.length} check${failed.length>1?'s':''} failed, task still passed</a>`;
+    else if(failed.length)note=`<a class="cell-note muted" data-history="1" href="${esc(href(s,{actor:a.id,task:failed[0].task.id,day:latest,metric:''}))}" aria-label="${failed.length} recorded check${failed.length>1?'s':''} failed, but the task still passed. Opens the evidence.">${failed.length} check${failed.length>1?'s':''} failed, task still passed</a>`;
     else if(outcome==='F'||outcome==='W')note=link("See judge's finding",firstBad,"No recorded check failed; the judge's finding explains the outcome. Opens the evidence.");
     else if(outcome==='I')note=`<span class="cell-note muted" title="${esc(metricDef('notcounted').help)}">Test did not count</span>`;
     else if(outcome==='U')note=`<span class="cell-note muted" title="${esc(metricDef('noresult').help)}">Result pending or missing</span>`;
@@ -243,14 +206,13 @@ function application(raw) {
   }
   function render(s) {
     const ds=dates(s.range), scoped=actors.filter(a=>s.team==='all'||a.team===s.team), tasks=scoped.flatMap(a=>a.tasks), totals=tally(tasks,ds), current=tally(tasks,[latest]);
-    const cmp=compare(tasks);
     const ordered=scoped.slice().sort((a,b)=>a.team.localeCompare(b.team)||overall(a)-overall(b)||a.id.localeCompare(b.id));
-    let h=`<header class="page-header"><div><p class="eyebrow">Apify · Agent evaluations</p><h1>Can agents find and use your Actors?</h1><p class="subtitle">Daily tests of selection and task completion.</p><a class="how-link" data-history="1" href="${esc(href(s,{how:'1'}))}">How this is measured</a></div><div class="freshness">Latest run <strong>${longDate(latest)}</strong><span>${current.n}/${current.total} eligible · ${current.infra} not counted · ${current.missing} no result</span></div></header><nav class="scope" aria-label="Report scope"><div class="team-tabs">${['all',...teams].map(t=>`<a class="${t===s.team?'active':''}" href="${esc(href(s,{team:t,actor:'',task:'',day:'',metric:'',compare:''}))}" ${t===s.team?'aria-current="true"':''}>${t==='all'?'All teams':cap(t)}</a>`).join('')}</div><div class="period"><span>Period</span>${[7,28,90].map(r=>`<a href="${esc(href(s,{range:r}))}" class="${r===s.range?'active':''}">${r} days</a>`).join('')}</div></nav><p class="summary">${summary(scoped,current,cmp,s)}</p><p class="window-line">${windowLabel(ds[0],latest)} · ${ds.length} days available in this ${s.range}-day view</p><section class="trends" aria-label="Trends">${chart(tasks.filter(t=>t.skill==='find'),ds,'find',s)}${chart(tasks.filter(t=>t.skill==='use'),ds,'use',s)}</section>`;
+    let h=`<header class="page-header"><div><p class="eyebrow">Apify · Agent evaluations</p><h1>Can agents find and use your Actors?</h1><p class="subtitle">Daily tests of selection and task completion.</p><a class="how-link" data-history="1" href="${esc(href(s,{how:'1'}))}">How this is measured</a></div><div class="freshness">Latest run <strong>${longDate(latest)}</strong><span>${current.n}/${current.total} eligible · ${current.infra} not counted · ${current.missing} no result</span></div></header><nav class="scope" aria-label="Report scope"><div class="team-tabs">${['all',...teams].map(t=>`<a class="${t===s.team?'active':''}" href="${esc(href(s,{team:t,actor:'',task:'',day:'',metric:''}))}" ${t===s.team?'aria-current="true"':''}>${t==='all'?'All teams':cap(t)}</a>`).join('')}</div><div class="period"><span>Period</span>${[7,28,90].map(r=>`<a href="${esc(href(s,{range:r}))}" class="${r===s.range?'active':''}">${r} days</a>`).join('')}</div></nav><p class="summary">${summary(scoped,current)}</p><p class="window-line">${windowLabel(ds[0],latest)} · ${ds.length} days available in this ${s.range}-day view</p><section class="trends" aria-label="Trends">${chart(tasks.filter(t=>t.skill==='find'),ds,'find',s)}${chart(tasks.filter(t=>t.skill==='use'),ds,'use',s)}</section>`;
     if(s.metric && ds.includes(s.day)){
       const picked=tasks.filter(t=>t.skill===s.metric), stat=tally(picked,[s.day]);
       h+=`<aside class="point-detail"><strong>${esc(s.day)} · ${s.metric==='find'?'Discovery':'Named'} tasks</strong><span>${stat.pass}/${stat.n} passed · ${stat.infra} not counted · ${stat.missing} no result</span><a href="${esc(href(s,{metric:'',day:''}))}">Clear date</a><div>${picked.map(t=>{const a=get(t,s.day);return `<a href="${esc(href(s,{actor:t.subject,task:t.id,metric:'',day:s.day}))}">${badge(code(a))} ${esc(nice(t.subject))}</a>`;}).join('')}</div></aside>`;
     }
-    h+=comparison(cmp,s,tasks,ds);
+    h+=beforeAfterTable(tasks,ds,s);
     h+=`<details class="metric-help"><summary>What these numbers mean</summary><dl>${METRICS.map(m=>`<dt>${esc(m.label)}</dt><dd>${esc(m.help)}</dd>`).join('')}</dl></details>`;
     h+=`<section class="actors-section" aria-labelledby="actors-title"><div class="section-title"><div><h2 id="actors-title">Actors <span>${scoped.length}</span></h2><p>Latest outcome first. Counts cover the selected period.</p></div><div class="legend">${Object.keys(names).map(c=>`<span><i class="day-cell ${c}">${symbols[c]}</i>${names[c]}</span>`).join('')}</div></div><div class="column-head"><span>Actor</span><span>Discovery task</span><span>Named task</span><span>Recent outcomes <small class="date-head">${ds.slice(-7).map(d=>`<span>${d.slice(-2)}</span>`).join('')}</small></span></div><div class="actor-list">`;
     let previous='';
@@ -270,7 +232,7 @@ function application(raw) {
 function reportBoot(){
   var reportRaw=JSON.parse(document.getElementById('report-data').textContent); var reportApp=application(reportRaw); var main=document.getElementById('report');
   function enableForms(){var fs=document.querySelectorAll('form.marker-form');for(var i=0;i<fs.length;i++)fs[i].hidden=false;}
-  function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);enableForms();var el=s.actor&&s.task?document.getElementById('evidence-'+s.task):s.compare?document.getElementById('transitions'):s.how?document.getElementById('how-measured'):null;if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});}
+  function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);enableForms();var el=s.actor&&s.task?document.getElementById('evidence-'+s.task):s.how?document.getElementById('how-measured'):null;if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});}
   if(location.hash)draw(); else enableForms(); window.addEventListener('hashchange',draw);
   function applyMarker(f){var s=reportApp.state(location.hash);s.mark=f.elements.mark.value||'';location.hash='#'+new URLSearchParams(Object.entries(s).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';}));}
   document.addEventListener('submit',function(e){var f=e.target;if(!(f.matches&&f.matches('form.marker-form')))return;e.preventDefault();applyMarker(f);});

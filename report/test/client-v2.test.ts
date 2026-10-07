@@ -52,47 +52,6 @@ function model(observations: unknown[], days: string[]) {
 }
 
 describe('report v2 comparison', () => {
-    it('pairs tasks by id across the two latest canonical days and lists transitions', () => {
-        const app = application(
-            model(
-                [
-                    obs('a-find', '2026-09-24', 'pass', 1),
-                    obs('a-find', '2026-09-25', 'wrong-actor', 0),
-                    obs('a-use', '2026-09-24', 'fail'),
-                    obs('a-use', '2026-09-25', 'pass'),
-                    obs('b-find', '2026-09-24', 'pass', 1),
-                    obs('b-find', '2026-09-25', 'inconclusive', null, false), // not usable → omitted
-                    obs('b-use', '2026-09-25', 'pass'), // no previous result → omitted
-                ],
-                ['2026-09-24', '2026-09-25'],
-            ),
-        );
-        const html = app.render(app.state(''));
-        expect(html).toContain('Compared with the previous run');
-        expect(html).toContain('September 24 to 25, 2026');
-        // discovery: only a-find paired: pass → wrong-actor
-        const discoveryRow = html.slice(html.indexOf('Discovery tasks passed</th>'), html.indexOf('Named-Actor tasks passed</th>'));
-        expect(discoveryRow).toContain('Previous</span>1/1</td>');
-        expect(discoveryRow).toContain('Latest</span>0/1</td>');
-        expect(discoveryRow).toContain('−1 passed');
-        // named: only a-use paired: fail → pass
-        expect(html).toContain('+1 passed');
-        expect(html).toContain('left out: 1 discovery, 1 named');
-        expect(html).toContain('1 passed before and failed now');
-        expect(html).toContain('1 failed before and passed now');
-
-        const withList = app.render(app.state('#team=all&range=7&compare=discovery'));
-        expect(withList).toContain('Passed before, failed now <span>1</span>');
-        expect(withList).toContain('Latest evidence');
-    });
-
-    it('explains a missing baseline instead of showing zero fractions', () => {
-        const app = application(model([obs('a-find', '2026-09-25', 'pass', 1), obs('a-use', '2026-09-25', 'pass')], ['2026-09-25']));
-        const html = app.render(app.state(''));
-        expect(html).toContain('No earlier run to compare.');
-        expect(html).toContain('No earlier comparable run is available.');
-    });
-
     it('marks failed checks only on failing cells and mutes them on passing ones', () => {
         const app = application(
             model(
@@ -188,13 +147,14 @@ describe('report v2 change markers', () => {
         const html = app.render(app.state('#mark=2026-09-24'));
         expect(html).toContain('Before vs after September 24, 2026');
         expect(html).toContain('Calendar: September 21 to 23, 2026 before, September 24 to 25, 2026 from the marker');
-        const block = html.slice(html.indexOf('<div class="before-after">'), html.indexOf('</table>', html.indexOf('<div class="before-after">')));
+        const block = html.slice(html.indexOf('<section class="comparison before-after"'), html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')));
         expect(block).toMatch(/Discovery tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span><span class="muted">too few results on one side<\/span>/);
         // the chart carries a dashed marker line and the per-Actor detail the same split
         expect(html).toContain('change 2026-09-24</text>');
         expect(html).toContain('<li><span>Named-Actor tasks passed</span><b>0/3 → 2/2</b></li>');
         // links keep the marker
         expect(html).toContain('href="#team=google&amp;range=7&amp;mark=2026-09-24"');
+        expect(html).not.toContain('Compared with the previous run');
         // the form is hidden until the browser enables it, and lists only run dates in the period
         expect(html).toContain('<form class="marker-form" hidden>');
         expect(html).toContain('<option value="2026-09-24" selected>September 24, 2026</option>');
@@ -203,7 +163,7 @@ describe('report v2 change markers', () => {
     it('shows percentage points only when both sides have enough results', () => {
         const app = withMark();
         const html = app.render(app.state('#mark=2026-09-23'));
-        const block = html.slice(html.indexOf('<div class="before-after">'), html.indexOf('</table>', html.indexOf('<div class="before-after">')));
+        const block = html.slice(html.indexOf('<section class="comparison before-after"'), html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')));
         expect(block).toMatch(/Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td>/);
         expect(block).toContain('too few results on one side');
         const app2 = application(
@@ -213,7 +173,7 @@ describe('report v2 change markers', () => {
             ),
         );
         const html2 = app2.render(app2.state('#mark=2026-09-24'));
-        const block2 = html2.slice(html2.indexOf('<div class="before-after">'), html2.indexOf('</table>', html2.indexOf('<div class="before-after">')));
+        const block2 = html2.slice(html2.indexOf('<section class="comparison before-after"'), html2.indexOf('</table>', html2.indexOf('<section class="comparison before-after"')));
         expect(block2).toMatch(/Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>3\/6(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>4\/4(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>\+50 pp/);
     });
 
@@ -242,10 +202,30 @@ describe('report v2 change markers', () => {
             ),
         );
         const html = app.render(app.state('#mark=2026-09-24'));
-        const block = html.slice(html.indexOf('<div class="before-after">'), html.indexOf('</table>', html.indexOf('<div class="before-after">')));
+        const block = html.slice(html.indexOf('<section class="comparison before-after"'), html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')));
         expect(block).toMatch(/Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/1<small class="days">1 day<\/small><\/td><td><span[^>]*>[^<]*<\/span>1\/1<small class="days">1 day<\/small>/);
         // selection was never measured, so no eligible results and no day count
         expect(block).toMatch(/Expected Actor selected<\/th><td><span[^>]*>[^<]*<\/span>No eligible results<\/td>/);
         expect(html).toContain('<form class="marker-form" hidden>');
+    });
+});
+
+describe('report v2 marker picker', () => {
+    it('lists only run dates of the selected period and keeps a marker from outside it', () => {
+        const app = application(
+            model(
+                [obs('a-use', '2026-09-21', 'fail'), obs('a-use', '2026-09-25', 'pass'), obs('a-use', '2026-09-30', 'pass')],
+                ['2026-09-21', '2026-09-25', '2026-09-30'],
+            ),
+        );
+        const html = app.render(app.state('#range=7'));
+        const select = html.slice(html.indexOf('<select name="mark">'), html.indexOf('</select>'));
+        expect(select.match(/<option/g)?.length).toBe(3); // none + the two run dates inside the 7-day window
+        expect(select).toContain('2026-09-25');
+        expect(select).toContain('2026-09-30');
+        expect(select).not.toMatch(/2026-09-2[2-4]/);
+        const kept = app.render(app.state('#range=7&mark=2026-09-21'));
+        expect(kept).toContain('<option value="2026-09-21" selected>September 21, 2026 (outside this period)</option>');
+        expect(kept).toContain('No results before the marker in this period');
     });
 });
