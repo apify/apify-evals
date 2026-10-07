@@ -17,9 +17,14 @@ function application(raw) {
     {id:'notcounted',label:'Not counted',help:'A failure in the evaluation infrastructure prevented this task from counting.'},
     {id:'noresult',label:'No result',help:'An expected task has no recorded attempt or is still awaiting a verdict.'},
     {id:'failedchecks',label:'Failed checks',help:'These recorded checks failed in the selected attempt; the comments explain what each check tested.'},
-    {id:'change',label:'Change',help:'This compares the same tasks with usable results in both labeled runs.'}
+    {id:'change',label:'Change',help:'Percentage points between the after and before fractions, shown only when both sides have at least 3 eligible results.'},
+    {id:'fixarea',label:'Suggested fix area',help:"The judge's diagnosis of what to change first after a failed attempt. A suggestion, not a proven cause."},
+    {id:'alternative',label:'Alternative reported',help:'In a discovery task that did not pass, the Actor the agent ran instead of the expected one, as recorded by the harness.'},
+    {id:'marker',label:'Change marker',help:'A date you choose, such as the day a README fix went live. Results from that date on count as after; results before it count as before. The daily run is at 06:00 UTC, so a change made later in the day belongs on the next date.'}
   ];
   const metricDef = id => METRICS.find(m=>m.id===id) || {label:id,help:''};
+  const fixAreaDefs = raw.fixAreas || [];
+  const fixAreaDef = id => fixAreaDefs.find(f=>f.id===id) || {id, label:id, description:''};
   const canonical = raw.observations;
   const days = raw.days.length ? raw.days.slice() : [...new Set(canonical.map(x=>x.day))].sort();
   const latest = days.at(-1);
@@ -44,9 +49,15 @@ function application(raw) {
     const as=listFor(tasks,ds), ok=as.filter(valid), sel=as.filter(a=>selected(a)!==null);
     return {pass:ok.filter(a=>code(a)==='P').length,n:ok.length,sel:sel.filter(a=>selected(a)===1).length,sn:sel.length,infra:as.filter(a=>code(a)==='I').length,missing:tasks.length*ds.length-as.filter(a=>code(a)!=='U').length,total:tasks.length*ds.length};
   }
+  /** A real calendar date in YYYY-MM-DD (UTC), else ''. */
+  function validDate(v) {
+    if(!v||!/^\d{4}-\d{2}-\d{2}$/.test(v))return '';
+    const d=new Date(v+'T00:00:00Z');
+    return Number.isNaN(d.getTime())||d.toISOString().slice(0,10)!==v?'':v;
+  }
   function state(hash='') {
     const p=new URLSearchParams(hash.replace(/^#/,''));
-    return {team:teams.includes(p.get('team'))?p.get('team'):'all',range:[7,28,90].includes(+p.get('range'))?+p.get('range'):7,actor:p.has('actor')?p.get('actor'):'',task:p.get('task')||'',day:p.get('day')||'',metric:p.get('metric')||'',compare:['selection','discovery','named','all'].includes(p.get('compare'))?p.get('compare'):'',how:p.get('how')==='1'?'1':''};
+    return {team:teams.includes(p.get('team'))?p.get('team'):'all',range:[7,28,90].includes(+p.get('range'))?+p.get('range'):7,actor:p.has('actor')?p.get('actor'):'',task:p.get('task')||'',day:p.get('day')||'',metric:p.get('metric')||'',how:p.get('how')==='1'?'1':'',mark:validDate(p.get('mark'))};
   }
   function overall(actor) { const a=actor.tasks.map(t=>get(t,latest)); return a.some(x=>['F','W'].includes(code(x)))?0:a.every(x=>code(x)==='P')?2:1; }
   function chart(tasks,ds,skill,s) {
@@ -65,6 +76,11 @@ function application(raw) {
         svg+=`<a href="${esc(href(s,{day:d.day,metric:skill}))}" aria-label="${esc(tip)}"><circle cx="${x(i)}" cy="${y(d[se.field]/d[se.denom]*100)}" r="5" fill="${se.dash?'white':se.color}" stroke="${se.color}" stroke-width="2"><title>${esc(tip)}</title></circle></a>`;
       });
     }
+    const mi=s.mark?ds.indexOf(s.mark):-1;
+    if(mi>=0){
+      const step=data.length>1?480/(data.length-1):0, mx=mi>0?x(mi)-step/2:x(0)-10, anchor=mi===0?'start':mi===data.length-1?'end':'middle';
+      svg+=`<line x1="${mx}" y1="22" x2="${mx}" y2="170" stroke="#a63d27" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${mx}" y="14" text-anchor="${anchor}" fill="#a63d27">change ${esc(s.mark)}</text>`;
+    }
     data.forEach((d,i)=>{
       const width=Math.min(36,400/data.length);
       svg+=`<rect x="${x(i)-width/2}" y="164" width="${width}" height="6" rx="2" fill="#e1e5eb"/><rect x="${x(i)-width/2}" y="164" width="${d.total?width*d.n/d.total:0}" height="6" rx="2" fill="${color}"/>`;
@@ -74,51 +90,88 @@ function application(raw) {
     const exact=`<details class="chart-values"><summary>Exact counts and coverage</summary><table><thead><tr><th>Date</th>${skill==='find'?'<th>Selected</th>':''}<th>Passed</th><th>Eligible</th><th>Not counted</th><th>No result</th></tr></thead><tbody>${data.map(d=>`<tr><td>${d.day}</td>${skill==='find'?`<td>${d.sel}/${d.sn}</td>`:''}<td>${d.pass}/${d.n}</td><td>${d.n}/${d.total}</td><td>${d.infra}</td><td>${d.missing}</td></tr>`).join('')}</tbody></table></details>`;
     return `<article class="chart"><div class="chart-top"><div><h3>${skill==='find'?'Discovery tasks':'Named-Actor tasks'}</h3><p>${skill==='find'?'The agent chooses an Actor.':'The prompt specifies the Actor.'}</p></div><div class="chart-stat">${last.n?Math.round(last.pass/last.n*100)+'%':'N/A'}<small>${last.pass}/${last.n} passed latest</small></div></div><div class="chart-key"><span style="--series:${color}">● Task passed</span>${skill==='find'?'<span class="dashed">○ Expected Actor selected</span>':''}</div>${svg}<div class="coverage-caption">Bars: eligible / expected evaluations</div>${exact}</article>`;
   }
-  function compare(tasks) {
-    const prev=days.length>1?days[days.length-2]:null;
-    if(!prev)return null;
+  /** Pooled eligible results before and from the marked date, over the selected period. */
+  function beforeAfter(tasks,ds,mark) {
+    const before=ds.filter(d=>d<mark), after=ds.filter(d=>d>=mark);
     const find=tasks.filter(t=>t.skill==='find'), use=tasks.filter(t=>t.skill==='use');
-    const pairs=(ts,ok)=>ts.map(t=>({t,a:get(t,prev),b:get(t,latest)})).filter(p=>ok(p.a)&&ok(p.b));
-    const mk=(id,ts,ok,val,words)=>{
-      const ps=pairs(ts,ok), before=ps.filter(p=>val(p.a)).length, after=ps.filter(p=>val(p.b)).length;
-      return {id,label:metricDef(id).label,n:ps.length,before,after,delta:after-before,down:ps.filter(p=>val(p.a)&&!val(p.b)),up:ps.filter(p=>!val(p.a)&&val(p.b)),omitted:ts.length-ps.length,words};
+    const side=(ts,dd,num,den)=>{const c=tally(ts,dd);const withResults=dd.filter(d=>tally(ts,[d])[den]>0).length;return {num:c[num],den:c[den],days:withResults};};
+    const row=(id,ts,num,den,unit)=>{
+      const b=side(ts,before,num,den), a=side(ts,after,num,den);
+      const enough=b.den>=3&&a.den>=3;
+      const pp=enough?Math.round((a.num/a.den-b.num/b.den)*100):null;
+      return {id,label:metricDef(id).label,unit,before:b,after:a,pp};
     };
-    const gap=Math.round((new Date(latest+'T00:00:00Z')-new Date(prev+'T00:00:00Z'))/864e5)-1;
-    return {prev,latest,gap,rows:[
-      mk('selection',find,a=>selected(a)!==null,a=>selected(a)===1,{unit:'selected',down:'Selected before, not selected now',up:'Not selected before, selected now'}),
-      mk('discovery',find,valid,a=>code(a)==='P',{unit:'passed',down:'Passed before, failed now',up:'Failed before, passed now'}),
-      mk('named',use,valid,a=>code(a)==='P',{unit:'passed',down:'Passed before, failed now',up:'Failed before, passed now'})
-    ]};
+    return {mark,before,after,rows:[row('selection',find,'sel','sn','selected'),row('discovery',find,'pass','n','passed'),row('named',use,'pass','n','passed')]};
   }
-  const deltaText = r => r.n===0?'No tasks could be compared':r.delta===0?'No net change':(r.delta>0?'+':'−')+Math.abs(r.delta)+' '+r.words.unit;
-  function transitions(cmp,s) {
-    const rows=s.compare==='all'?cmp.rows.filter(r=>r.id!=='selection'):cmp.rows.filter(r=>r.id===s.compare);
-    const item=p=>`<li>${badge(code(p.a))}<span class="arrow" aria-hidden="true">→</span>${badge(code(p.b))}<span class="who"><strong>${esc(nice(p.t.subject))}</strong> · ${esc(p.t.title)}</span><span class="links"><a data-history="1" href="${esc(href(s,{actor:p.t.subject,task:p.t.id,day:latest,metric:'',compare:''}))}">Latest evidence</a><a data-history="1" href="${esc(href(s,{actor:p.t.subject,task:p.t.id,day:cmp.prev,metric:'',compare:''}))}">Previous</a></span></li>`;
-    const group=(title,list)=>`<div class="transition-group"><h4>${esc(title)} <span>${list.length}</span></h4>${list.length?`<ul>${list.map(item).join('')}</ul>`:'<p class="muted">None</p>'}</div>`;
-    return `<div class="transitions" id="transitions"><div class="transitions-head"><strong>${rows.map(r=>r.label).join(' and ')} · ${longDate(cmp.prev)} → ${longDate(cmp.latest)}</strong><a href="${esc(href(s,{compare:''}))}">Close</a></div>${rows.map(r=>`${rows.length>1?`<h3>${esc(r.label)}</h3>`:''}${group(r.words.down,r.down)}${group(r.words.up,r.up)}`).join('')}</div>`;
+  const frac=x=>x.den?`${x.num}/${x.den}`:'No eligible results';
+  function beforeAfterTable(tasks,ds,s) {
+    const form=`<form class="marker-form" hidden><label>Change marker <input type="date" name="mark" min="${days[0]}" max="${latest}" value="${esc(s.mark)}"></label>${s.mark?`<a href="${esc(href(s,{mark:''}))}">Clear</a>`:''}</form>`;
+    if(!s.mark)return `<section class="comparison before-after" aria-labelledby="before-after-title"><div class="comparison-head"><h2 id="before-after-title">Did a change help?</h2>${form}</div><p class="comparison-note">Pick the date a change went live (a README fix, a schema change) to compare results before and from that date. Any date between ${esc(longDate(days[0]))} and ${esc(longDate(latest))} works; it does not need to be a run date.</p></section>`;
+    const span=dd=>dd.length?windowLabel(dd[0],dd.at(-1)):'none';
+    const ba=beforeAfter(tasks,ds,s.mark);
+    const notes=[];
+    if(s.mark<days[0])notes.push(`The marker is before the earliest loaded result (${longDate(days[0])}), so nothing can be compared.`);
+    else if(s.mark>latest)notes.push(`The marker is after the latest loaded result (${longDate(latest)}), so nothing can be compared.`);
+    else if(!ba.before.length)notes.push('No results before the marker in this period; choose a longer period to see the before side.');
+    const rows=ba.rows.map(r=>{
+      const change=r.pp===null?(r.before.den&&r.after.den?'<span class="muted">too few results on one side</span>':'<span class="muted">—</span>'):`${r.pp>0?'+':r.pp<0?'−':''}${Math.abs(r.pp)} pp`;
+      const cell=(x,label)=>`<td><span class="comparison-field" aria-hidden="true">${label}</span>${frac(x)}${x.den?`<small class="days">${x.days} day${x.days===1?'':'s'}</small>`:''}</td>`;
+      return `<tr><th scope="row" title="${esc(metricDef(r.id).help)}">${esc(r.label)}</th>${cell(r.before,'Before')}${cell(r.after,'After')}<td><span class="comparison-field" aria-hidden="true">Change</span>${change}</td></tr>`;
+    }).join('');
+    const dayCounts=`Calendar: ${span(ba.before)} before, ${span(ba.after)} from the marker. Day counts in the cells are dates with eligible results for that measure`;
+    return `<section class="comparison before-after" aria-labelledby="before-after-title"><div class="comparison-head"><h2 id="before-after-title">Before vs after ${esc(longDate(s.mark))}</h2>${form}</div><p class="comparison-note">${esc(dayCounts)}. Pooled over every eligible task result in the selected period; not matched by task.</p>${notes.length?`<p class="comparison-note">${esc(notes.join(' '))}</p>`:''}<table class="comparison-table" aria-labelledby="before-after-title"><thead><tr><th scope="col">Measure</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead><tbody>${rows}</tbody></table><p class="comparison-note comparison-foot">Results on the marked date count as after; the daily run is at 06:00 UTC, so a change made later in the day belongs on the next date. Percentage points are shown only when both sides have at least 3 eligible results. A changed scenario set shifts both sides. This comparison does not establish that the change caused the difference.</p></section>`;
   }
-  function comparison(cmp,s) {
-    if(!cmp)return `<section class="comparison" aria-labelledby="comparison-title"><div class="comparison-head"><h2 id="comparison-title">Compared with the previous run</h2></div><p class="comparison-note">No earlier run to compare.</p></section>`;
-    const when=cmp.gap>0?`${longDate(cmp.prev)} to ${longDate(cmp.latest)} · no scheduled result on the ${cmp.gap===1?'day':cmp.gap+' days'} between`:windowLabel(cmp.prev,cmp.latest);
-    const rowsHtml=cmp.rows.map(r=>`<tr><th scope="row" title="${esc(metricDef(r.id).help)}">${esc(r.label)}</th><td><span class="comparison-field" aria-hidden="true">Previous</span>${r.n?`${r.before}/${r.n}`:'—'}</td><td><span class="comparison-field" aria-hidden="true">Latest</span>${r.n?`${r.after}/${r.n}`:'—'}</td><td><span class="comparison-field" aria-hidden="true">Change</span>${r.n&&(r.down.length||r.up.length)?`<a href="${esc(href(s,{compare:r.id,actor:'',task:'',day:'',metric:''}))}" aria-current="${s.compare===r.id}">${deltaText(r)}</a>`:deltaText(r)}</td></tr>`).join('');
-    const [sel,disc,named]=cmp.rows;
-    const foot=[];
-    if(disc.omitted||named.omitted)foot.push(`Tasks without a usable result on both dates are left out: ${disc.omitted} discovery, ${named.omitted} named.`);
-    if(sel.omitted>disc.omitted)foot.push(`Selection was not measured for ${sel.omitted-disc.omitted} discovery task${sel.omitted-disc.omitted>1?'s':''}.`);
-    foot.push('Task and scoring versions were not recorded; results are matched by task ID.');
-    return `<section class="comparison" aria-labelledby="comparison-title"><div class="comparison-head"><h2 id="comparison-title">Compared with the previous run</h2><p>${esc(when)}</p></div><p class="comparison-note" id="comparison-note">Matched by task ID; only tasks scored in both runs count here. Click a change to list the tasks behind it.</p><table class="comparison-table" aria-labelledby="comparison-title" aria-describedby="comparison-note"><thead><tr><th scope="col">Measure</th><th scope="col">Previous</th><th scope="col">Latest</th><th scope="col" title="${esc(metricDef('change').help)}">Change</th></tr></thead><tbody>${rowsHtml}</tbody></table><p class="comparison-note comparison-foot">${esc(foot.join(' '))}</p>${s.compare?transitions(cmp,s):''}</section>`;
-  }
-  function summary(scoped,current,cmp,s) {
+  function summary(scoped,current) {
     const fail=scoped.filter(a=>overall(a)===0).length;
     let h=`<strong>${fail} of ${scoped.length} Actors had a failing task in the latest run.</strong> `;
     const unusable=current.total-current.n;
     if(unusable>0)h+=`${unusable} of ${current.total} task results in the latest run have no usable verdict. `;
-    if(!cmp)return h+'No earlier comparable run is available.';
-    const [,disc,named]=cmp.rows, down=disc.down.length+named.down.length, up=disc.up.length+named.up.length, paired=disc.n+named.n;
-    if(!paired)return h+`No tasks could be compared with the run on ${longDate(cmp.prev)}.`;
-    if(!down&&!up)return h+`No pass/fail outcomes changed among the ${paired} tasks compared with ${longDate(cmp.prev)}.`;
-    const link=(n,txt)=>n?`<a href="${esc(href(s,{compare:'all',actor:'',task:'',day:'',metric:''}))}">${n} ${txt}</a>`:`${n} ${txt}`;
-    return h+`Among the ${paired} tasks scored on both ${longDate(cmp.prev)} and ${longDate(cmp.latest)}, ${link(down,'passed before and failed now')}; ${link(up,'failed before and passed now')}.`;
+    return h+'Expand an Actor for its evidence, fix areas and alternatives.';
+  }
+  const byTaskId = new Map(raw.expected.map(t=>[t.id,t]));
+  const ourActors = new Set(raw.expected.map(t=>t.subject));
+  /** Failed attempts (F or W after the infrastructure override) of these tasks on these dates, with the judge's fix areas and the alternatives the agent reported. */
+  function patterns(tasks,ds) {
+    const fails=listFor(tasks,ds).filter(a=>['F','W'].includes(code(a)));
+    const areas=new Map(); let noFix=0;
+    const alts=new Map(); let noActor=0;
+    for(const a of fails){
+      const t=byTaskId.get(a.scenarioId);
+      const id=a.fixArea&&a.fixArea!=='none'?a.fixArea:null;
+      if(!id)noFix++; else { const e=areas.get(id)||{id,n:0,subjects:new Set()}; e.n++; e.subjects.add(t?.subject); areas.set(id,e); }
+      if(t?.skill!=='find')continue;
+      const sc=a.subjectCalled;
+      if(!sc||sc==='intended')continue;
+      if(sc==='none'){noActor++;continue;}
+      const e=alts.get(sc)||{id:sc,n:0,lost:new Map()}; e.n++; e.lost.set(t.subject,(e.lost.get(t.subject)||0)+1); alts.set(sc,e);
+    }
+    const byN=(x,y)=>y.n-x.n||x.id.localeCompare(y.id);
+    return {failures:fails.length,noFix,areas:[...areas.values()].sort(byN),alts:[...alts.values()].sort(byN),noActor};
+  }
+  const plural=(n,w)=>`${n} ${w}${n===1?'':'s'}`;
+  /** One line for the Actor row: the plurality fix area over the period, ties listed. */
+  function patternLine(a,ds) {
+    const p=patterns(a.tasks,ds);
+    if(!p.failures||!p.areas.length)return '';
+    const top=p.areas[0].n, tops=p.areas.filter(x=>x.n===top);
+    const label=tops.map(x=>fixAreaDef(x.id).label).join(', ');
+    return `<span class="pattern" title="${esc(tops.map(x=>fixAreaDef(x.id).description).filter(Boolean).join(' '))}">Top suggested fix${tops.length>1?'es':''}: ${esc(label)} (${top}${tops.length>1?' each':''} of ${plural(p.failures,'failure')})</span>`;
+  }
+  function altLink(id){ return `<a href="https://apify.com/${esc(id)}" target="_blank" rel="noreferrer">${esc(id)}</a>${ourActors.has(id)?' <span class="ours">ours</span>':''}`; }
+  /** Inside the Actor detail: every fix area and every alternative over the period. */
+  function markerLines(a,ds,s) {
+    if(!s.mark)return '';
+    const ba=beforeAfter(a.tasks,ds,s.mark);
+    const rows=ba.rows.filter(r=>r.id!=='selection'||a.tasks.some(t=>t.skill==='find'));
+    return `<div class="marker-lines"><h5>Before vs after ${esc(longDate(s.mark))}</h5><ul class="pattern-list">${rows.map(r=>`<li><span>${esc(r.label)}</span><b>${frac(r.before)} → ${frac(r.after)}</b></li>`).join('')}</ul></div>`;
+  }
+  function patternsBlock(a,ds,s) {
+    const p=patterns(a.tasks,ds);
+    const period=windowLabel(ds[0],ds.at(-1));
+    if(!p.failures)return `<div class="patterns-detail"><div><h5>Over ${esc(period)}</h5><p class="small">No failed attempts in this period.</p></div>${markerLines(a,ds,s)}</div>`;
+    const areas=p.areas.map(x=>`<li><span title="${esc(fixAreaDef(x.id).description)}">${esc(fixAreaDef(x.id).label)}</span><b>${x.n}</b></li>`).join('')+(p.noFix?`<li><span class="muted">No suggested fix recorded</span><b>${p.noFix}</b></li>`:'');
+    const alts=p.alts.map(x=>`<li><span>${altLink(x.id)}</span><b>${x.n}</b></li>`).join('')+(p.noActor?`<li><span class="muted">No Actor reported</span><b>${p.noActor}</b></li>`:'');
+    return `<div class="patterns-detail"><div><h5>Judge's suggested fix areas · ${plural(p.failures,'failed attempt')} over ${esc(period)}</h5><ul class="pattern-list">${areas}</ul><p class="small">Diagnoses, not proven causes. Read the evidence before changing the Actor.</p></div><div><h5>Alternatives the agent reported instead</h5>${alts?`<ul class="pattern-list">${alts}</ul>`:'<p class="small">None recorded on discovery tasks in this period.</p>'}</div>${markerLines(a,ds,s)}</div>`;
   }
   function metric(a,tasks,ds,skill,s) {
     if(!tasks.length)return '<span class="muted">No task</span>';
@@ -127,11 +180,11 @@ function application(raw) {
     const word=tasks.length>1?`${now.filter(a=>code(a)==='P').length}/${tasks.length} passed latest`:names[outcome];
     const failed=now.flatMap((at,i)=>(at?.failedChecks||[]).map(k=>({task:tasks[i],k})));
     const firstBad=tasks.find((t,i)=>['F','W'].includes(cs[i]))||tasks[0];
-    const link=(txt,task,aria)=>`<a class="cell-note fail" data-history="1" href="${esc(href(s,{actor:a.id,task:task.id,day:latest,metric:'',compare:''}))}" aria-label="${esc(aria)}">${txt}</a>`;
+    const link=(txt,task,aria)=>`<a class="cell-note fail" data-history="1" href="${esc(href(s,{actor:a.id,task:task.id,day:latest,metric:''}))}" aria-label="${esc(aria)}">${txt}</a>`;
     const kind=skill==='find'?'discovery':'named';
     let note='';
     if(failed.length&&(outcome==='F'||outcome==='W'))note=link(`× ${failed.length} failed check${failed.length>1?'s':''}`,failed[0].task,`${failed.length} failed checks across this Actor's latest ${kind} tasks. Opens the evidence.`);
-    else if(failed.length)note=`<a class="cell-note muted" data-history="1" href="${esc(href(s,{actor:a.id,task:failed[0].task.id,day:latest,metric:'',compare:''}))}" aria-label="${failed.length} recorded check${failed.length>1?'s':''} failed, but the task still passed. Opens the evidence.">${failed.length} check${failed.length>1?'s':''} failed, task still passed</a>`;
+    else if(failed.length)note=`<a class="cell-note muted" data-history="1" href="${esc(href(s,{actor:a.id,task:failed[0].task.id,day:latest,metric:''}))}" aria-label="${failed.length} recorded check${failed.length>1?'s':''} failed, but the task still passed. Opens the evidence.">${failed.length} check${failed.length>1?'s':''} failed, task still passed</a>`;
     else if(outcome==='F'||outcome==='W')note=link("See judge's finding",firstBad,"No recorded check failed; the judge's finding explains the outcome. Opens the evidence.");
     else if(outcome==='I')note=`<span class="cell-note muted" title="${esc(metricDef('notcounted').help)}">Test did not count</span>`;
     else if(outcome==='U')note=`<span class="cell-note muted" title="${esc(metricDef('noresult').help)}">Result pending or missing</span>`;
@@ -146,25 +199,24 @@ function application(raw) {
     const checks=(at?.failedChecks||[]).map(k=>`<li><code>${esc(k)}</code><span>${esc(score(at,'check.'+k)?.comment||'Failed')}</span></li>`).join('');
     const diagnosis=score(at,'judge.fixArea')?.comment;
     const selectedText=t.skill==='find'?(selected(at)===1?'Expected Actor selected':selected(at)===0?'Expected Actor not selected':'Selection not measured'):'';
-    return `<article class="evidence${s.task===t.id?' selected-evidence':''}" id="evidence-${esc(t.id)}"><div class="evidence-title"><h4>${taskLabel}</h4>${badge(c)}<span class="muted">${esc(at?.day||latest)}</span></div><p class="task-prompt">${esc(t.prompt)}</p><div class="evidence-columns"><div><h5>Observed result</h5><p>${esc(at?.judgeComment?.replace(/^(FAIL|PASS):\s*/, '')||(c==='I'?(score(at,'check.infra')?.comment||'Infrastructure failure; excluded from rates.'):'No result is available for this date.'))}</p>${selectedText?`<p class="selection-note">${esc(selectedText)}</p>`:''}${at?.subjectCalled && at.subjectCalled!=='intended'?`<p class="small">Reported alternative: <code>${esc(at.subjectCalled)}</code></p>`:''}${checks?`<ul class="checks">${checks}</ul>`:''}</div><div><h5>Judge's suggested fix area</h5><p class="fix-area">${esc(at?.fixArea||'Not available')}</p><p class="small">${esc(diagnosis||'No additional diagnosis recorded.')}</p>${score(at,'judge.disagreement')?.value===1?`<div class="disagreement">Check/judge disagreement. Hard checks: ${score(at,'check.all')?.value===1?'passed':score(at,'check.all')?.value===0?'failed':'not recorded'}. Task-completion rubric: ${score(at,'rubric.taskCompletion')?.value===1?'passed':'failed or unavailable'}.</div>`:''}</div></div><div class="evidence-foot">${at?.traceUrl?`<a href="${esc(at.traceUrl)}" target="_blank" rel="noreferrer">Open full session ↗</a>`:''}<details><summary>Task ID</summary><code>${esc(t.id)}</code></details></div><details class="attempt-history"><summary>All ${ds.length} daily results for this task</summary><table><thead><tr><th>Date</th><th>Outcome</th><th>Evidence</th><th>Session</th></tr></thead><tbody>${[...ds].reverse().map(d=>{const x=get(t,d);return `<tr><td>${d}</td><td>${badge(code(x))}</td><td>${esc(x?.judgeComment||'No result')}</td><td>${x?`<a href="${esc(x.traceUrl)}">Open</a>`:''}</td></tr>`;}).join('')}</tbody></table></details></article>`;
+    return `<article class="evidence${s.task===t.id?' selected-evidence':''}" id="evidence-${esc(t.id)}"><div class="evidence-title"><h4>${taskLabel}</h4>${badge(c)}<span class="muted">${esc(at?.day||latest)}</span></div><p class="task-prompt">${esc(t.prompt)}</p><div class="evidence-columns"><div><h5>Observed result</h5><p>${esc(at?.judgeComment?.replace(/^(FAIL|PASS):\s*/, '')||(c==='I'?(score(at,'check.infra')?.comment||'Infrastructure failure; excluded from rates.'):'No result is available for this date.'))}</p>${selectedText?`<p class="selection-note">${esc(selectedText)}</p>`:''}${at?.subjectCalled && at.subjectCalled!=='intended'?`<p class="small">Reported alternative: <code>${esc(at.subjectCalled)}</code></p>`:''}${checks?`<ul class="checks">${checks}</ul>`:''}</div><div><h5>Judge's suggested fix area</h5><p class="fix-area" title="${esc(at?.fixArea?fixAreaDef(at.fixArea).description:'')}">${esc(at?.fixArea==='none'?'None, nothing to fix':at?.fixArea?fixAreaDef(at.fixArea).label:'Not available')}</p><p class="small">${esc(diagnosis||'No additional diagnosis recorded.')}</p>${score(at,'judge.disagreement')?.value===1?`<div class="disagreement">Check/judge disagreement. Hard checks: ${score(at,'check.all')?.value===1?'passed':score(at,'check.all')?.value===0?'failed':'not recorded'}. Task-completion rubric: ${score(at,'rubric.taskCompletion')?.value===1?'passed':'failed or unavailable'}.</div>`:''}</div></div><div class="evidence-foot">${at?.traceUrl?`<a href="${esc(at.traceUrl)}" target="_blank" rel="noreferrer">Open full session ↗</a>`:''}<details><summary>Task ID</summary><code>${esc(t.id)}</code></details></div><details class="attempt-history"><summary>All ${ds.length} daily results for this task</summary><table><thead><tr><th>Date</th><th>Outcome</th><th>Evidence</th><th>Session</th></tr></thead><tbody>${[...ds].reverse().map(d=>{const x=get(t,d);return `<tr><td>${d}</td><td>${badge(code(x))}</td><td>${esc(x?.judgeComment||'No result')}</td><td>${x?`<a href="${esc(x.traceUrl)}">Open</a>`:''}</td></tr>`;}).join('')}</tbody></table></details></article>`;
   }
   function render(s) {
     const ds=dates(s.range), scoped=actors.filter(a=>s.team==='all'||a.team===s.team), tasks=scoped.flatMap(a=>a.tasks), totals=tally(tasks,ds), current=tally(tasks,[latest]);
-    const cmp=compare(tasks);
     const ordered=scoped.slice().sort((a,b)=>a.team.localeCompare(b.team)||overall(a)-overall(b)||a.id.localeCompare(b.id));
-    let h=`<header class="page-header"><div><p class="eyebrow">Apify · Agent evaluations</p><h1>Can agents find and use your Actors?</h1><p class="subtitle">Daily tests of selection and task completion.</p><a class="how-link" data-history="1" href="${esc(href(s,{how:'1'}))}">How this is measured</a></div><div class="freshness">Latest run <strong>${longDate(latest)}</strong><span>${current.n}/${current.total} eligible · ${current.infra} not counted · ${current.missing} no result</span></div></header><nav class="scope" aria-label="Report scope"><div class="team-tabs">${['all',...teams].map(t=>`<a class="${t===s.team?'active':''}" href="${esc(href(s,{team:t,actor:'',task:'',day:'',metric:'',compare:''}))}" ${t===s.team?'aria-current="true"':''}>${t==='all'?'All teams':cap(t)}</a>`).join('')}</div><div class="period"><span>Period</span>${[7,28,90].map(r=>`<a href="${esc(href(s,{range:r}))}" class="${r===s.range?'active':''}">${r} days</a>`).join('')}</div></nav><p class="summary">${summary(scoped,current,cmp,s)}</p><p class="window-line">${windowLabel(ds[0],latest)} · ${ds.length} days available in this ${s.range}-day view</p><section class="trends" aria-label="Trends">${chart(tasks.filter(t=>t.skill==='find'),ds,'find',s)}${chart(tasks.filter(t=>t.skill==='use'),ds,'use',s)}</section>`;
+    let h=`<header class="page-header"><div><p class="eyebrow">Apify · Agent evaluations</p><h1>Can agents find and use your Actors?</h1><p class="subtitle">Daily tests of selection and task completion.</p><a class="how-link" data-history="1" href="${esc(href(s,{how:'1'}))}">How this is measured</a></div><div class="freshness">Latest run <strong>${longDate(latest)}</strong><span>${current.n}/${current.total} eligible · ${current.infra} not counted · ${current.missing} no result</span></div></header><nav class="scope" aria-label="Report scope"><div class="team-tabs">${['all',...teams].map(t=>`<a class="${t===s.team?'active':''}" href="${esc(href(s,{team:t,actor:'',task:'',day:'',metric:''}))}" ${t===s.team?'aria-current="true"':''}>${t==='all'?'All teams':cap(t)}</a>`).join('')}</div><div class="period"><span>Period</span>${[7,28,90].map(r=>`<a href="${esc(href(s,{range:r}))}" class="${r===s.range?'active':''}">${r} days</a>`).join('')}</div></nav><p class="summary">${summary(scoped,current)}</p><p class="window-line">${windowLabel(ds[0],latest)} · ${ds.length} days available in this ${s.range}-day view</p><section class="trends" aria-label="Trends">${chart(tasks.filter(t=>t.skill==='find'),ds,'find',s)}${chart(tasks.filter(t=>t.skill==='use'),ds,'use',s)}</section>`;
     if(s.metric && ds.includes(s.day)){
       const picked=tasks.filter(t=>t.skill===s.metric), stat=tally(picked,[s.day]);
       h+=`<aside class="point-detail"><strong>${esc(s.day)} · ${s.metric==='find'?'Discovery':'Named'} tasks</strong><span>${stat.pass}/${stat.n} passed · ${stat.infra} not counted · ${stat.missing} no result</span><a href="${esc(href(s,{metric:'',day:''}))}">Clear date</a><div>${picked.map(t=>{const a=get(t,s.day);return `<a href="${esc(href(s,{actor:t.subject,task:t.id,metric:'',day:s.day}))}">${badge(code(a))} ${esc(nice(t.subject))}</a>`;}).join('')}</div></aside>`;
     }
-    h+=comparison(cmp,s);
+    h+=beforeAfterTable(tasks,ds,s);
     h+=`<details class="metric-help"><summary>What these numbers mean</summary><dl>${METRICS.map(m=>`<dt>${esc(m.label)}</dt><dd>${esc(m.help)}</dd>`).join('')}</dl></details>`;
     h+=`<section class="actors-section" aria-labelledby="actors-title"><div class="section-title"><div><h2 id="actors-title">Actors <span>${scoped.length}</span></h2><p>Latest outcome first. Counts cover the selected period.</p></div><div class="legend">${Object.keys(names).map(c=>`<span><i class="day-cell ${c}">${symbols[c]}</i>${names[c]}</span>`).join('')}</div></div><div class="column-head"><span>Actor</span><span>Discovery task</span><span>Named task</span><span>Recent outcomes <small class="date-head">${ds.slice(-7).map(d=>`<span>${d.slice(-2)}</span>`).join('')}</small></span></div><div class="actor-list">`;
     let previous='';
     for(const a of ordered){
       if(s.team==='all'&&a.team!==previous){h+=`<div class="team-divider">${cap(a.team)} <span>${scoped.filter(x=>x.team===a.team).length} Actors</span></div>`;previous=a.team;}
       const open=a.id===s.actor;
-      h+=`<details class="actor" data-actor="${esc(a.id)}" id="actor-${a.id.replace(/[^a-z0-9]/gi,'-')}" ${open?'open':''}><summary class="actor-row"><div class="actor-name"><span class="chevron">›</span><div><strong>${esc(a.name)}</strong><span>${esc(a.team)}${a.tasks.length!==2?' · '+a.tasks.length+' tasks':''}</span></div></div><div class="metric"><span class="mobile-label">Discovery</span>${metric(a,a.tasks.filter(t=>t.skill==='find'),ds,'find',s)}</div><div class="metric"><span class="mobile-label">Named task</span>${metric(a,a.tasks.filter(t=>t.skill==='use'),ds,'use',s)}</div>${history(a,ds,s)}</summary><div class="actor-detail"><div class="detail-heading"><span>Tasks and evidence</span><a href="https://apify.com/${esc(a.id)}" target="_blank" rel="noreferrer">${esc(a.id)} ↗</a></div>${a.tasks.map(t=>evidence(t,get(t,s.task===t.id&&ds.includes(s.day)?s.day:latest),s,ds)).join('')}</div></details>`;
+      h+=`<details class="actor" data-actor="${esc(a.id)}" id="actor-${a.id.replace(/[^a-z0-9]/gi,'-')}" ${open?'open':''}><summary class="actor-row"><div class="actor-name"><span class="chevron">›</span><div><strong>${esc(a.name)}</strong><span>${esc(a.team)}${a.tasks.length!==2?' · '+a.tasks.length+' tasks':''}</span>${patternLine(a,ds)}</div></div><div class="metric"><span class="mobile-label">Discovery</span>${metric(a,a.tasks.filter(t=>t.skill==='find'),ds,'find',s)}</div><div class="metric"><span class="mobile-label">Named task</span>${metric(a,a.tasks.filter(t=>t.skill==='use'),ds,'use',s)}</div>${history(a,ds,s)}</summary><div class="actor-detail"><div class="detail-heading"><span>Tasks and evidence</span><a href="https://apify.com/${esc(a.id)}" target="_blank" rel="noreferrer">${esc(a.id)} ↗</a></div>${patternsBlock(a,ds,s)}${a.tasks.map(t=>evidence(t,get(t,s.task===t.id&&ds.includes(s.day)?s.day:latest),s,ds)).join('')}</div></details>`;
     }
     const disagreements=listFor(tasks,ds).filter(a=>score(a,'judge.disagreement')?.value===1);
     const nFind=tasks.filter(t=>t.skill==='find').length, nUse=tasks.filter(t=>t.skill==='use').length;
@@ -176,8 +228,12 @@ function application(raw) {
 
 function reportBoot(){
   var reportRaw=JSON.parse(document.getElementById('report-data').textContent); var reportApp=application(reportRaw); var main=document.getElementById('report');
-  function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);var el=s.actor&&s.task?document.getElementById('evidence-'+s.task):s.compare?document.getElementById('transitions'):s.how?document.getElementById('how-measured'):null;if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});}
-  if(location.hash)draw(); window.addEventListener('hashchange',draw);
+  function enableForms(){var fs=document.querySelectorAll('form.marker-form');for(var i=0;i<fs.length;i++)fs[i].hidden=false;}
+  function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);enableForms();var el=s.actor&&s.task?document.getElementById('evidence-'+s.task):s.how?document.getElementById('how-measured'):null;if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});}
+  if(location.hash)draw(); else enableForms(); window.addEventListener('hashchange',draw);
+  function applyMarker(f){var s=reportApp.state(location.hash);s.mark=f.elements.mark.value||'';location.hash='#'+new URLSearchParams(Object.entries(s).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';}));}
+  document.addEventListener('submit',function(e){var f=e.target;if(!(f.matches&&f.matches('form.marker-form')))return;e.preventDefault();applyMarker(f);});
+  document.addEventListener('change',function(e){var el=e.target;if(el&&el.name==='mark'&&el.form&&el.form.matches('form.marker-form'))applyMarker(el.form);});
   document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[data-history]');if(a){e.preventDefault();e.stopPropagation();location.hash=a.getAttribute('href').slice(1);}});
   document.addEventListener('toggle',function(e){if(e.target.matches&&e.target.matches('details.actor')){var s=reportApp.state(location.hash);if(e.target.open){s.actor=e.target.dataset.actor;}else if(s.actor===e.target.dataset.actor){s.actor='';}else{return;}history.replaceState(null,'','#'+new URLSearchParams(Object.entries(s).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';})));}},true);
 }
