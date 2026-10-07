@@ -109,3 +109,45 @@ describe('lintPrompt', () => {
         expect(lintPrompt('Get the 5 most recent posts in the last month')).toEqual([]);
     });
 });
+
+describe('notion-mcp scenario files', () => {
+    const suite = loadSuite(root, 'notion-mcp');
+
+    it('load without errors and carry the profile MCP server and skills on every item', () => {
+        expect(suite.problems.filter((p) => !p.includes(': warning: '))).toEqual([]);
+        expect(suite.items.length).toBeGreaterThanOrEqual(10);
+        for (const item of suite.items) {
+            expect(item.metadata.mcp).toMatchObject({
+                name: 'notion',
+                transport: 'stdio',
+                command: 'notion-mcp-server',
+            });
+            expect(item.metadata.mcp?.env).toEqual({ NOTION_TOKEN: '${NOTION_TOKEN}' });
+            expect(item.metadata.agentSkills).toContain('notion-research-documentation');
+            expect(item.metadata.tools).toEqual(['*']);
+            expect(item.metadata.subject?.kind).toBe('mcp-tool');
+        }
+    });
+
+    it('has a find and a use scenario per subject', () => {
+        const bySubject = new Map<string, Set<string>>();
+        for (const item of suite.items) {
+            const id = item.metadata.subject!.id;
+            bySubject.set(id, (bySubject.get(id) ?? new Set()).add(item.metadata.skill as string));
+        }
+        for (const [subject, skills] of bySubject) expect([...skills].sort(), subject).toEqual(['find', 'use']);
+    });
+});
+
+describe('profile validation', () => {
+    it('rejects an agentSkills entry without a skills/<name>/SKILL.md', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'profile-test-'));
+        try {
+            mkdirSync(join(dir, 'profiles'));
+            copyFileSync(join(root, 'profiles', 'notion-mcp.yaml'), join(dir, 'profiles', 'notion-mcp.yaml'));
+            expect(() => loadProfile(dir, 'notion-mcp')).toThrow(/has no skills\/apify-notion\/SKILL.md/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});

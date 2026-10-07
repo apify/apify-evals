@@ -68,22 +68,32 @@ export function loadJudgeProfile(name: string | undefined): JudgeProfile {
                 name: string;
                 wrongSubjectLabel?: string;
                 fixAreas?: { id: string; owner: string; description: string }[];
+                forcedFixAreas?: Record<string, string | { find: string; use: string }>;
             };
             const fixAreas = doc.fixAreas ?? STORE_FIX_AREAS;
+            const ids = new Set(fixAreas.map((f) => f.id));
+            for (const [type, area] of Object.entries(doc.forcedFixAreas ?? {})) {
+                for (const id of typeof area === 'string' ? [area] : [area.find, area.use]) {
+                    if (!ids.has(id)) throw new Error(`forcedFixAreas.${type} names unknown fix area "${id}"`);
+                }
+            }
             profile = {
                 name: doc.name,
                 fixAreas,
                 wrongSubjectLabel: doc.wrongSubjectLabel ?? 'wrong-subject',
                 fixAreaIds: [...fixAreas.map((f) => f.id), 'none'],
-                // Forced mappings are the store defaults remapped onto this
-                // profile's ids when they exist, else the closest generic id.
-                forcedFixAreas: Object.fromEntries(
-                    Object.entries(STORE_PROFILE_FOR_VERDICT.forcedFixAreas).map(([type, area]) => {
-                        const ids = new Set(fixAreas.map((f) => f.id));
-                        const pick = (a: string) => (ids.has(a) ? a : ids.has('agent-or-model') ? 'agent-or-model' : fixAreas[0]?.id ?? 'none');
-                        return [type, typeof area === 'string' ? pick(area) : { find: pick(area.find), use: pick(area.use) }];
-                    }),
-                ),
+                // Forced mappings: the profile's own `forcedFixAreas` win; the
+                // rest are the store defaults remapped onto this profile's ids
+                // when they exist, else the closest generic id.
+                forcedFixAreas: {
+                    ...Object.fromEntries(
+                        Object.entries(STORE_PROFILE_FOR_VERDICT.forcedFixAreas).map(([type, area]) => {
+                            const pick = (a: string) => (ids.has(a) ? a : ids.has('agent-or-model') ? 'agent-or-model' : fixAreas[0]?.id ?? 'none');
+                            return [type, typeof area === 'string' ? pick(area) : { find: pick(area.find), use: pick(area.use) }];
+                        }),
+                    ),
+                    ...(doc.forcedFixAreas ?? {}),
+                },
             };
         } catch (err) {
             log.warning(`profile ${key} unreadable, using store defaults: ${err}`);

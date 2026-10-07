@@ -41,7 +41,7 @@ import { mergeVerdict, type MergedVerdict } from './verdict.js';
  */
 
 export const RUBRIC_VERSION = '1203-draft-3';
-export const JUDGE_IMPL_VERSION = '0.4.0';
+export const JUDGE_IMPL_VERSION = '0.5.0';
 
 /** Fix areas come from the suite profile (see profile.ts); this is the type only. */
 export type FixArea = string;
