@@ -87,8 +87,36 @@ const LETTER: Record<Observation['verdict'], string> = {
     unjudged: 'U',
 };
 
-export function isCanonical(o: Observation): boolean {
-    return o.fullScope === true && (o.repeats ?? 1) <= 1;
+const SCHEDULED = (t: string | null) => (t ?? '').toLowerCase().startsWith('schedul');
+
+/**
+ * One canonical result per task per day: the scheduled full-scope run, or,
+ * on a day without one, the only full-scope single-repeat run. Extra full runs
+ * on the same day (e.g. three concurrent manual runs) stay out of the counts
+ * and are listed as excluded, so a day never carries more than one attempt
+ * per task.
+ */
+export function canonicalExperimentIds(observations: Observation[]): Set<string> {
+    const byDay = new Map<string, Map<string, Observation>>();
+    for (const o of observations) {
+        if (o.fullScope !== true || (o.repeats ?? 1) > 1) continue;
+        const day = byDay.get(o.day) ?? new Map<string, Observation>();
+        if (!day.has(o.experimentId)) day.set(o.experimentId, o);
+        byDay.set(o.day, day);
+    }
+    const out = new Set<string>();
+    for (const runs of byDay.values()) {
+        const list = [...runs.values()];
+        const scheduled = list.filter((o) => SCHEDULED(o.trigger));
+        if (scheduled.length > 0) for (const o of scheduled) out.add(o.experimentId);
+        else if (list.length === 1) out.add(list[0].experimentId);
+    }
+    return out;
+}
+
+export function isCanonical(o: Observation, canonicalIds?: Set<string>): boolean {
+    if (!canonicalIds) return o.fullScope === true && (o.repeats ?? 1) <= 1;
+    return canonicalIds.has(o.experimentId);
 }
 
 const emptyCell = (): SkillCell => ({
@@ -108,8 +136,11 @@ function uniqueSorted(xs: string[]): string[] {
 }
 
 export function aggregate(data: ReportData, ourPrefixes: string[]): Aggregate {
-    const canonical = data.observations.filter(isCanonical).sort((a, b) => a.startTime.localeCompare(b.startTime));
-    const diagnostics = data.observations.filter((o) => !isCanonical(o));
+    const canonicalIds = canonicalExperimentIds(data.observations);
+    const canonical = data.observations
+        .filter((o) => isCanonical(o, canonicalIds))
+        .sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const diagnostics = data.observations.filter((o) => !isCanonical(o, canonicalIds));
     const expectedById = new Map(data.expected.map((e) => [e.id, e]));
     const skills = Object.keys(data.profile.skills);
 
