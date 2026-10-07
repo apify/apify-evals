@@ -53,6 +53,12 @@ interface Input {
     /** Post the Slack digest for this run (scheduled runs post by default). */
     notify?: boolean;
     mcpUrl?: string;
+    /** Values for `${VAR}` placeholders in a suite's MCP server config; overrides the Actor env. */
+    mcpEnv?: Record<string, string>;
+    /** Skill variants: one experiment each ("none", "a", "a+b"). */
+    skillSets?: string[];
+    /** Expand the skills into every subset (incl. none). */
+    skillCombinations?: boolean;
     useOpenRouterProxy?: boolean;
     artifactStore?: string;
     langfuseBaseUrl?: string;
@@ -135,7 +141,9 @@ const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harne
 const { CODEX_PROVIDER } = await import('./adapters/codex.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
+const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
+const { assertSkillsExist, resolveSkillSets, skillSetLabel, skillsRoot } = await import('./skills.js');
 
 // `model` / `models` are the team-facing inputs; the `harness` object stays
 // accepted for older callers. Merge partial harness input over defaults.
@@ -162,11 +170,15 @@ if (!apifyToken) {
 }
 if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for artifacts, MCP, and the OpenRouter proxy)');
 
+// Secrets for the suite's MCP server config: the run's own token for Apify
+// MCP, anything else (e.g. NOTION_TOKEN) from the Actor env or the mcpEnv input.
+const mcpEnv: Record<string, string | undefined> = { ...process.env, APIFY_TOKEN: apifyToken, ...(input.mcpEnv ?? {}) };
+
 const otel = new NodeSDK({ spanProcessors: [new LangfuseSpanProcessor()] });
 otel.start();
 const langfuse = new LangfuseClient();
 const artifactStore = await ArtifactStore.open(artifactStoreId);
-const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
+const snapshots = new SnapshotCache(artifactStore);
 const references = new ReferenceRunner();
 const writeScore = async (score: {
     traceId: string;
@@ -212,6 +224,38 @@ const filtered = dataset.items
         return bySubject && byOwner;
     });
 const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
+
+// Skill variants: every set becomes its own experiment (model x skill set).
+// The suite's injectable skills travel on the items (profile agentSkills).
+const suiteSkills = [...new Set(selected.flatMap((i) => (meta(i) as { agentSkills?: string[] }).agentSkills ?? []))];
+const skillSets = resolveSkillSets(input, suiteSkills);
+const skillsDir = skillsRoot();
+assertSkillsExist(skillSets, skillsDir);
+const multiVariant = skillSets.length > 1 || skillSets[0].length > 0;
+
+// Fail fast on an MCP server config the environment cannot satisfy (missing
+// NOTION_TOKEN and the like), before any session is paid for.
+const mcpProblems = [
+    ...new Set(
+        selected
+            .map((i) => {
+                try {
+                    resolveMcp(meta(i), { mcpUrl, env: mcpEnv });
+                    return null;
+                } catch (err) {
+                    return String((err as Error).message ?? err);
+                }
+            })
+            .filter((p): p is string => p !== null),
+    ),
+];
+if (mcpProblems.length > 0) throw new Error(mcpProblems.join('\n'));
+if (baseHarness.kind === 'codex') {
+    if (skillSets.some((set) => set.length > 0)) throw new Error('Codex harness does not support skill sets');
+    if (selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify')) {
+        throw new Error('Codex harness supports only the Apify MCP server');
+    }
+}
 const safeRepeats = Math.max(1, Math.min(10, Math.floor(repeats)));
 // Repeats: each repeat is its own experiment item, so every average (compare
 // view, dashboards) already accounts for it and flaky scenarios show as x/N.
@@ -229,7 +273,7 @@ const fullScope = scope === 'all';
 const trigger = resolveTrigger(input.trigger, process.env.APIFY_META_ORIGIN);
 
 log.info(
-    `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, scope ${scope}, models ${models.join(', ')}, concurrency ${concurrency}, trigger ${trigger}`,
+    `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, scope ${scope}, models ${models.join(', ')}, skill sets ${skillSets.map(skillSetLabel).join(' | ')}, concurrency ${concurrency}, trigger ${trigger}`,
 );
 if (items.length === 0) {
     log.error(
@@ -245,12 +289,21 @@ if (items.length === 0) {
 
 if (!skipPreflight) {
     const problems: string[] = [];
-    const firstTools = (meta(selected[0]).tools ?? ['fetch-actor-details']) as string[];
-    try {
-        const schemas = await fetchToolSchemas(mcpUrl, firstTools, apifyToken);
-        if (schemas.length === 0) problems.push(`MCP server ${mcpUrl} returned no tools for ${firstTools.join(',')}`);
-    } catch (err) {
-        problems.push(`MCP server ${mcpUrl} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
+    const firstMeta = meta(selected[0]);
+    const firstMcp = resolveMcp(
+        { ...firstMeta, tools: firstMeta.tools ?? ['fetch-actor-details'] },
+        { mcpUrl, env: mcpEnv },
+    );
+    if (firstMcp) {
+        const where = firstMcp.spec.transport === 'http' ? (firstMcp.spec.url as string) : `${firstMcp.name} (stdio)`;
+        try {
+            const schemas = await fetchToolSchemas(firstMcp, AbortSignal.timeout(60_000));
+            if (schemas.length === 0)
+                problems.push(`MCP server ${where} returned no tools for ${firstMcp.tools.join(',')}`);
+            else log.info(`preflight: MCP server ${firstMcp.name} lists ${schemas.length} tool(s)`);
+        } catch (err) {
+            problems.push(`MCP server ${where} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
+        }
     }
     if (useOpenRouterProxy) {
         try {
@@ -285,7 +338,9 @@ if (!skipPreflight) {
 }
 
 // ---------------------------------------------------------------------------
-// One experiment per model (spec D6), sequential so pass rates stay comparable.
+// One experiment per model x skill set (spec D6), sequential so pass rates
+// stay comparable. Skill sets are the "which skills help" axis: each set is
+// its own dataset run, so the compare view puts them side by side.
 // ---------------------------------------------------------------------------
 
 const actorRunId = process.env.ACTOR_RUN_ID ?? null;
@@ -294,6 +349,9 @@ const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
 interface ModelRunSummary {
     model: string;
+    /** Skill variant label: `none` or `a+b`. */
+    skillSet: string;
+    agentSkills: string[];
     resultsUrl: string | null;
     datasetRunId: string | null;
     datasetRunName: string | null;
@@ -311,11 +369,14 @@ interface ModelRunSummary {
 const summaries: ModelRunSummary[] = [];
 let flushFailed = false;
 
-for (const model of models) {
+const variants = models.flatMap((model) => skillSets.map((skillSet) => ({ model, skillSet })));
+for (const { model, skillSet } of variants) {
     const harness = { ...baseHarness, model };
+    const skillLabel = skillSetLabel(skillSet);
     const shortModel = model.replace(/^[^/]+\//, '');
     const nameParts = [datasetName, shortModel];
     if (harness.kind !== 'claude-code') nameParts.push(harness.kind);
+    if (multiVariant) nameParts.push(`skills:${skillLabel}`);
     if (!fullScope) nameParts.push(scope);
     if (safeRepeats > 1) nameParts.push(`×${safeRepeats}`);
     nameParts.push(stamp);
@@ -330,6 +391,7 @@ for (const model of models) {
             runName: effectiveRunName,
             description: [
                 `Runner: ${harness.kind} / ${model}`,
+                `Skills: ${skillLabel}`,
                 `Scope: ${scope}`,
                 judge ? `Judge: ${judgeModel}` : 'Not judged',
                 consoleRunUrl,
@@ -339,6 +401,8 @@ for (const model of models) {
             metadata: {
                 harness: harness.kind,
                 model,
+                skillSet: skillLabel,
+                agentSkills: skillSet,
                 surface: 'mcp',
                 runner: 'workflow-runner',
                 actorRunId,
@@ -359,6 +423,9 @@ for (const model of models) {
                     harness,
                     mcpUrl,
                     apifyToken,
+                    mcpEnv,
+                    skillSet,
+                    skillsRoot: skillsDir,
                     useOpenRouterProxy,
                     perItemTimeoutSecs,
                     artifactStore,
@@ -436,6 +503,7 @@ for (const model of models) {
     await Actor.pushData(
         result.itemResults.map((r) => ({
             model,
+            skillSet: skillLabel,
             input: r.input,
             output: typeof r.output === 'string' ? r.output.slice(0, OUTPUT_PREVIEW_CAP) : r.output,
             expectedOutput: r.expectedOutput ?? null,
@@ -445,6 +513,8 @@ for (const model of models) {
 
     summaries.push({
         model,
+        skillSet: skillLabel,
+        agentSkills: skillSet,
         resultsUrl,
         datasetRunId,
         datasetRunName: result.runName ?? null,
@@ -460,7 +530,9 @@ for (const model of models) {
         judgeDatasetId,
         projectBase: urlParts ? `${urlParts[1]}/project/${urlParts[2]}` : null,
     });
-    log.info(`Model ${model}: ${result.itemResults.length}/${items.length} sessions completed; results ${resultsUrl}`);
+    log.info(
+        `Model ${model}, skills ${skillLabel}: ${result.itemResults.length}/${items.length} sessions completed; results ${resultsUrl}`,
+    );
 }
 
 try {
@@ -478,6 +550,32 @@ const totalItems = summaries.reduce((a, s) => a + s.items, 0);
 const totalCompleted = summaries.reduce((a, s) => a + s.completed, 0);
 const completedRatio = totalItems === 0 ? 1 : totalCompleted / totalItems;
 const judgeFailed = judge && summaries.some((s) => s.judgeError !== null);
+
+// The skills question answered in one table: every (model, skill set) with its
+// rates, best first. Equal pass rates are broken by checks, then fewer skills.
+const rate = (x: number | null | undefined) => (typeof x === 'number' ? x : null);
+const variantRows = summaries
+    .map((s) => ({
+        model: s.model,
+        skillSet: s.skillSet,
+        agentSkills: s.agentSkills,
+        passRate: rate(s.judge?.passRate),
+        foundRate: rate(s.judge?.foundRate),
+        worksRate: rate(s.judge?.worksRate),
+        checksPassRate: s.judge?.checksTotal
+            ? Number(((s.judge.checksPassed ?? 0) / s.judge.checksTotal).toFixed(3))
+            : null,
+        inconclusive: s.judge?.inconclusive ?? null,
+        completed: s.completed,
+        items: s.items,
+        resultsUrl: s.resultsUrl,
+    }))
+    .sort(
+        (a, b) =>
+            (b.passRate ?? -1) - (a.passRate ?? -1) ||
+            (b.checksPassRate ?? -1) - (a.checksPassRate ?? -1) ||
+            a.agentSkills.length - b.agentSkills.length,
+    );
 
 const summary = {
     resultsUrl: first.resultsUrl,
@@ -510,6 +608,10 @@ const summary = {
     harness: baseHarness.kind,
     model: first.model,
     models,
+    skillSets: skillSets.map(skillSetLabel),
+    // One row per (model, skill set), best pass rate first; null when not judged.
+    variants: variantRows,
+    bestVariant: variantRows[0]?.passRate !== null ? variantRows[0] : null,
     judgeModel: judge ? judgeModel : null,
     health: { completedRatio: Number(completedRatio.toFixed(3)), threshold: healthThreshold, judgeFailed, flushFailed },
     // One entry per model when `models` was given; the top-level fields mirror the first.
@@ -520,7 +622,17 @@ await Actor.setValue('OUTPUT', summary);
 if (summary.passRate !== null) {
     log.info(`Pass rate ${Math.round(summary.passRate * 100)}% (${summary.passed}/${summary.judged} scenarios)`);
 }
-for (const s of summaries) log.info(`Results (${s.model}): ${s.resultsUrl}`);
+for (const s of summaries) log.info(`Results (${s.model}, skills ${s.skillSet}): ${s.resultsUrl}`);
+if (multiVariant && variantRows.some((v) => v.passRate !== null)) {
+    log.info(
+        `Skill variants by pass rate:\n${variantRows
+            .map(
+                (v) =>
+                    `  ${v.skillSet.padEnd(60)} ${v.passRate === null ? 'n/a' : `${Math.round(v.passRate * 100)}%`} (${v.model})`,
+            )
+            .join('\n')}`,
+    );
+}
 
 // Slack digest: scheduled runs post by default, manual runs only when asked.
 // Per-scenario rows come from the judge's dataset; the previous pass rate
@@ -561,7 +673,7 @@ if (shouldNotify(input.notify, trigger)) {
             }
             const sent = await postDigest({
                 suite: datasetName,
-                model: s.model,
+                model: multiVariant ? `${s.model} · skills:${s.skillSet}` : s.model,
                 scope,
                 fullScope,
                 trigger,

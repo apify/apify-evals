@@ -34,7 +34,7 @@ import {
     trackChild,
     untrackChild,
 } from './adapters/shared.js';
-import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
+import type { ArtifactStore, SnapshotCache } from './artifacts.js';
 import {
     enrichFromApify,
     extractFromTools,
@@ -43,6 +43,8 @@ import {
     type RawToolResult,
     type ReferenceRunner,
 } from './evidence.js';
+import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
+import { installSkills, skillSetLabel } from './skills.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -66,8 +68,14 @@ export interface SessionContext {
     item: { id?: string; input?: unknown; metadata?: DatasetItemMetadata | null };
     datasetName: string;
     harness: HarnessConfig;
+    /** Apify MCP server for items whose profile names no other server. */
     mcpUrl: string;
     apifyToken: string;
+    /** Values for `${VAR}` placeholders in the item's MCP server config. */
+    mcpEnv: Record<string, string | undefined>;
+    /** Agent skills injected into this session (skills/<name>); [] = none. */
+    skillSet: string[];
+    skillsRoot: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     artifactStore: ArtifactStore;
@@ -126,6 +134,8 @@ interface ParsedSession {
     timeline: TimelineEvent[];
     mcpServers: { name: string; status: string }[] | null;
     mcpToolCount: number | null;
+    /** Skill names Claude Code reported at init (bundled ones included). */
+    skills: string[] | null;
     finalResult: string | null;
     subtype: string | null;
     isError: boolean;
@@ -147,6 +157,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     let numTurns: number | null = null;
     let mcpServers: ParsedSession['mcpServers'] = null;
     let mcpToolCount: number | null = null;
+    let skills: string[] | null = null;
     const lines = ndjson.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -162,6 +173,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
             const init = parseInitEvent(ev);
             mcpServers = init.mcpServers;
             mcpToolCount = init.mcpToolCount;
+            skills = init.skills;
             continue;
         }
         // Claude Code streams one assistant event per content block, sharing
@@ -233,6 +245,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
         timeline,
         mcpServers,
         mcpToolCount,
+        skills,
         finalResult,
         subtype,
         isError,
@@ -242,10 +255,11 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     };
 }
 
-/** The `system/init` event lists the MCP servers and every tool the agent has. */
-function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
+/** The `system/init` event lists the MCP servers, every tool and every skill the agent has. */
+function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown; skills?: unknown }): {
     mcpServers: { name: string; status: string }[];
     mcpToolCount: number;
+    skills: string[];
 } {
     const servers = Array.isArray(ev.mcp_servers)
         ? (ev.mcp_servers as { name?: unknown; status?: unknown }[]).map((s) => ({
@@ -254,7 +268,8 @@ function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
           }))
         : [];
     const tools = Array.isArray(ev.tools) ? (ev.tools as unknown[]).map(String) : [];
-    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length };
+    const skills = Array.isArray(ev.skills) ? (ev.skills as unknown[]).map(String) : [];
+    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length, skills };
 }
 
 /** True when the init line has arrived and shows an MCP server without any
@@ -276,11 +291,13 @@ function lastAssistantText(conversation: ConversationEntry[]): string {
     return conversation.findLast((c) => c.role === 'assistant' && c.type === 'text')?.text ?? '';
 }
 
-function buildClaudeArgs(opts: {
+export function buildClaudeArgs(opts: {
     prompt: string;
     meta: DatasetItemMetadata;
     harness: HarnessConfig;
     mcpConfigPath: string | null;
+    /** `--allowedTools` patterns for the MCP server's tools (see mcp.ts). */
+    allowedMcpTools?: string[];
 }): string[] {
     const { prompt, meta, harness, mcpConfigPath } = opts;
     const allowedTools: string[] = [];
@@ -296,10 +313,14 @@ function buildClaudeArgs(opts: {
         String(meta.maxTurns ?? harness.maxTurns),
         '--model',
         harness.model,
+        // Only the session directory's own `.claude/` counts: skills are an
+        // eval variable, so nothing from the developer's ~/.claude may leak in.
+        '--setting-sources',
+        'project',
     ];
     if (mcpConfigPath) {
         args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-        allowedTools.push('mcp__apify__*');
+        allowedTools.push(...(opts.allowedMcpTools ?? []));
     }
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(' '));
     return args;
@@ -376,33 +397,27 @@ function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
 ): Promise<AdapterResult> {
-    const { prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
+    const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, skillSet, skillsRoot, useOpenRouterProxy } = ctx;
+    const { perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
         const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
         const meta = item.metadata ?? {};
 
-        // All filesystem effects live here: session dir, then the token-bearing
-        // MCP config when the item restricts tools.
+        // All filesystem effects live here: session dir, the injected skills,
+        // then the secret-bearing MCP config when the item has tools.
+        installSkills(home, skillSet, skillsRoot);
+        const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
-        if (Array.isArray(meta.tools) && meta.tools.length > 0) {
+        if (mcp) {
             mcpConfigPath = join(home, 'mcp.json');
-            writeFileSync(
-                mcpConfigPath,
-                JSON.stringify({
-                    mcpServers: {
-                        apify: {
-                            type: 'http',
-                            // Same URL builder as the schema snapshot, by construction.
-                            url: toolsUrl(mcpUrl, meta.tools),
-                            headers: { Authorization: `Bearer ${apifyToken}` },
-                        },
-                    },
-                }),
-            );
+            // Same resolved spec as the schema snapshot, by construction.
+            writeFileSync(mcpConfigPath, JSON.stringify(claudeMcpConfig(mcp)), { mode: 0o600 });
         }
+        const secrets = [apifyToken, ...(mcp?.secrets ?? [])].filter(Boolean);
+        const redact = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, '[REDACTED]'), text);
 
-        const args = buildClaudeArgs({ prompt, meta, harness, mcpConfigPath });
+        const args = buildClaudeArgs({ prompt, meta, harness, mcpConfigPath, allowedMcpTools: mcp?.allowedTools });
         const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy });
 
         // detached: the child leads its own process group, so the timeout kill
@@ -472,6 +487,7 @@ function runClaudeCodeOnce(
                 timeline,
                 mcpServers,
                 mcpToolCount,
+                skills,
                 finalResult,
                 subtype,
                 isError,
@@ -509,9 +525,12 @@ function runClaudeCodeOnce(
                     mcpServers,
                     mcpToolCount,
                     mcpToolsMissing,
+                    ...(mcp ? { mcpServer: mcp.name } : {}),
+                    // Which of the injected skills Claude Code actually loaded.
+                    skillsLoaded: skills ? skills.filter((name) => skillSet.includes(name)) : [],
                 },
                 harnessBroke,
-                stderr: (spawnError ?? errOut).slice(0, STDERR_CAP),
+                stderr: redact(spawnError ?? errOut).slice(0, STDERR_CAP),
             });
         };
 
@@ -730,7 +749,7 @@ function emitTimeline(
             );
             gen.end(new Date(e.t));
             for (const tu of e.toolUses) {
-                const name = tu.name.replace(/^mcp__apify__/, '');
+                const name = tu.name.replace(/^mcp__[^_]+__/, '');
                 pending.set(tu.id, { obs: start(name, { input: tu.input }, 'tool', e.t), name });
             }
             pendingResults = [];
@@ -794,6 +813,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
         ...(meta.actor ? [`actor:${meta.actor}`] : []),
         ...(meta.team ? [`team:${meta.team}`] : []),
         ...(meta.skill ? [`skill:${meta.skill}`] : []),
+        `skills:${skillSetLabel(ctx.skillSet)}`,
     ];
     // The experiment-item-run span is active here (the SDK opened it around
     // the task): checks are scored onto it, because that is the observation
@@ -828,10 +848,10 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                     log.warning('no active experiment span; check scores not written');
                 }
 
-                const tools = item.metadata?.tools;
+                const mcp = resolveMcp(meta, { mcpUrl: ctx.mcpUrl, env: ctx.mcpEnv });
                 let snapshotRef = null;
-                if (Array.isArray(tools) && tools.length > 0) {
-                    snapshotRef = await ctx.snapshots.get(tools).catch((err) => {
+                if (mcp) {
+                    snapshotRef = await ctx.snapshots.get(mcp).catch((err) => {
                         log.warning(`tool-schema snapshot failed (judge will mark schema-validity n/a): ${err}`);
                         return null;
                     });
@@ -848,6 +868,9 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                     harness: harness.kind,
                     model: harness.model,
                     harnessBroke: r.harnessBroke,
+                    // Session setup: the eval variables beyond the model.
+                    ...(mcp ? { mcpServer: mcp.name } : {}),
+                    agentSkills: ctx.skillSet,
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef

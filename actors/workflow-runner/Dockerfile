@@ -34,6 +34,10 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 RUN npm install --global @openai/codex@0.154.0 --audit=false \
     && codex --version
 
+# Notion MCP server (stdio) for the notion-mcp suite; the hosted server is OAuth-only.
+RUN npm install --global @notionhq/notion-mcp-server@2.5.2 --audit=false \
+    && notion-mcp-server --help >/dev/null 2>&1 || true
+
 COPY package*.json ./
 COPY shared/package*.json ./shared/
 COPY contract/package*.json ./contract/
@@ -46,11 +50,14 @@ RUN npm install --omit=dev --omit=optional --audit=false && rm -rf /root/.npm
 
 COPY --from=builder /usr/src/app/contract/dist ./contract/dist
 COPY --from=builder /usr/src/app/actors/workflow-runner/dist ./actors/workflow-runner/dist
+# Agent skills the runner can inject into sessions (skills/<name>/SKILL.md).
+COPY skills/ ./skills/
 
 RUN chown -R root:root /usr/src/app && chmod -R 755 /usr/src/app \
     && mkdir -p /home/myuser/.codex && chown -R myuser:myuser /home/myuser
 
 USER myuser
 ENV CODEX_HOME=/home/myuser/.codex
+ENV SKILLS_DIR=/usr/src/app/skills
 WORKDIR /usr/src/app/actors/workflow-runner
 CMD ["node", "dist/main.js"]
