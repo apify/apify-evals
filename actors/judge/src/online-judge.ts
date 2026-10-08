@@ -2,7 +2,7 @@ import { log } from 'apify';
 
 import { compileTemplate, JUDGE_IMPL_VERSION } from './core.js';
 import { judgeLlmCall } from './llm.js';
-import { renderTurnForJudge } from './online-render.js';
+import { renderTurnForJudge, TURN_DELIMITER_CLOSE, TURN_DELIMITER_OPEN } from './online-render.js';
 import { type ArgumentCorrectnessResult, checkArgumentCorrectness, type ToolSchemaSet } from './online-schema.js';
 import { fetchTraceObservations, type OnlineTurn, reconstructTurn } from './online-turn.js';
 import { criterionScoreName, HOLISTIC_SCORE_NAME, ONLINE_RUBRIC, type OnlineCriterion, type Rubric } from './rubric.js';
@@ -31,9 +31,8 @@ export const LLM_CRITERIA = [
 ] as const satisfies readonly OnlineCriterion[];
 export type LlmCriterion = (typeof LLM_CRITERIA)[number];
 
-/** Unique fence around the rendered turn, so injected text cannot pose as the end of the data. */
-export const TURN_DELIMITER_OPEN = '<<<APIFY_AI_TURN_DATA_BEGIN>>>';
-export const TURN_DELIMITER_CLOSE = '<<<APIFY_AI_TURN_DATA_END>>>';
+/** The fence around the rendered turn; defined next to the renderer that strips them from the turn's own text. */
+export { TURN_DELIMITER_CLOSE, TURN_DELIMITER_OPEN };
 
 /** Extra instruction after a criterion's rubric text; the rubric text itself is verbatim. */
 const CRITERION_SUFFIX: Partial<Record<LlmCriterion, string>> = {
@@ -319,8 +318,11 @@ export async function judgeOnlineTrace(opts: JudgeOnlineTraceOptions): Promise<O
               unvalidatedTools: [],
               callsWithoutArguments: [],
           };
+    // Expected on every trace until the agent hash covers the raw JSON schema
+    // (see `argumentCorrectnessScore`), so one line per trace is debug only;
+    // the caller counts `metadata.schemaMatch === false` and warns once per batch.
     if (argumentCheck.schemaMatch === false) {
-        log.warning(
+        log.debug(
             `${traceId}: toolSchemaHash ${turn.metadata.toolSchemaHash} differs from the live toolset ${schemas?.hash}`,
         );
     }
