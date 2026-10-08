@@ -40,30 +40,28 @@
         "langfuseBaseUrl": {
             "title": "Langfuse base URL",
             "type": "string",
-            "description": "Falls back to LANGFUSE_BASE_URL env var.",
+            "description": "One Langfuse instance serves every project; the keys below pick the project. Falls back to LANGFUSE_BASE_URL in the Actor environment.",
             "editor": "textfield",
-            "nullable": true
+            "default": "https://langfuse.apify.dev"
         },
         "langfusePublicKey": {
             "title": "Langfuse public key",
             "type": "string",
-            "description": "Falls back to LANGFUSE_PUBLIC_KEY env var.",
+            "description": "Public key of the Langfuse project holding the dataset run (pk-lf-...). Required: the Actor has no default project. The runner passes its own when it starts the judge.",
             "editor": "textfield",
-            "isSecret": true,
-            "nullable": true
+            "isSecret": true
         },
         "langfuseSecretKey": {
             "title": "Langfuse secret key",
             "type": "string",
-            "description": "Falls back to LANGFUSE_SECRET_KEY env var.",
+            "description": "Secret key of the same Langfuse project (sk-lf-...).",
             "editor": "textfield",
-            "isSecret": true,
-            "nullable": true
+            "isSecret": true
         },
         "artifactStore": {
             "title": "Eval artifacts store",
             "type": "string",
-            "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id IoT4ipiOnFHyRsZQH); the picker grants this run access. Leave empty to use the default store by name.",
+            "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id FqXOzpgI7lRKDWaSH); the picker grants this run access. Leave empty to use the default store by name.",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
             "resourcePermissions": ["READ"],
@@ -126,5 +124,5 @@
             "nullable": true
         }
     },
-    "required": ["datasetRunId"]
+    "required": ["datasetRunId", "langfusePublicKey", "langfuseSecretKey"]
 }

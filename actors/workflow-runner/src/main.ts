@@ -8,6 +8,7 @@ import { Actor, log } from 'apify';
 import { killTrackedChildren } from './adapters/shared.js';
 import {
     LANGFUSE_CREDENTIALS,
+    REQUIRED_LANGFUSE_INPUTS,
     judgeLangfuseInput,
     resolveHealthThreshold,
     resolveTrigger,
@@ -17,7 +18,7 @@ import {
 const execFile = promisify(execFileCb);
 
 const OUTPUT_PREVIEW_CAP = 500;
-const DEFAULT_JUDGE_ACTOR = 'artogahr/eval-judge';
+const DEFAULT_JUDGE_ACTOR = 'platform-services/eval-judge';
 const OPENROUTER_PROXY_URL = 'https://openrouter.apify.actor/api';
 
 /**
@@ -120,9 +121,13 @@ if (input.experimentName && input.experimentName !== datasetName) {
     log.warning(`experimentName is ignored; runs are grouped under the dataset name "${datasetName}"`);
 }
 
-// Credentials: input wins, env fallback. Env must be set BEFORE the Langfuse
-// modules load, because parts of the SDK capture process.env at module load;
-// the dynamic imports below guarantee that ordering.
+// Credentials: the project keys are mandatory input, the base URL falls back
+// to env. Env must be set BEFORE the Langfuse modules load, because parts of
+// the SDK capture process.env at module load; the dynamic imports below
+// guarantee that ordering.
+for (const key of REQUIRED_LANGFUSE_INPUTS) {
+    if (!input[key]) throw new Error(`Missing required input ${key} (the Langfuse project keys select the project)`);
+}
 for (const [inputKey, envKey] of LANGFUSE_CREDENTIALS) {
     if (input[inputKey]) process.env[envKey] = input[inputKey];
     if (!process.env[envKey]) throw new Error(`Missing ${envKey} (set it as Actor input or env var)`);
@@ -419,7 +424,7 @@ for (const model of models) {
                     judgeModel,
                     writeRunScores: fullScope,
                     ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}),
-                    ...judgeLangfuseInput(input, process.env),
+                    ...judgeLangfuseInput(process.env),
                 },
                 { memory: 1024, timeout: 1800 },
             );
