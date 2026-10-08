@@ -268,20 +268,35 @@ function textOf(parts: Part[]): string {
 }
 
 /**
+ * A message's identity for replay detection: role plus its normalised parts.
+ * Two messages with the same fingerprint at the same POSITION are the same
+ * message replayed; the same fingerprint at different positions is a real
+ * repeat (`user: "yes"` ... `user: "yes"`) and both are kept.
+ */
+function fingerprint(role: string, parts: Part[]): string {
+    return JSON.stringify([role, parts]);
+}
+
+/**
  * Walk the generations in start-time order and flatten input then output of
- * each into one deduped item list: a multi-generation trace repeats the
- * history in every input. Tool-call parts are collected too, for the fallback.
+ * each into one item list. A multi-generation trace replays the history so
+ * far in every later input, so the replay is skipped BY POSITION: the longest
+ * prefix of a generation's input that matches, message for message, what the
+ * earlier generations already contributed. Nothing is deduplicated by text,
+ * so a repeated short reply stays its own message and keeps everything between
+ * the two occurrences. Tool-call parts are collected too, for the fallback;
+ * calls and results are keyed on the model's call id, which is unique per call.
  */
 function collectItems(generations: TraceObservation[]): Item[] {
     const items: Item[] = [];
     const callsById = new Map<string, TurnToolCall>();
-    const seenText = new Set<string>();
     const hasResultFor = new Set<string>();
+    /** Fingerprints of every message taken so far, in conversation order. */
+    const taken: string[] = [];
 
-    const add = (message: unknown, observationId: string) => {
-        const parsed = messageParts(message);
-        if (!parsed) return;
+    const add = (parsed: { role: string; parts: Part[] }, observationId: string) => {
         const { role, parts } = parsed;
+        taken.push(fingerprint(role, parts));
         for (const part of parts) {
             if (part.kind !== 'result') continue;
             const call = callsById.get(part.callId);
@@ -294,10 +309,7 @@ function collectItems(generations: TraceObservation[]): Item[] {
         // the calls it announces, so it must not survive them as the final answer.
         const textRole = role === 'user' || role === 'assistant' ? role : null;
         const text = textRole ? textOf(parts) : '';
-        if (textRole && text && !seenText.has(`${role} ${text}`)) {
-            seenText.add(`${role} ${text}`);
-            items.push({ kind: 'text', role: textRole, text, observationId });
-        }
+        if (textRole && text) items.push({ kind: 'text', role: textRole, text, observationId });
         const calls = parts.filter(
             (p): p is Extract<Part, { kind: 'call' }> => p.kind === 'call' && !callsById.has(p.callId),
         );
@@ -314,8 +326,18 @@ function collectItems(generations: TraceObservation[]): Item[] {
     };
 
     for (const generation of generations) {
-        for (const message of messagesOf(generation.input)) add(message, generation.id);
-        for (const message of messagesOf(generation.output)) add(message, generation.id);
+        const input = messagesOf(generation.input).map(messageParts);
+        let replayed = 0;
+        while (
+            replayed < input.length &&
+            replayed < taken.length &&
+            input[replayed] !== null &&
+            fingerprint(input[replayed]!.role, input[replayed]!.parts) === taken[replayed]
+        ) {
+            replayed++;
+        }
+        for (const message of input.slice(replayed)) if (message) add(message, generation.id);
+        for (const message of messagesOf(generation.output).map(messageParts)) if (message) add(message, generation.id);
     }
     return items;
 }
@@ -488,8 +510,8 @@ export function reconstructTurn(traceId: string, observations: TraceObservation[
     }
 
     // The exporter files tool calls as TOOL observations; the GENERATION carries
-    // no tool_call parts. The message-part steps are only for a trace that
-    // somehow has none (see the module comment, point (a)).
+    // no tool_call parts (see the module comment). The message-part steps are
+    // only for a trace that somehow has none.
     //
     // One TOOL observation becomes one step, so N tool calls the model issued in
     // parallel within a single model step count as N steps here. The export
