@@ -63,7 +63,7 @@
         "artifactStore": {
             "title": "Eval artifacts store",
             "type": "string",
-            "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id IoT4ipiOnFHyRsZQH); the picker grants this run access. Leave empty to use the default store by name.",
+            "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id XPeEjJNZjVIblYlqX); the picker grants this run access. Leave empty to use the default store by name.",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
             "resourcePermissions": ["READ"],
