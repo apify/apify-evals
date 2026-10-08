@@ -88,18 +88,35 @@ function windowStart(now: Date, checkpoint: Checkpoint | null, override: WindowO
 }
 
 /**
- * `[checkpoint ?? now-24h, safeUpperBound(now))`, or the explicit override when
- * given (either bound may be overridden alone). Returns null for an empty or
- * inverted window so the caller can skip both the fetch and the checkpoint.
+ * The bounds as requested: `[checkpoint ?? now-24h, safeUpperBound(now))`, or
+ * the explicit override when given (either bound may be overridden alone).
+ * Not validated for order; `computeWindow()` is the validated form, this one
+ * exists so an empty window can still be reported with its bounds.
  */
-export function computeWindow(now: Date, checkpoint: Checkpoint | null, override: WindowOverride = {}): Window | null {
+export function requestedWindow(now: Date, checkpoint: Checkpoint | null, override: WindowOverride = {}): Window {
     const start = windowStart(now, checkpoint, override);
     const end = override.windowEnd ? new Date(override.windowEnd) : safeUpperBound(now);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
         throw new Error(`Invalid window bound: ${JSON.stringify(override)}`);
     }
-    if (start >= end) return null;
     return { start, end };
+}
+
+/** `requestedWindow()`, or null for an empty or inverted window so the caller can skip both the fetch and the checkpoint. */
+export function computeWindow(now: Date, checkpoint: Checkpoint | null, override: WindowOverride = {}): Window | null {
+    const window = requestedWindow(now, checkpoint, override);
+    return window.start >= window.end ? null : window;
+}
+
+/**
+ * The instant before which a root span must have started for its turn to be
+ * guaranteed complete, and its completion span inside the window, by the
+ * window's end: a turn runs at most AGENT_REQUEST_TIMEOUT_MS. Roots that start
+ * later are legitimately still running at `window.end` and their completion
+ * falls into the next window, so they say nothing about the completion gate.
+ */
+export function settledBefore(window: Window): Date {
+    return new Date(window.end.getTime() - AGENT_REQUEST_TIMEOUT_MS);
 }
 
 /** One condition of the observations v2 `filter` JSON (see GetObservationsV2Request). */
@@ -163,8 +180,14 @@ export function completedFilter(window: Window, environment: string): FilterCond
     ];
 }
 
+export interface ObservationRow {
+    traceId: string | null;
+    /** ISO 8601; in the `core` field group. */
+    startTime?: string;
+}
+
 export interface ObservationPage {
-    data: { traceId: string | null }[];
+    data: ObservationRow[];
     meta?: { cursor?: string };
 }
 
@@ -174,16 +197,46 @@ export type ObservationFetcher = (params: {
     cursor?: string;
 }) => Promise<ObservationPage>;
 
-/** Walk every page of one filter and return the distinct trace ids. */
-export async function collectTraceIds(fetchPage: ObservationFetcher, window: Window, filter: FilterCondition[]) {
-    const ids = new Set<string>();
+/** Walk every page of one filter and return every row that carries a trace id. */
+export async function collectObservations(
+    fetchPage: ObservationFetcher,
+    window: Window,
+    filter: FilterCondition[],
+): Promise<(ObservationRow & { traceId: string })[]> {
+    const rows: (ObservationRow & { traceId: string })[] = [];
     let cursor: string | undefined;
     do {
         const page = await fetchPage({ window, filter, cursor });
-        for (const row of page.data) if (row.traceId) ids.add(row.traceId);
+        for (const row of page.data) if (row.traceId) rows.push({ ...row, traceId: row.traceId });
         cursor = page.meta?.cursor;
     } while (cursor);
-    return ids;
+    return rows;
+}
+
+/** Walk every page of one filter and return the distinct trace ids. */
+export async function collectTraceIds(fetchPage: ObservationFetcher, window: Window, filter: FilterCondition[]) {
+    return new Set((await collectObservations(fetchPage, window, filter)).map((row) => row.traceId));
+}
+
+/**
+ * The completion gate: traffic whose turn MUST have completed inside the
+ * window (root started before `settledBefore(window)`) with no completion span
+ * at all means the span name drifted or emission stopped, not that nothing
+ * finished. A root that started in the last AGENT_REQUEST_TIMEOUT_MS of the
+ * window may still be running at its end, so a quiet window whose only turn
+ * straddles the end (1 trace in, 0 completed) is not broken: it heals when the
+ * next window picks the completion up, and a fixed-bound backfill of it must
+ * not fail on every attempt. Rows without a start time are not counted as
+ * settled, so a missing field can only make the gate quieter, never page.
+ */
+export function isCompletionGateBroken(roots: ObservationRow[], completedTraces: number, window: Window): boolean {
+    if (completedTraces > 0) return false;
+    const limit = settledBefore(window).getTime();
+    return roots.some((row) => {
+        if (!row.traceId || !row.startTime) return false;
+        const started = new Date(row.startTime).getTime();
+        return Number.isFinite(started) && started < limit;
+    });
 }
 
 export type Rng = () => number;
@@ -221,16 +274,12 @@ export interface SelectionCounters {
 
 export interface Selection extends SelectionCounters {
     window: Window | null;
-    /** `tracesInWindow > 0` with `completedTraces === 0`: the window had traffic
-     * but no completion signal. The caller fails the run on it (see main.ts). */
+    /** See `isCompletionGateBroken()`: settled traffic with no completion signal. The caller fails the run on it. */
     isGateBroken: boolean;
     sampledTraceIds: string[];
-    /** True when this call wrote the checkpoint (`writeCheckpoint` on, window not overridden, not empty,
-     * completion gate not broken). */
-    checkpointWritten: boolean;
     /** The record that moves the checkpoint past this window; null under an override, an empty window
-     * or a broken completion gate. With `writeCheckpoint: false` the caller writes it itself, once the
-     * window's scores are safe (#270). */
+     * or a broken completion gate. Nothing here writes it: the caller does, once the window's scores
+     * are safe (`finishOnlineRun()`, #270). */
     checkpoint: Checkpoint | null;
 }
 
@@ -245,88 +294,75 @@ export interface SelectTracesOptions {
     runId: string | null;
     /** Langfuse environment to score; only these traces are selected. */
     environment: string;
-    /** Default true. The online flow passes false and writes the returned `checkpoint` itself, after the scores. */
-    writeCheckpoint?: boolean;
 }
 
 /**
  * The whole selection step. An explicit window override never reads or moves
  * the checkpoint: a backfill of an old range must not rewind production.
  *
- * The checkpoint record is returned and, unless `writeCheckpoint` is false,
- * also written here after selection succeeds, so a run that fails before this
- * point (or hits a broken completion gate) is retried over the same window.
- * The online flow (#270) turns the write off and performs it only after the
- * window's scores and rollup are in Langfuse: written here, a process death
- * during scoring would lose the window's sample for good.
+ * The checkpoint record is returned, never written here: the online flow
+ * (#270) writes it only after the window's scores and rollup are in Langfuse.
+ * Written here, a process death during scoring would lose the window's sample
+ * for good; written there, a run that fails anywhere (or hits a broken
+ * completion gate) is retried over the same window.
  */
 export async function selectTraces(opts: SelectTracesOptions): Promise<Selection> {
-    const {
-        now,
-        sampleRate,
-        maxItems,
-        override = {},
-        rng,
-        fetchPage,
-        checkpoints,
-        runId,
-        environment,
-        writeCheckpoint = true,
-    } = opts;
+    const { now, sampleRate, maxItems, override = {}, rng, fetchPage, checkpoints, runId, environment } = opts;
     const isOverridden = Boolean(override.windowStart || override.windowEnd);
     const checkpoint = isOverridden ? null : await checkpoints.read();
     const window = computeWindow(now, checkpoint, override);
-    const empty = {
-        tracesInWindow: 0,
-        completedTraces: 0,
-        sampled: 0,
-        sampledTraceIds: [],
-        checkpointWritten: false,
-        checkpoint: null,
-        isGateBroken: false,
-    };
     if (!window) {
-        const start = windowStart(now, checkpoint, override).toISOString();
-        const end = (override.windowEnd ? new Date(override.windowEnd) : safeUpperBound(now)).toISOString();
-        log.warning(`Empty window: start ${start} is at or past the upper bound ${end}; nothing selected`);
-        return { ...empty, window: null };
+        const { start, end } = requestedWindow(now, checkpoint, override);
+        log.warning(
+            `Empty window: start ${start.toISOString()} is at or past the upper bound ${end.toISOString()}; nothing selected`,
+        );
+        return {
+            window: null,
+            tracesInWindow: 0,
+            completedTraces: 0,
+            sampled: 0,
+            sampledTraceIds: [],
+            checkpoint: null,
+            isGateBroken: false,
+        };
     }
 
-    const all = await collectTraceIds(fetchPage, window, traceFilter(window, environment));
+    const roots = await collectObservations(fetchPage, window, traceFilter(window, environment));
+    const all = new Set(roots.map((row) => row.traceId));
     // The completion span's own start time is the selection key. The two
     // queries are NOT nested sets (see `tracesInWindow`), so intersecting them
     // would drop every turn whose root started before the window: on a live day
     // (2026-09-07) the tag query and a name query shared only 1 of 3 traces.
     const completedIds = [...(await collectTraceIds(fetchPage, window, completedFilter(window, environment)))];
-    // Traffic with no completion span at all means the span name drifted or
-    // emission stopped, not that nothing finished. Selecting nothing is
-    // correct; advancing the checkpoint over it would burn the window
-    // silently, so leave it and let the next run retry. The counters are in
-    // the run's OUTPUT and the caller fails the run.
-    const isGateBroken = all.size > 0 && completedIds.length === 0;
+    // Selecting nothing on a broken gate is correct; advancing the checkpoint
+    // over it would burn the window silently, so leave it and let the next run
+    // retry. The counters are in the run's OUTPUT and the caller fails the run.
+    const isGateBroken = isCompletionGateBroken(roots, completedIds.length, window);
     if (isGateBroken) {
         log.warning(
-            `${all.size} apify-ai traces in the window but none carry a "${TURN_COMPLETE_SPAN_NAME}" span: ` +
+            `${all.size} apify-ai traces in the window, some started before ${settledBefore(window).toISOString()} ` +
+                `so they must have completed by its end, yet none carry a "${TURN_COMPLETE_SPAN_NAME}" span: ` +
                 'the span name drifted or emission stopped, this is not unfinished traffic; ' +
                 'the checkpoint is left in place for a retry',
+        );
+    } else if (all.size > 0 && completedIds.length === 0) {
+        log.info(
+            `${all.size} apify-ai traces in the window, none completed inside it and none started before ` +
+                `${settledBefore(window).toISOString()}: still running at the window end, picked up next window`,
         );
     }
     const sampledTraceIds = sampleTraceIds(completedIds, sampleRate, maxItems, rng);
 
-    const nextCheckpoint =
-        isOverridden || isGateBroken
-            ? null
-            : { upperBound: window.end.toISOString(), runId, writtenAt: now.toISOString() };
-    const shouldWrite = nextCheckpoint !== null && writeCheckpoint;
-    if (shouldWrite) await checkpoints.write(nextCheckpoint);
     return {
         window,
         tracesInWindow: all.size,
         completedTraces: completedIds.length,
         sampled: sampledTraceIds.length,
         sampledTraceIds,
-        checkpointWritten: shouldWrite,
-        checkpoint: nextCheckpoint,
+        checkpoint:
+            isOverridden || isGateBroken
+                ? null
+                : { upperBound: window.end.toISOString(), runId, writtenAt: now.toISOString() },
         isGateBroken,
     };
 }

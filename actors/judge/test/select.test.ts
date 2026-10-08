@@ -10,12 +10,15 @@ import {
     DEFAULT_ENVIRONMENT,
     EXPORT_LAG_MS,
     type FilterCondition,
+    isCompletionGateBroken,
     langfuseObservationFetcher,
     type ObservationFetcher,
     type ObservationPage,
+    requestedWindow,
     safeUpperBound,
     sampleTraceIds,
     selectTraces,
+    settledBefore,
     traceFilter,
     TURN_COMPLETE_SPAN_NAME,
 } from '../src/select.js';
@@ -41,8 +44,14 @@ function memoryCheckpoints(initial: Checkpoint | null = null) {
     return { store, writes };
 }
 
-/** Fake Langfuse: the completed query is recognised by its name condition. */
-function fakeFetcher(allIds: string[], completedIds: string[], pageSize = 2) {
+/** A root start time that is settled in every window these tests use: well before `settledBefore(window)`. */
+const SETTLED_START = '2026-09-08T08:00:00.000Z';
+
+/**
+ * Fake Langfuse: the completed query is recognised by its name condition. Root
+ * rows start at `SETTLED_START` unless `rootStart` says otherwise.
+ */
+function fakeFetcher(allIds: string[], completedIds: string[], pageSize = 2, rootStart: string | null = SETTLED_START) {
     const calls: { filter: FilterCondition[]; cursor?: string }[] = [];
     const fetchPage: ObservationFetcher = async ({ filter, cursor }) => {
         calls.push({ filter, cursor });
@@ -51,7 +60,10 @@ function fakeFetcher(allIds: string[], completedIds: string[], pageSize = 2) {
         const offset = cursor ? Number(cursor) : 0;
         const slice = ids.slice(offset, offset + pageSize);
         const next = offset + pageSize < ids.length ? String(offset + pageSize) : undefined;
-        return { data: slice.map((traceId) => ({ traceId })), meta: next ? { cursor: next } : {} };
+        return {
+            data: slice.map((traceId) => (rootStart && !isCompleted ? { traceId, startTime: rootStart } : { traceId })),
+            meta: next ? { cursor: next } : {},
+        };
     };
     return { fetchPage, calls };
 }
@@ -76,6 +88,14 @@ describe('computeWindow', () => {
         const w = computeWindow(NOW, checkpoint);
         expect(w?.start.toISOString()).toBe('2026-09-08T09:00:00.000Z');
         expect(w?.end).toEqual(safeUpperBound(NOW));
+    });
+
+    it('requestedWindow returns the bounds even when they are empty or inverted', () => {
+        const atBound = { upperBound: safeUpperBound(NOW).toISOString(), runId: null, writtenAt: 'x' };
+        const w = requestedWindow(NOW, atBound);
+        expect(w.start).toEqual(safeUpperBound(NOW));
+        expect(w.end).toEqual(safeUpperBound(NOW));
+        expect(computeWindow(NOW, atBound)).toBeNull();
     });
 
     it('returns null for an empty or inverted window', () => {
@@ -233,8 +253,32 @@ describe('sampleTraceIds', () => {
     });
 });
 
+describe('isCompletionGateBroken', () => {
+    const window = { start: new Date('2026-09-08T00:00:00.000Z'), end: new Date('2026-09-08T12:00:00.000Z') };
+    const settled = { traceId: 'a', startTime: '2026-09-08T11:29:59.000Z' };
+    const late = { traceId: 'b', startTime: '2026-09-08T11:30:00.000Z' };
+
+    it('settledBefore is the window end minus the agent request timeout', () => {
+        expect(settledBefore(window).toISOString()).toBe('2026-09-08T11:30:00.000Z');
+    });
+
+    it('is broken only when a settled root has no completion at all', () => {
+        expect(isCompletionGateBroken([settled], 0, window)).toBe(true);
+        expect(isCompletionGateBroken([settled, late], 0, window)).toBe(true);
+        expect(isCompletionGateBroken([late], 0, window)).toBe(false);
+        expect(isCompletionGateBroken([], 0, window)).toBe(false);
+        expect(isCompletionGateBroken([settled], 1, window)).toBe(false);
+    });
+
+    it('does not count a row without a parseable start time as settled', () => {
+        expect(isCompletionGateBroken([{ traceId: 'c' }], 0, window)).toBe(false);
+        expect(isCompletionGateBroken([{ traceId: 'c', startTime: 'garbage' }], 0, window)).toBe(false);
+        expect(isCompletionGateBroken([{ traceId: null, startTime: settled.startTime }], 0, window)).toBe(false);
+    });
+});
+
 describe('selectTraces', () => {
-    it('counts, samples only completed traces, and checkpoints the upper bound', async () => {
+    it('counts, samples only completed traces, and returns the checkpoint record for the upper bound', async () => {
         const all = ['a', 'b', 'c', 'd', 'e'];
         const completed = ['a', 'c', 'e'];
         const { fetchPage } = fakeFetcher(all, completed);
@@ -257,14 +301,13 @@ describe('selectTraces', () => {
         expect(s.sampled).toBe(2);
         expect(s.sampledTraceIds.length).toBe(2);
         for (const id of s.sampledTraceIds) expect(['a', 'c', 'e']).toContain(id);
-        expect(s.checkpointWritten).toBe(true);
-        const expected = {
+        expect(s.checkpoint).toEqual({
             upperBound: safeUpperBound(NOW).toISOString(),
             runId: 'run-1',
             writtenAt: NOW.toISOString(),
-        };
-        expect(s.checkpoint).toEqual(expected);
-        expect(writes).toEqual([expected]);
+        });
+        // Never written here: the online flow writes it after the window's scores (#270).
+        expect(writes).toEqual([]);
     });
 
     it('keeps a completed trace whose root span is outside the window (no intersection)', async () => {
@@ -290,7 +333,7 @@ describe('selectTraces', () => {
         expect(s.sampledTraceIds).toEqual(['completed-elsewhere']);
     });
 
-    it('leaves the checkpoint unwritten when the window has traffic but no completion span', async () => {
+    it('returns no checkpoint record when settled traffic has no completion span (broken gate)', async () => {
         const { fetchPage } = fakeFetcher(['a', 'b'], []);
         const { store, writes } = memoryCheckpoints();
 
@@ -309,14 +352,39 @@ describe('selectTraces', () => {
         expect(s.completedTraces).toBe(0);
         expect(s.sampledTraceIds).toEqual([]);
         expect(s.checkpoint).toBeNull();
-        expect(s.checkpointWritten).toBe(false);
         expect(s.isGateBroken).toBe(true);
         expect(writes).toEqual([]);
     });
 
-    it('still advances the checkpoint over a genuinely empty window', async () => {
+    it('a turn that starts in the last 30 min of the window and has not completed is not a broken gate', async () => {
+        // Root at 11:20, window end 11:27: the turn may run until 11:50, so its
+        // completion legitimately lands in the next window. One such turn on a
+        // quiet day (1 in, 0 completed) must not fail the run, and a backfill
+        // with a fixed windowEnd over it must not fail every time.
+        const lateStart = new Date(safeUpperBound(NOW).getTime() - 7 * 60_000).toISOString();
+        const { fetchPage } = fakeFetcher(['late'], [], 2, lateStart);
+        const { store } = memoryCheckpoints();
+
+        const s = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            rng: Math.random,
+            fetchPage,
+            checkpoints: store,
+            environment: ENV,
+            runId: 'run-1',
+        });
+
+        expect(s.tracesInWindow).toBe(1);
+        expect(s.completedTraces).toBe(0);
+        expect(s.isGateBroken).toBe(false);
+        expect(s.checkpoint).not.toBeNull();
+    });
+
+    it('still returns a checkpoint record over a genuinely empty window', async () => {
         const { fetchPage } = fakeFetcher([], []);
-        const { store, writes } = memoryCheckpoints();
+        const { store } = memoryCheckpoints();
 
         const s = await selectTraces({
             now: NOW,
@@ -329,8 +397,7 @@ describe('selectTraces', () => {
             runId: null,
         });
 
-        expect(s.checkpointWritten).toBe(true);
-        expect(writes.length).toBe(1);
+        expect(s.checkpoint).not.toBeNull();
         // No traffic at all is an idle window, not a broken gate: the run stays green.
         expect(s.isGateBroken).toBe(false);
     });
@@ -363,11 +430,11 @@ describe('selectTraces', () => {
         expect(writes).toEqual([]);
     });
 
-    it('does not write the checkpoint when the fetch fails', async () => {
+    it('propagates a failed fetch', async () => {
         const fetchPage: ObservationFetcher = async () => {
             throw new Error('langfuse down');
         };
-        const { store, writes } = memoryCheckpoints();
+        const { store } = memoryCheckpoints();
         await expect(
             selectTraces({
                 now: NOW,
@@ -380,7 +447,6 @@ describe('selectTraces', () => {
                 runId: null,
             }),
         ).rejects.toThrow('langfuse down');
-        expect(writes).toEqual([]);
     });
 
     it('neither reads nor writes the checkpoint under an explicit window override', async () => {
@@ -411,35 +477,9 @@ describe('selectTraces', () => {
 
         expect(reads).toBe(0);
         expect(writes).toEqual([]);
-        expect(s.checkpointWritten).toBe(false);
         expect(s.checkpoint).toBeNull();
         expect(s.sampledTraceIds).toEqual(['a']);
         expect(calls[0].filter[0].value).toBe('2026-09-01T00:00:00.000Z');
-    });
-
-    it('with writeCheckpoint false, returns the checkpoint record and writes nothing', async () => {
-        const { fetchPage } = fakeFetcher(['a', 'b'], ['a']);
-        const { store, writes } = memoryCheckpoints();
-
-        const s = await selectTraces({
-            now: NOW,
-            sampleRate: 1,
-            maxItems: 10,
-            rng: Math.random,
-            fetchPage,
-            checkpoints: store,
-            environment: ENV,
-            runId: 'run-2',
-            writeCheckpoint: false,
-        });
-
-        expect(writes).toEqual([]);
-        expect(s.checkpointWritten).toBe(false);
-        expect(s.checkpoint).toEqual({
-            upperBound: safeUpperBound(NOW).toISOString(),
-            runId: 'run-2',
-            writtenAt: NOW.toISOString(),
-        });
     });
 
     it('returns no checkpoint record under an override or an empty window', async () => {
@@ -455,7 +495,6 @@ describe('selectTraces', () => {
             checkpoints: store,
             environment: ENV,
             runId: null,
-            writeCheckpoint: false,
         });
         expect(overridden.checkpoint).toBeNull();
 
@@ -469,7 +508,6 @@ describe('selectTraces', () => {
             checkpoints: memoryCheckpoints(atBound).store,
             environment: ENV,
             runId: null,
-            writeCheckpoint: false,
         });
         expect(empty.checkpoint).toBeNull();
     });
