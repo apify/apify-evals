@@ -5,7 +5,7 @@
     "description": "Judges a 20% sample of finished production apify-ai turns (ai-team#249, #271). Run by the apify-ai-online-evals-daily schedule. Holds the Apify AI Agent Langfuse project keys as secret input; the Actor env keys belong to the dataset-run project.",
     "options": {
         "build": "latest",
-        "timeoutSecs": 7200,
+        "timeoutSecs": 10800,
         "memoryMbytes": 1024,
         "restartOnError": false
     },

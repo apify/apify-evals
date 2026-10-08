@@ -25,17 +25,25 @@ function extractJson(text: string): unknown {
     return JSON.parse(text.slice(start, end + 1));
 }
 
+/** Per-attempt HTTP timeout; `MAX_ATTEMPTS` of these plus the sleeps between them bound one call (see the schedule README). */
+export const ATTEMPT_TIMEOUT_MS = 120_000;
+export const MAX_ATTEMPTS = 3;
+export const RETRY_SLEEP_MS = 2000;
+
 /**
  * Structured output first (`response_format: json_schema`); if the proxy or
- * model rejects it (HTTP 400), retry once without it and parse by brace scan.
- * Two attempts cover transient failures: network errors, timeouts, HTML 502s.
+ * model rejects it (HTTP 400), retry without it and parse by brace scan.
+ * Up to MAX_ATTEMPTS (three) attempts cover transient failures: network
+ * errors, timeouts, HTML 502s. Worst case per call is
+ * `MAX_ATTEMPTS * ATTEMPT_TIMEOUT_MS + (MAX_ATTEMPTS - 1) * RETRY_SLEEP_MS`,
+ * 364 s at these values.
  */
 export async function judgeLlmCall({ apifyToken, model, prompt, schema }: LlmCallOptions): Promise<LlmCallResult> {
     let lastError: unknown;
     let useSchema = Boolean(schema);
     const startedAt = Date.now();
-    for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, RETRY_SLEEP_MS));
         try {
             const res = await fetch(PROXY_URL, {
                 method: 'POST',
@@ -46,10 +54,15 @@ export async function judgeLlmCall({ apifyToken, model, prompt, schema }: LlmCal
                     max_tokens: 2500,
                     messages: [{ role: 'user', content: prompt }],
                     ...(useSchema
-                        ? { response_format: { type: 'json_schema', json_schema: { name: 'judge_reply', strict: false, schema } } }
+                        ? {
+                              response_format: {
+                                  type: 'json_schema',
+                                  json_schema: { name: 'judge_reply', strict: false, schema },
+                              },
+                          }
                         : {}),
                 }),
-                signal: AbortSignal.timeout(120_000),
+                signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
             });
             const text = await res.text();
             if (res.status === 400 && useSchema) {
