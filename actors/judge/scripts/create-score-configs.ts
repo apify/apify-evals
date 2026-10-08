@@ -5,12 +5,20 @@
  * with the wrong dataType or an archived one is reported as a conflict and
  * the script exits 1 without creating anything for that name.
  *
- * Run from the repo root with the project's keys in the environment:
+ * Score configs cannot be deleted, so before creating anything the script
+ * checks that the keys belong to the online project ("Apify AI Agent", the
+ * one production apify-ai traces and the online scores live in). The shell's
+ * LANGFUSE_* keys usually point at the dataset-run project ("MCP Agent
+ * Evals"); run with them by mistake and the configs would be permanent there.
+ * Set LANGFUSE_PROJECT (name or id) to target another project on purpose.
+ *
+ * Run from the repo root with the ONLINE project's keys in the environment:
  *   LANGFUSE_BASE_URL=... LANGFUSE_PUBLIC_KEY=... LANGFUSE_SECRET_KEY=... \
  *     npm run create-score-configs --workspace actors/judge
  */
 import { LangfuseClient } from '@langfuse/client';
 
+import { assertOnlineProject, DEFAULT_ONLINE_PROJECT, langfuseProjectFetcher } from '../src/online-project.js';
 import { desiredOnlineScoreConfigs, type ExistingScoreConfig, planScoreConfigs } from '../src/score-configs.js';
 
 const REQUIRED_ENV = ['LANGFUSE_BASE_URL', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'] as const;
@@ -35,6 +43,12 @@ async function main(): Promise<void> {
     if (missing.length > 0) throw new Error(`Missing env: ${missing.join(', ')}`);
 
     const langfuse = new LangfuseClient();
+    // Before any write: configs are permanent, so the wrong project is not recoverable.
+    const project = await assertOnlineProject(
+        langfuseProjectFetcher(langfuse),
+        process.env.LANGFUSE_PROJECT ?? DEFAULT_ONLINE_PROJECT,
+    );
+    console.log(`Langfuse project: ${project.name} (${project.id})`);
     const existing = await listAllScoreConfigs(langfuse);
     const plan = planScoreConfigs(desiredOnlineScoreConfigs(), existing);
 
