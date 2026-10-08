@@ -519,7 +519,6 @@ function isRollup(value: unknown): value is Rollup {
         typeof r === 'object' &&
         r !== null &&
         typeof r.date === 'string' &&
-        typeof r.environment === 'string' &&
         typeof r.runs === 'number' &&
         isCountRecord(r.passes) &&
         isCountRecord(r.n) &&
@@ -543,8 +542,9 @@ const sumCoverage = (a: CoverageCounters, b: CoverageCounters): CoverageCounters
 /**
  * Several judge runs on one UTC day share one item, so counts are summed and
  * the rates recomputed; `sampleRate` and `maxItems` are the latest run's. An
- * existing item that is not a rollup (hand-edited, older shape) is replaced,
- * with a warning, rather than trusted. A retry over the SAME window (after a
+ * existing item that is not a rollup (hand-edited, unrelated shape) is
+ * replaced, with a warning, rather than trusted; one from before the
+ * `environment` field existed still merges. A retry over the SAME window (after a
  * failed rollup or a failed batch) sums its `tracesInWindow`,
  * `completedTraces` and `sampled` a second time. `n` and `passes` count only
  * what each run WROTE: a retry draws a new random sample, so traces the failed
@@ -562,6 +562,7 @@ export function mergeRollup(existing: unknown, fresh: Rollup): Rollup {
     }
     const passes = sumRecords(existing.passes, fresh.passes);
     const n = sumRecords(existing.n, fresh.n);
+    // An item written before `environment` existed is still a rollup; it can only be the fresh one's (prod).
     return {
         ...fresh,
         runs: existing.runs + fresh.runs,

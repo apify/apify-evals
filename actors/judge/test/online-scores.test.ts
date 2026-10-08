@@ -486,8 +486,14 @@ describe('mergeRollup', () => {
         expect(mergeRollup(undefined, fresh)).toEqual(fresh);
         expect(mergeRollup({ some: 'other shape' }, fresh)).toEqual(fresh);
         expect(mergeRollup({ ...fresh, passes: { agent_judge: 'x' } }, fresh)).toEqual(fresh);
-        const { environment: _dropped, ...withoutEnvironment } = fresh;
-        expect(mergeRollup(withoutEnvironment, fresh)).toEqual(fresh);
+    });
+
+    it('merges an item written before the environment field existed instead of replacing it', () => {
+        const { environment: _dropped, ...legacy } = fresh;
+        const merged = mergeRollup(legacy, fresh);
+        expect(merged.runs).toBe(2);
+        expect(merged.n.agent_judge).toBe(2);
+        expect(merged.environment).toBe('prod');
     });
 
     it('sums counts and coverage, recomputes rates, keeps the latest run parameters', () => {
