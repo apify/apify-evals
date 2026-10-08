@@ -50,10 +50,6 @@ const {
     auditQueue = 'judge-audit',
     auditPassSample: auditPassSampleInput = 0.1,
 } = input;
-// Per-mode default: the offline suite keeps Sonnet; online scoring runs on
-// every sampled production turn, so it defaults to the cheaper flash model.
-const judgeModel =
-    input.judgeModel ?? (mode === 'online' ? 'deepseek/deepseek-v4-flash' : 'anthropic/claude-sonnet-4.6');
 if (mode === 'datasetRun' && !datasetRunId) {
     throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
 }
@@ -71,6 +67,13 @@ for (const [inputKey, envKey] of [
 
 const { LangfuseClient } = await import('@langfuse/client');
 const { resolveOrSeedPrompt } = await import('./prompt.js');
+const { DEFAULT_JUDGE_MODEL } = await import('./core.js');
+const { DEFAULT_ONLINE_JUDGE_MODEL } = await import('./online-judge.js');
+const { HOLISTIC_SCORE_NAME } = await import('./rubric.js');
+
+// Per-mode default: the offline suite keeps Sonnet; online scoring runs on
+// every sampled production turn, so it defaults to the cheaper flash model.
+const judgeModel = input.judgeModel ?? (mode === 'online' ? DEFAULT_ONLINE_JUDGE_MODEL : DEFAULT_JUDGE_MODEL);
 
 const apifyToken = process.env.APIFY_TOKEN;
 if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for the judge LLM and artifact reads)');
@@ -83,7 +86,8 @@ if (mode === 'online') {
         await import('./online-judge.js');
     const { mcpToolSchemaSource } = await import('./online-schema.js');
     const { JUDGE_IMPL_VERSION } = await import('./core.js');
-    const { finishOnlineRun, langfuseOnlineScoreReader, skipAlreadyJudged } = await import('./online-scores.js');
+    const { finishOnlineRun, langfuseOnlineScoreReader, skipAlreadyJudged, writeOnlineScores } =
+        await import('./online-scores.js');
     const { assertOnlineProject, DEFAULT_ONLINE_PROJECT, langfuseProjectFetcher } = await import('./online-project.js');
     const langfuse = new LangfuseClient();
     // Before any read or write: the Actor env keys are the dataset-run project.
@@ -94,9 +98,27 @@ if (mode === 'online') {
     log.info(`Langfuse project: ${project.name} (${project.id})`);
     const now = new Date();
 
-    /** Score every trace (ai-team#269). Returns the verdicts; writing them is the step after. */
-    async function judgeOnline(traceIds: string[], prompt: { version: number; template: string }) {
-        if (traceIds.length === 0) return { judged: 0, failedToJudge: 0, metadataMissing: 0, verdicts: [] };
+    type Verdicts = Awaited<ReturnType<typeof judgeOnlineTrace>>['verdicts'];
+
+    /**
+     * Score every trace (ai-team#269) and write each trace's scores (#270) as
+     * soon as it is judged: the ids are idempotent and the holistic trace copy
+     * goes last, so a run that times out at trace 95 of 100 leaves 94 traces
+     * in Langfuse and the retry's pre-filter skips them. Only the rollup and
+     * the checkpoint wait for the end of the batch.
+     */
+    async function judgeAndWriteOnline(
+        traceIds: string[],
+        prompt: { version: number; template: string },
+        target: { date: Date; environment: string },
+    ) {
+        const written: Verdicts[] = [];
+        let judged = 0;
+        let failedToJudge = 0;
+        let failedToWrite = 0;
+        let metadataMissing = 0;
+        let schemaMismatch = 0;
+        if (traceIds.length === 0) return { judged, failedToJudge, failedToWrite, metadataMissing, written };
         // One tools/list per batch; a failure omits argumentCorrectness for the
         // whole batch rather than failing every trace.
         const schemas = await mcpToolSchemaSource({ token: apifyToken as string })
@@ -108,15 +130,13 @@ if (mode === 'online') {
         const toolset = schemas ? `live toolset ${schemas.hash}` : 'no live toolset (argumentCorrectness omitted)';
         log.info(`Judging ${traceIds.length} traces: model ${judgeModel}, prompt v${prompt.version}, ${toolset}`);
 
-        const verdicts: Awaited<ReturnType<typeof judgeOnlineTrace>>['verdicts'][] = [];
-        let failedToJudge = 0;
-        let metadataMissing = 0;
         let next = 0;
         async function onlineWorker() {
             while (next < traceIds.length) {
                 const traceId = traceIds[next++];
+                let verdicts: Verdicts;
                 try {
-                    const { verdicts: v, traceMetadataFound } = await judgeOnlineTrace({
+                    const judgement = await judgeOnlineTrace({
                         langfuse,
                         traceId,
                         apifyToken: apifyToken as string,
@@ -125,17 +145,23 @@ if (mode === 'online') {
                         promptVersion: prompt.version,
                         schemas,
                     });
-                    verdicts.push(v);
-                    if (!traceMetadataFound) metadataMissing++;
-                    const holistic = v.scores.find((s) => s.name === 'agent_judge');
+                    verdicts = judgement.verdicts;
+                    judged++;
+                    if (!judgement.traceMetadataFound) metadataMissing++;
+                    if (verdicts.metadata.schemaMatch === false) schemaMismatch++;
+                    const holistic = verdicts.scores.find((s) => s.name === HOLISTIC_SCORE_NAME);
                     log.info(
-                        `${traceId}: judged, agent_judge=${holistic && 'value' in holistic ? holistic.value : 'n/a'}`,
+                        `${traceId}: judged, ${HOLISTIC_SCORE_NAME}=${holistic && 'value' in holistic ? holistic.value : 'n/a'}`,
                     );
                 } catch (err) {
                     // One bad trace must not abort the batch.
                     failedToJudge++;
                     log.error(`${traceId}: judge failed: ${err}`);
+                    continue;
                 }
+                const result = await writeOnlineScores({ verdicts: [verdicts], scores: langfuse.api.scores, target });
+                written.push(...result.written);
+                failedToWrite += result.failedToWrite;
             }
         }
         await Promise.all(Array.from({ length: Math.min(concurrency, traceIds.length) }, onlineWorker));
@@ -143,14 +169,21 @@ if (mode === 'online') {
         // none yielded anything says the reader, not the traces, is wrong.
         if (metadataMissing > 0) {
             log.warning(
-                `${metadataMissing} of ${verdicts.length} judged traces carried no trace metadata (outcome, toolSchemaHash)`,
+                `${metadataMissing} of ${judged} judged traces carried no trace metadata (outcome, toolSchemaHash)`,
             );
         }
-        return { judged: verdicts.length, failedToJudge, metadataMissing, verdicts };
+        // Expected on every trace until the agent hash covers the raw JSON schema (apify-ai-agent fix pending).
+        if (schemaMismatch > 0) {
+            log.warning(
+                `${schemaMismatch} of ${judged} judged traces carry a toolSchemaHash that differs from the live toolset ` +
+                    `${schemas?.hash}; the live schemas were used for argumentCorrectness either way`,
+            );
+        }
+        return { judged, failedToJudge, failedToWrite, metadataMissing, written };
     }
 
-    // 1. Select. The checkpoint is NOT written here (writeCheckpoint: false):
-    // it moves only after the window's scores and rollup are in Langfuse.
+    // 1. Select. The checkpoint is NOT written here: it moves only after the
+    // window's scores and rollup are in Langfuse (finishOnlineRun).
     const checkpoints = actorCheckpointStore(environment);
     const selection = await selectTraces({
         now,
@@ -162,7 +195,6 @@ if (mode === 'online') {
         checkpoints,
         runId: Actor.getEnv().actorRunId,
         environment,
-        writeCheckpoint: false,
     });
 
     // 2. Resolve the prompt once per batch (its version is part of the score
@@ -184,20 +216,27 @@ if (mode === 'online') {
     });
     if (skipped.length > 0) log.info(`${skipped.length} sampled traces already judged under this version, skipped`);
 
-    // 3. Judge, then 4. write both copies of every score, 5. roll the batch up
-    // into the day's dataset item and 6. move the checkpoint, in that order;
-    // finishOnlineRun() documents why a rollup failure or an all-failed batch
-    // holds the checkpoint back and a single trace's write failure does not.
-    // Run copies and the rollup are keyed on the window START day (the day the
-    // traffic is from), so a backfill lands on its own day.
-    const { judged, failedToJudge, metadataMissing, verdicts } = await judgeOnline(toJudge, prompt);
+    // 3. Judge and write both copies of every score trace by trace, then 4.
+    // roll the batch up into the day's dataset item and 5. move the
+    // checkpoint, in that order; finishOnlineRun() documents why a rollup
+    // failure, an all-failed write batch or a mostly-failed judge batch holds
+    // the checkpoint back and a single trace's write failure does not. Run
+    // copies and the rollup are keyed on the window START day (the day the
+    // traffic is from) and on the environment, so a backfill lands on its own
+    // day and a staging run never touches prod's run or rollup.
+    const target = { date: selection.window?.start ?? now, environment };
+    const { judged, failedToJudge, failedToWrite, metadataMissing, written } = await judgeAndWriteOnline(
+        toJudge,
+        prompt,
+        target,
+    );
     const finished = await finishOnlineRun({
-        verdicts,
-        scores: langfuse.api.scores,
+        written,
+        failedToWrite,
         rollupApi: langfuse.api,
         checkpoints,
         checkpoint: selection.checkpoint,
-        date: selection.window?.start ?? now,
+        target,
         sampleRate,
         maxItems,
         coverage: {
@@ -237,12 +276,12 @@ if (mode === 'online') {
     // run-status alert already covers a FAILED one (#271 needs no extra monitor).
     if (selection.isGateBroken) {
         await Actor.fail(
-            `Completion gate broken: ${selection.tracesInWindow} traces in the window, none completed. ` +
-                'The checkpoint was not moved; see OUTPUT.',
+            `Completion gate broken: ${selection.tracesInWindow} traces in the window, none completed although ` +
+                'some started early enough to have finished. The checkpoint was not moved; see OUTPUT.',
         );
     }
-    // A failed rollup, an all-failed judge batch or an all-failed write batch exits non-zero so the schedule shows a
-    // failed run and the window is retried.
+    // A failed rollup, a mostly-failed judge batch or an all-failed write batch exits non-zero so the schedule shows
+    // a failed run and the window is retried.
     if (finished.error !== null) await Actor.fail(`Online run incomplete: ${finished.error}`);
     await Actor.exit();
 }
