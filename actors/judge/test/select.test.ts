@@ -417,6 +417,63 @@ describe('selectTraces', () => {
         expect(calls[0].filter[0].value).toBe('2026-09-01T00:00:00.000Z');
     });
 
+    it('with writeCheckpoint false, returns the checkpoint record and writes nothing', async () => {
+        const { fetchPage } = fakeFetcher(['a', 'b'], ['a']);
+        const { store, writes } = memoryCheckpoints();
+
+        const s = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            rng: Math.random,
+            fetchPage,
+            checkpoints: store,
+            environment: ENV,
+            runId: 'run-2',
+            writeCheckpoint: false,
+        });
+
+        expect(writes).toEqual([]);
+        expect(s.checkpointWritten).toBe(false);
+        expect(s.checkpoint).toEqual({
+            upperBound: safeUpperBound(NOW).toISOString(),
+            runId: 'run-2',
+            writtenAt: NOW.toISOString(),
+        });
+    });
+
+    it('returns no checkpoint record under an override or an empty window', async () => {
+        const { fetchPage } = fakeFetcher(['a'], ['a']);
+        const { store } = memoryCheckpoints();
+        const overridden = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            override: { windowStart: '2026-09-01T00:00:00Z' },
+            rng: Math.random,
+            fetchPage,
+            checkpoints: store,
+            environment: ENV,
+            runId: null,
+            writeCheckpoint: false,
+        });
+        expect(overridden.checkpoint).toBeNull();
+
+        const atBound = { upperBound: safeUpperBound(NOW).toISOString(), runId: null, writtenAt: 'x' };
+        const empty = await selectTraces({
+            now: NOW,
+            sampleRate: 1,
+            maxItems: 10,
+            rng: Math.random,
+            fetchPage,
+            checkpoints: memoryCheckpoints(atBound).store,
+            environment: ENV,
+            runId: null,
+            writeCheckpoint: false,
+        });
+        expect(empty.checkpoint).toBeNull();
+    });
+
     it('paginates both queries fully', async () => {
         const all = Array.from({ length: 7 }, (_, i) => `t${i}`);
         const { fetchPage, calls } = fakeFetcher(all, all.slice(0, 5), 3);
