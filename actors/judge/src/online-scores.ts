@@ -3,7 +3,7 @@ import { log } from 'apify';
 
 import type { OnlineVerdicts } from './online-judge.js';
 import { HOLISTIC_SCORE_NAME, ONLINE_SCORE_NAMES } from './rubric.js';
-import type { Checkpoint, CheckpointStore } from './select.js';
+import { type Checkpoint, type CheckpointStore, DEFAULT_ENVIRONMENT } from './select.js';
 
 /**
  * Online score writing (ai-team#270): every verdict from #269 goes to Langfuse
@@ -20,6 +20,11 @@ import type { Checkpoint, CheckpointStore } from './select.js';
  * - The daily rollup is a dataset item keyed `rollup-YYYY-MM-DD` in
  *   `apify-ai-online-rollups`, upserted on its id, holding pass rate and n per
  *   score plus the coverage counters. Runs on the same UTC day merge into it.
+ * - Everything is per Langfuse environment: both copies carry the judged
+ *   trace's `environment`, it is in the score metadata, and a run over any
+ *   environment but `prod` suffixes its run id and rollup id with the
+ *   environment (`apify-ai-online-YYYY-MM-DD-staging`), so a staging backfill
+ *   never lands in prod's run, prod's rollup or a score filter on `prod`.
  *
  * Only `pendingScores()` reads #269's `OnlineVerdicts` shape; everything else
  * works on `PendingScore`, so a change upstream lands in one place.
@@ -136,14 +141,27 @@ export function onlineScoreId(
     return id;
 }
 
-/** The invented dataset run the archival copies hang off; one per UTC day of writing. */
-export function onlineRunId(date: Date): string {
-    return `${ONLINE_RUN_ID_PREFIX}${utcDate(date)}`;
+/** `-<environment>` for every environment but prod, so prod ids stay as they were and other populations get their own. */
+export function environmentSuffix(environment: string): string {
+    return environment === DEFAULT_ENVIRONMENT ? '' : `-${sanitiseIdPart(environment)}`;
+}
+
+/** The invented dataset run the archival copies hang off; one per UTC day of the window start and environment. */
+export function onlineRunId(date: Date, environment: string = DEFAULT_ENVIRONMENT): string {
+    return `${ONLINE_RUN_ID_PREFIX}${utcDate(date)}${environmentSuffix(environment)}`;
 }
 
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
+
+/** Where and for which population a score is written: the window start day and the Langfuse environment. */
+export interface ScoreTarget {
+    /** The WINDOW START: keys the run copy's `datasetRunId` and the rollup on the day the traffic is from. */
+    date: Date;
+    /** The environment the judged traces were selected from; on both copies, in the metadata and in the non-prod ids. */
+    environment: string;
+}
 
 /**
  * The two requests for one score. `date` is the WINDOW START, which keys the
@@ -158,28 +176,36 @@ export function onlineRunId(date: Date): string {
  * `skipAlreadyJudged()` is what stops that; the partial-write retry path
  * (`orderedRequests`) is the one exception. `source` is left at its default,
  * API: the request type accepts API or ANNOTATION, and EVAL is refused.
+ * Both copies carry `environment`, so a score filter on `prod` excludes a
+ * staging backfill, and the run copy of a non-prod environment hangs off its
+ * own run id.
  */
-export function scoreRequests(score: PendingScore, date: Date): { trace: CreateScoreRequest; run: CreateScoreRequest } {
+export function scoreRequests(
+    score: PendingScore,
+    { date, environment }: ScoreTarget,
+): { trace: CreateScoreRequest; run: CreateScoreRequest } {
     const key = { traceId: score.traceId, scoreName: score.name, version: score.version };
+    const metadata = { ...score.metadata, environment };
     const common = {
         name: score.name,
         value: score.value,
         dataType: 'BOOLEAN' as const,
         comment: score.comment,
+        environment,
     };
     return {
         trace: {
             ...common,
             id: onlineScoreId(key, 'trace'),
             traceId: score.traceId,
-            metadata: score.evidence === undefined ? score.metadata : { ...score.metadata, evidence: score.evidence },
+            metadata: score.evidence === undefined ? metadata : { ...metadata, evidence: score.evidence },
         },
         run: {
             ...common,
             id: onlineScoreId(key, 'run'),
-            datasetRunId: onlineRunId(date),
+            datasetRunId: onlineRunId(date, environment),
             // No evidence here: the archival copy outlives the trace's retention, and evidence may quote the user.
-            metadata: score.metadata,
+            metadata,
         },
     };
 }
@@ -194,16 +220,16 @@ export function scoreRequests(score: PendingScore, date: Date): { trace: CreateS
  * dedup key includes toDate(timestamp)); its run copies still land under the
  * window's day because the run id is keyed on the window start.
  */
-export function orderedRequests(scores: PendingScore[], date: Date): CreateScoreRequest[] {
+export function orderedRequests(scores: PendingScore[], target: ScoreTarget): CreateScoreRequest[] {
     const holistic = scores.find((s) => s.name === HOLISTIC_SCORE_NAME);
     const criteria = scores.filter((s) => s.name !== HOLISTIC_SCORE_NAME);
     const out: CreateScoreRequest[] = [];
     for (const score of criteria) {
-        const { trace, run } = scoreRequests(score, date);
+        const { trace, run } = scoreRequests(score, target);
         out.push(trace, run);
     }
     if (holistic) {
-        const { trace, run } = scoreRequests(holistic, date);
+        const { trace, run } = scoreRequests(holistic, target);
         out.push(run, trace);
     }
     return out;
@@ -216,28 +242,35 @@ export interface ScoresApi {
 export interface WriteResult {
     /** Traces whose whole score set (both copies) was written. */
     scoresWritten: number;
-    /** Traces with at least one failed write; the run goes on and the trace is retried next window. */
+    /** Traces with at least one failed write. The run goes on and the checkpoint moves past them, so they are
+     * not retried; the rollup and OUTPUT count them. */
     failedToWrite: number;
     /** The verdicts behind `scoresWritten`: only these go into the rollup. */
     written: OnlineVerdicts[];
 }
 
-/** Write every trace's scores; one trace's failure is counted, logged and skipped, never fatal to the batch. */
+/**
+ * Write every given trace's scores; one trace's failure is counted, logged
+ * and skipped, never fatal to the batch. The online flow calls this with ONE
+ * verdict right after each trace is judged (main.ts), so a run that dies or
+ * times out at trace 95 of 100 has 94 traces in Langfuse and the retry's
+ * pre-filter skips them; a list is accepted so the tail and the tests can
+ * write a batch too.
+ */
 export async function writeOnlineScores({
     verdicts,
     scores,
-    date,
+    target,
 }: {
     verdicts: OnlineVerdicts[];
     scores: ScoresApi;
-    /** The window start; keys the run copies' `datasetRunId`. */
-    date: Date;
+    target: ScoreTarget;
 }): Promise<WriteResult> {
     const written: OnlineVerdicts[] = [];
     let failedToWrite = 0;
     for (const v of verdicts) {
         try {
-            for (const request of orderedRequests(pendingScores(v), date)) await scores.create(request);
+            for (const request of orderedRequests(pendingScores(v), target)) await scores.create(request);
             written.push(v);
         } catch (err) {
             failedToWrite++;
@@ -247,13 +280,33 @@ export async function writeOnlineScores({
     return { scoresWritten: written.length, failedToWrite, written };
 }
 
-export class AllJudgementsFailedError extends Error {
-    constructor(readonly traces: number) {
+/**
+ * Share of the traces given to the judge that may fail to judge before the
+ * batch counts as a judge failure rather than as per-trace bad luck. Some
+ * failures are legitimate (an unreconstructable trace, one model refusal), so
+ * zero tolerance would hold the window too often; above half, the judge or the
+ * provider is the problem and the window must be retried, or the failed traces
+ * would be lost for good once the checkpoint moves past them.
+ */
+export const MAX_JUDGE_FAILURE_RATIO = 0.5;
+
+export class TooManyJudgeFailuresError extends Error {
+    constructor(
+        readonly failed: number,
+        readonly given: number,
+    ) {
         super(
-            `Every one of the ${traces} traces to judge failed to judge; checkpoint not written so the window is retried`,
+            `${failed} of the ${given} traces given to the judge failed to judge (over ${MAX_JUDGE_FAILURE_RATIO * 100}%); ` +
+                'checkpoint not written so the window is retried',
         );
-        this.name = 'AllJudgementsFailedError';
+        this.name = 'TooManyJudgeFailuresError';
     }
+}
+
+/** True when the judge failed on more than MAX_JUDGE_FAILURE_RATIO of the traces it was given. */
+export function judgeFailureExceeded({ judged, failedToJudge }: Pick<JudgeCounters, 'judged' | 'failedToJudge'>) {
+    const given = judged + failedToJudge;
+    return given > 0 && failedToJudge / given > MAX_JUDGE_FAILURE_RATIO;
 }
 
 export class AllScoreWritesFailedError extends Error {
@@ -394,13 +447,17 @@ export type JudgeCounters = Omit<CoverageCounters, 'scoresWritten' | 'failedToWr
 
 export interface Rollup {
     date: string;
+    /** The Langfuse environment the traces came from; part of the item id for every environment but prod. */
+    environment: string;
     /** Judge runs merged into this item so far. */
     runs: number;
     /** Per score name: how many traces scored 1. */
     passes: Record<string, number>;
     /** Per score name: how many traces were scored at all (omitted criteria are not counted). */
     n: Record<string, number>;
-    /** passes / n, or null when n is 0. `avg` over the day's scores in Langfuse gives the same number. */
+    /** passes / n, or null when n is 0, over the traces WRITTEN by the runs merged into this item. The scores in
+     * Langfuse are the source of truth: a retry after a failed rollup samples anew and rolls up only what it
+     * wrote, so `avg` over the day's scores can differ from this. */
     passRate: Record<string, number | null>;
     sampleRate: number;
     maxItems: number;
@@ -412,15 +469,15 @@ function passRates(passes: Record<string, number>, n: Record<string, number>): R
     return Object.fromEntries(ONLINE_SCORE_NAMES.map((name) => [name, n[name] > 0 ? passes[name] / n[name] : null]));
 }
 
-/** One run's batch as a rollup; pure, from the verdicts whose scores were WRITTEN this run. `date` is the window start. */
+/** One run's batch as a rollup; pure, from the verdicts whose scores were WRITTEN this run. `target.date` is the window start. */
 export function computeRollup({
-    date,
+    target,
     verdicts,
     sampleRate,
     maxItems,
     coverage,
 }: {
-    date: Date;
+    target: ScoreTarget;
     verdicts: OnlineVerdicts[];
     sampleRate: number;
     maxItems: number;
@@ -435,7 +492,17 @@ export function computeRollup({
             if (score.value === 1) passes[score.name]++;
         }
     }
-    return { date: utcDate(date), runs: 1, passes, n, passRate: passRates(passes, n), sampleRate, maxItems, coverage };
+    return {
+        date: utcDate(target.date),
+        environment: target.environment,
+        runs: 1,
+        passes,
+        n,
+        passRate: passRates(passes, n),
+        sampleRate,
+        maxItems,
+        coverage,
+    };
 }
 
 function isCountRecord(value: unknown): value is Record<string, number> {
@@ -475,20 +542,27 @@ const sumCoverage = (a: CoverageCounters, b: CoverageCounters): CoverageCounters
 /**
  * Several judge runs on one UTC day share one item, so counts are summed and
  * the rates recomputed; `sampleRate` and `maxItems` are the latest run's. An
- * existing item that is not a rollup (hand-edited, older shape) is replaced,
- * with a warning, rather than trusted. A retry over the SAME window (after a
- * failed rollup or failed writes) sums its `tracesInWindow`, `completedTraces`
- * and `sampled` a second time; `n` and `passes` stay exact because the retry
- * only writes traces the pre-filter did not skip.
+ * existing item that is not a rollup (hand-edited, unrelated shape) is
+ * replaced, with a warning, rather than trusted; one from before the
+ * `environment` field existed still merges. A retry over the SAME window (after a
+ * failed rollup or a failed batch) sums its `tracesInWindow`,
+ * `completedTraces` and `sampled` a second time. `n` and `passes` count only
+ * what each run WROTE: a retry draws a new random sample, so traces the failed
+ * run scored but never rolled up stay out of the item (their scores are in
+ * Langfuse under the same run id), and the day's sample can grow past
+ * `sampleRate`. The scores are the source of truth; the rollup is for alerting.
  */
 export function mergeRollup(existing: unknown, fresh: Rollup): Rollup {
     if (existing === null || existing === undefined) return fresh;
     if (!isRollup(existing)) {
-        log.warning(`Rollup ${fresh.date}: existing item metadata is not a rollup, replacing it`);
+        log.warning(
+            `Rollup ${rollupItemId(fresh.date, fresh.environment)}: existing item metadata is not a rollup, replacing it`,
+        );
         return fresh;
     }
     const passes = sumRecords(existing.passes, fresh.passes);
     const n = sumRecords(existing.n, fresh.n);
+    // An item written before `environment` existed is still a rollup; it can only be the fresh one's (prod).
     return {
         ...fresh,
         runs: existing.runs + fresh.runs,
@@ -499,16 +573,23 @@ export function mergeRollup(existing: unknown, fresh: Rollup): Rollup {
     };
 }
 
-export function rollupItemId(date: Date): string {
-    return `${ROLLUP_ITEM_PREFIX}${utcDate(date)}`;
+/** `rollup-YYYY-MM-DD`, plus `-<environment>` for every environment but prod (see `environmentSuffix`). */
+export function rollupItemId(date: Date | string, environment: string = DEFAULT_ENVIRONMENT): string {
+    const day = typeof date === 'string' ? date : utcDate(date);
+    return `${ROLLUP_ITEM_PREFIX}${day}${environmentSuffix(environment)}`;
 }
 
 /** The dataset item request: the run parameters as `input`, the numbers as `metadata`. */
 export function rollupItemRequest(rollup: Rollup): CreateDatasetItemRequest {
     return {
         datasetName: ROLLUP_DATASET_NAME,
-        id: `${ROLLUP_ITEM_PREFIX}${rollup.date}`,
-        input: { date: rollup.date, sampleRate: rollup.sampleRate, maxItems: rollup.maxItems },
+        id: rollupItemId(rollup.date, rollup.environment),
+        input: {
+            date: rollup.date,
+            environment: rollup.environment,
+            sampleRate: rollup.sampleRate,
+            maxItems: rollup.maxItems,
+        },
         metadata: rollup,
     };
 }
@@ -535,7 +616,7 @@ export const isNotFound = (err: unknown) => (err as { statusCode?: number })?.st
 async function ensureRollupDataset(api: RollupApi): Promise<void> {
     await api.datasets.create({
         name: ROLLUP_DATASET_NAME,
-        description: 'Daily rollups of the online Apify AI judge (ai-team#270); one item per UTC day.',
+        description: 'Daily rollups of the online Apify AI judge (ai-team#270); one item per UTC day and environment.',
     });
 }
 
@@ -556,25 +637,25 @@ async function existingRollup(api: RollupApi, id: string): Promise<unknown> {
  */
 export async function upsertDailyRollup({ api, rollup }: { api: RollupApi; rollup: Rollup }): Promise<{ id: string }> {
     await ensureRollupDataset(api);
-    const id = `${ROLLUP_ITEM_PREFIX}${rollup.date}`;
+    const id = rollupItemId(rollup.date, rollup.environment);
     const merged = mergeRollup(await existingRollup(api, id), rollup);
     const item = await api.datasetItems.create(rollupItemRequest(merged));
     return { id: item.id };
 }
 
 // ---------------------------------------------------------------------------
-// The tail of an online run: write, roll up, then checkpoint
+// The tail of an online run: roll up what was written, then checkpoint
 // ---------------------------------------------------------------------------
 
 export interface FinishOnlineRunOptions {
-    verdicts: OnlineVerdicts[];
-    scores: ScoresApi;
+    /** What `writeOnlineScores()` returned over the run, summed: the verdicts in Langfuse and the traces that failed. */
+    written: OnlineVerdicts[];
+    failedToWrite: number;
     rollupApi: RollupApi;
     checkpoints: CheckpointStore;
     /** From `selectTraces()`; null under a window override or an empty window, and then nothing is written. */
     checkpoint: Checkpoint | null;
-    /** The window start: keys the run copies and the rollup item on the day the traffic is from. */
-    date: Date;
+    target: ScoreTarget;
     sampleRate: number;
     maxItems: number;
     coverage: JudgeCounters;
@@ -582,44 +663,48 @@ export interface FinishOnlineRunOptions {
 
 export interface FinishOnlineRunResult extends Omit<WriteResult, 'written'> {
     rollupItemId: string | null;
-    /** Non-null when every judgement failed, every write failed or the rollup failed; the caller fails the run with it. */
+    /** Non-null when too many judgements failed, every write failed or the rollup failed; the caller fails the run with it. */
     error: unknown;
     checkpointWritten: boolean;
 }
 
 /**
- * Scores first, rollup second, checkpoint last. The checkpoint moves only when
- * the rollup succeeded and at least one trace was written: a batch whose
- * writes ALL failed (Langfuse down, subject rejected) must not look like
- * success, or the window and its LLM spend are silently lost. Its twin on the
- * judge side is a batch where every trace given to the judge failed to judge
- * (model down, prompt broken): same treatment, since the window would
- * otherwise advance with nothing scored. Any of these failures
- * leaves the window to be retried, which is safe because every score id
- * dedups and `skipAlreadyJudged()` spends no LLM calls on the traces already
- * written. A failed score write for SOME traces does not hold the checkpoint
- * back: each is one sampled item of many, counted in `failedToWrite` and in
- * the rollup's coverage, and holding the whole window for it would re-sample
- * and re-judge the rest of the window for nothing. The rollup is skipped when
- * the run sampled and judged nothing (an empty window has nothing to record).
+ * The scores are already in Langfuse (written per trace as each was judged):
+ * rollup first, checkpoint last. The checkpoint moves only when the rollup
+ * succeeded and the batch was sound: a batch whose writes ALL failed (Langfuse
+ * down, subject rejected) must not look like success, or the window and its
+ * LLM spend are silently lost. Its twin on the judge side is a batch where
+ * more than MAX_JUDGE_FAILURE_RATIO of the traces given to the judge failed to
+ * judge (model down, provider rate-limiting, prompt broken): same treatment,
+ * since the window would otherwise advance with most of its sample unscored
+ * and never retried, and neither alert would notice (the run SUCCEEDED and
+ * some scores exist). Any of these failures leaves the window to be retried,
+ * which is safe because every score id dedups and `skipAlreadyJudged()` spends
+ * no LLM calls on the traces already written. A failed score write for SOME
+ * traces does not hold the checkpoint back: each is one sampled item of many,
+ * counted in `failedToWrite` and in the rollup's coverage, and holding the
+ * whole window for it would re-sample and re-judge the rest of the window for
+ * nothing. The rollup is skipped when the run sampled and judged nothing (an
+ * empty window has nothing to record) and when the batch failed (a failed
+ * batch is retried, not summarised; its written scores stay in Langfuse).
  */
 export async function finishOnlineRun(opts: FinishOnlineRunOptions): Promise<FinishOnlineRunResult> {
-    const { verdicts, scores, rollupApi, checkpoints, checkpoint, date, sampleRate, maxItems } = opts;
-    const { written, scoresWritten, failedToWrite } = await writeOnlineScores({ verdicts, scores, date });
+    const { written, failedToWrite, rollupApi, checkpoints, checkpoint, target, sampleRate, maxItems } = opts;
+    const scoresWritten = written.length;
     const coverage: CoverageCounters = { ...opts.coverage, scoresWritten, failedToWrite };
 
     let rollupId: string | null = null;
     let error: unknown = null;
     // judged + failedToJudge is what the judge was given (the pre-filtered rest never reaches it).
-    if (coverage.judged === 0 && coverage.failedToJudge > 0) {
-        error = new AllJudgementsFailedError(coverage.failedToJudge);
+    if (judgeFailureExceeded(coverage)) {
+        error = new TooManyJudgeFailuresError(coverage.failedToJudge, coverage.judged + coverage.failedToJudge);
         log.error(String(error));
-    } else if (verdicts.length > 0 && scoresWritten === 0) {
-        error = new AllScoreWritesFailedError(verdicts.length);
+    } else if (failedToWrite > 0 && scoresWritten === 0) {
+        error = new AllScoreWritesFailedError(failedToWrite);
         log.error(String(error));
     } else if (coverage.sampled > 0 || coverage.judged > 0) {
         try {
-            const rollup = computeRollup({ date, verdicts: written, sampleRate, maxItems, coverage });
+            const rollup = computeRollup({ target, verdicts: written, sampleRate, maxItems, coverage });
             rollupId = (await upsertDailyRollup({ api: rollupApi, rollup })).id;
         } catch (err) {
             error = err;

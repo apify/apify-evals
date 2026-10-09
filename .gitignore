@@ -10,3 +10,5 @@ storage/
 # Workspace artifacts left over from local eval runs
 .eval-marker-*
 tsconfig.tsbuildinfo
+# Local copies of the Task and schedule bodies with real ids filled in
+actors/judge/schedule/*.local.json

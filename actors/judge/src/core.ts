@@ -41,6 +41,8 @@ import { mergeVerdict, type MergedVerdict } from './verdict.js';
  */
 
 export const RUBRIC_VERSION = '1203-draft-3';
+/** datasetRun-mode default judge model; online mode has its own (`DEFAULT_ONLINE_JUDGE_MODEL`). */
+export const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4.6';
 export const JUDGE_IMPL_VERSION = '0.4.0';
 
 /** Fix areas come from the suite profile (see profile.ts); this is the type only. */

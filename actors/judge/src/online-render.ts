@@ -15,6 +15,38 @@ import type { OnlineTurn, TurnToolCall } from './online-turn.js';
 /** Per-payload cap: enough for the judge to see the shape and the salient values, not a whole dataset. */
 export const PAYLOAD_CHAR_BUDGET = 4096;
 
+/**
+ * Unique fence around the rendered turn in the judge prompt (`online-judge.ts`
+ * places them). They live here because the renderer must know them: text from
+ * the turn that spells one out is replaced before it reaches the prompt, so
+ * a tool result or user message cannot close the fence and pose as the end of
+ * the data.
+ */
+export const TURN_DELIMITER_OPEN = '<<<APIFY_AI_TURN_DATA_BEGIN>>>';
+export const TURN_DELIMITER_CLOSE = '<<<APIFY_AI_TURN_DATA_END>>>';
+
+/** What a delimiter found inside the turn becomes; visibly not the delimiter, and not a fragment of one. */
+export const DELIMITER_REPLACEMENT = '[fence marker removed]';
+
+/**
+ * Replace every occurrence of either delimiter until none is left: a single
+ * pass with an empty replacement would let `<<<APIFY_AI_TURN_DATA_<<<...>>>END>>>`
+ * reassemble into a delimiter, so the replacement is non-empty and the loop
+ * runs to a fixed point.
+ */
+export function neutraliseDelimiters(text: string): string {
+    let out = text;
+    for (;;) {
+        const next = out
+            .split(TURN_DELIMITER_OPEN)
+            .join(DELIMITER_REPLACEMENT)
+            .split(TURN_DELIMITER_CLOSE)
+            .join(DELIMITER_REPLACEMENT);
+        if (next === out) return out;
+        out = next;
+    }
+}
+
 function omissionMarker(omitted: number): string {
     return `[... ${omitted} chars omitted ...]`;
 }
@@ -57,7 +89,8 @@ function renderCall(call: TurnToolCall, budget: number): string {
  * Sections: the user request, earlier conversation as context, the steps with
  * every call's arguments and result, the final answer, the recorded outcome.
  * Payloads are capped one by one, so a single huge result cannot crowd out the
- * rest of the turn.
+ * rest of the turn. The whole text is passed through `neutraliseDelimiters()`
+ * last, so no part of the turn can spell out the prompt's data fence.
  */
 export function renderTurnForJudge(turn: OnlineTurn, budget: number = PAYLOAD_CHAR_BUDGET): string {
     const sections: string[] = [`## User request\n${truncateHeadTail(turn.prompt, budget)}`];
@@ -86,5 +119,5 @@ export function renderTurnForJudge(turn: OnlineTurn, budget: number = PAYLOAD_CH
     const toolErrors = turn.hasToolError ? 'at least one tool call errored' : 'no tool call errored';
     sections.push(`## Recorded outcome\n${outcome}; ${turn.steps.length} tool-calling step(s); ${toolErrors}`);
 
-    return sections.join('\n\n');
+    return neutraliseDelimiters(sections.join('\n\n'));
 }

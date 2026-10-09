@@ -94,7 +94,7 @@
         "langfusePublicKey": {
             "title": "Langfuse public key",
             "type": "string",
-            "description": "Falls back to LANGFUSE_PUBLIC_KEY env var.",
+            "description": "Falls back to LANGFUSE_PUBLIC_KEY env var, which is the dataset-run project (MCP Agent Evals). Online mode needs the keys of the production project here (see langfuseProject).",
             "editor": "textfield",
             "isSecret": true,
             "nullable": true
@@ -102,10 +102,17 @@
         "langfuseSecretKey": {
             "title": "Langfuse secret key",
             "type": "string",
-            "description": "Falls back to LANGFUSE_SECRET_KEY env var.",
+            "description": "Falls back to LANGFUSE_SECRET_KEY env var, which is the dataset-run project (MCP Agent Evals). Online mode needs the keys of the production project here (see langfuseProject).",
             "editor": "textfield",
             "isSecret": true,
             "nullable": true
+        },
+        "langfuseProject": {
+            "title": "Expected Langfuse project (online)",
+            "type": "string",
+            "description": "Online mode only. Name or id of the Langfuse project the keys must belong to; the run fails before any read or write when they belong to another project. Guards against the Actor env keys, which point at the dataset-run project (MCP Agent Evals).",
+            "default": "Apify AI Agent",
+            "editor": "textfield"
         },
         "artifactStore": {
             "title": "Eval artifacts store",

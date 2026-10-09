@@ -4,17 +4,19 @@ import { describe, expect, it } from 'vitest';
 import { JUDGE_IMPL_VERSION } from '../src/core.js';
 import type { OnlineVerdicts } from '../src/online-judge.js';
 import {
-    AllJudgementsFailedError,
     AllScoreWritesFailedError,
     computeRollup,
     type CreateDatasetItemRequest,
     type CreateScoreRequest,
+    environmentSuffix,
     type ExistingOnlineScore,
     finishOnlineRun,
     InvalidScoreIdError,
     isNotFound,
     judgedUnderVersion,
+    judgeFailureExceeded,
     langfuseOnlineScoreReader,
+    MAX_JUDGE_FAILURE_RATIO,
     MAX_SCORE_ID_LENGTH,
     mergeRollup,
     onlineRunId,
@@ -30,7 +32,9 @@ import {
     RUN_COPY_SUFFIX,
     sanitiseIdPart,
     scoreRequests,
+    type ScoreTarget,
     skipAlreadyJudged,
+    TooManyJudgeFailuresError,
     upsertDailyRollup,
     utcDate,
     writeOnlineScores,
@@ -41,6 +45,9 @@ import type { Checkpoint, CheckpointStore } from '../src/select.js';
 const NOW = new Date('2026-09-09T10:15:00.000Z');
 const TRACE_ID = 'abc123def4567890abc123def4567890';
 const MODEL = 'deepseek/deepseek-v4-flash';
+/** The daily run: prod traffic of the window starting NOW. */
+const PROD: ScoreTarget = { date: NOW, environment: 'prod' };
+const STAGING: ScoreTarget = { date: NOW, environment: 'staging' };
 
 const version: OnlineScoreVersion = { promptVersion: 3, judgeImplVersion: JUDGE_IMPL_VERSION, judgeModel: MODEL };
 
@@ -182,17 +189,27 @@ describe('ids', () => {
         }
     });
 
-    it('onlineRunId and rollupItemId are keyed on the UTC date', () => {
+    it('onlineRunId and rollupItemId are keyed on the UTC date; prod ids carry no environment', () => {
         expect(onlineRunId(NOW)).toBe('apify-ai-online-2026-09-09');
+        expect(onlineRunId(NOW, 'prod')).toBe('apify-ai-online-2026-09-09');
         expect(rollupItemId(NOW)).toBe('rollup-2026-09-09');
+        expect(rollupItemId('2026-09-09', 'prod')).toBe('rollup-2026-09-09');
+        expect(environmentSuffix('prod')).toBe('');
+    });
+
+    it('every environment but prod gets its own run id and rollup id', () => {
+        expect(onlineRunId(NOW, 'staging')).toBe('apify-ai-online-2026-09-09-staging');
+        expect(rollupItemId(NOW, 'staging')).toBe('rollup-2026-09-09-staging');
+        expect(environmentSuffix('dev')).toBe('-dev');
+        expect(environmentSuffix('my env/x')).toBe('-my-env-x');
     });
 });
 
 describe('scoreRequests', () => {
     const [pending] = pendingScores(verdictsFor(TRACE_ID));
-    const { trace, run } = scoreRequests(pending, NOW);
+    const { trace, run } = scoreRequests(pending, PROD);
 
-    it('trace copy: readable id, traceId subject, BOOLEAN, comment, metadata plus evidence', () => {
+    it('trace copy: readable id, traceId subject, BOOLEAN, comment, environment, metadata plus evidence', () => {
         expect(trace).toEqual({
             id: onlineScoreId({ traceId: TRACE_ID, scoreName: HOLISTIC_SCORE_NAME, version }, 'trace'),
             traceId: TRACE_ID,
@@ -200,7 +217,8 @@ describe('scoreRequests', () => {
             value: 1,
             dataType: 'BOOLEAN',
             comment: 'PASS; span g9',
-            metadata: { ...pending.metadata, evidence: 'the user asked SECRET' },
+            environment: 'prod',
+            metadata: { ...pending.metadata, environment: 'prod', evidence: 'the user asked SECRET' },
         });
     });
 
@@ -212,7 +230,8 @@ describe('scoreRequests', () => {
             value: 1,
             dataType: 'BOOLEAN',
             comment: 'PASS; span g9',
-            metadata: pending.metadata,
+            environment: 'prod',
+            metadata: { ...pending.metadata, environment: 'prod' },
         });
         expect(run).not.toHaveProperty('traceId');
         expect(JSON.stringify(run)).not.toContain('SECRET');
@@ -224,19 +243,29 @@ describe('scoreRequests', () => {
     });
 
     it('keys the run copy on the date given (the window start), not on today', () => {
-        const backfill = scoreRequests(pending, new Date('2026-09-01T05:27:00.000Z')).run;
+        const backfill = scoreRequests(pending, { ...PROD, date: new Date('2026-09-01T05:27:00.000Z') }).run;
         expect(backfill.datasetRunId).toBe('apify-ai-online-2026-09-01');
+    });
+
+    it('a staging score carries its environment on both copies and hangs off its own run id', () => {
+        const staging = scoreRequests(pending, STAGING);
+        expect(staging.trace.environment).toBe('staging');
+        expect(staging.run.environment).toBe('staging');
+        expect(staging.trace.metadata).toMatchObject({ environment: 'staging' });
+        expect(staging.run.datasetRunId).toBe('apify-ai-online-2026-09-09-staging');
+        // The score ids themselves are per trace and version, not per environment: a trace lives in one environment.
+        expect(staging.trace.id).toBe(trace.id);
     });
 
     it('does not add evidence when the score has none', () => {
         const noEvidence = { ...pending, evidence: undefined };
-        expect(scoreRequests(noEvidence, NOW).trace.metadata).toEqual(pending.metadata);
+        expect(scoreRequests(noEvidence, PROD).trace.metadata).toEqual({ ...pending.metadata, environment: 'prod' });
     });
 });
 
 describe('orderedRequests', () => {
     it('writes criteria (trace, run) first and the holistic trace copy last', () => {
-        const requests = orderedRequests(pendingScores(verdictsFor(TRACE_ID)), NOW);
+        const requests = orderedRequests(pendingScores(verdictsFor(TRACE_ID)), PROD);
         expect(requests.length).toBe(ONLINE_SCORE_NAMES.length * 2);
         const last = requests[requests.length - 1];
         expect(last.name).toBe(HOLISTIC_SCORE_NAME);
@@ -254,7 +283,7 @@ describe('writeOnlineScores', () => {
     it('writes two copies per scored criterion and none for omitted ones', async () => {
         const { api, requests } = fakeScoresApi();
         const verdicts = [verdictsFor('t1', { agent_judge_errorRecovery: 'omitted' }), verdictsFor('t2')];
-        const result = await writeOnlineScores({ verdicts, scores: api, date: NOW });
+        const result = await writeOnlineScores({ verdicts, scores: api, target: PROD });
 
         expect(result).toMatchObject({ scoresWritten: 2, failedToWrite: 0 });
         expect(result.written).toEqual(verdicts);
@@ -271,7 +300,7 @@ describe('writeOnlineScores', () => {
         const result = await writeOnlineScores({
             verdicts: [verdictsFor('bad'), verdictsFor('good')],
             scores: api,
-            date: NOW,
+            target: PROD,
         });
         expect(result).toMatchObject({ scoresWritten: 1, failedToWrite: 1 });
         expect(result.written.map((v) => v.traceId)).toEqual(['good']);
@@ -281,7 +310,7 @@ describe('writeOnlineScores', () => {
     it('a trace whose writes die halfway has no holistic trace copy, so the pre-filter will retry it', async () => {
         let count = 0;
         const { api, requests } = fakeScoresApi(() => ++count === 5);
-        await writeOnlineScores({ verdicts: [verdictsFor('t1')], scores: api, date: NOW });
+        await writeOnlineScores({ verdicts: [verdictsFor('t1')], scores: api, target: PROD });
         expect(requests.some((r) => r.name === HOLISTIC_SCORE_NAME && r.traceId === 't1')).toBe(false);
     });
 });
@@ -314,12 +343,12 @@ describe('idempotency', () => {
             metadata: r.metadata,
         });
         expect(holistic.name).toBe(HOLISTIC_SCORE_NAME);
-        expect(judgedUnderVersion([asRead(scoreRequests(holistic, NOW).trace)], version).has('rt')).toBe(true);
+        expect(judgedUnderVersion([asRead(scoreRequests(holistic, PROD).trace)], version).has('rt')).toBe(true);
         // The run copy has no trace subject and a criterion is not the marker: neither counts.
-        expect(judgedUnderVersion([asRead(scoreRequests(holistic, NOW).run)], version).size).toBe(0);
-        expect(judgedUnderVersion([asRead(scoreRequests(criterion, NOW).trace)], version).size).toBe(0);
+        expect(judgedUnderVersion([asRead(scoreRequests(holistic, PROD).run)], version).size).toBe(0);
+        expect(judgedUnderVersion([asRead(scoreRequests(criterion, PROD).trace)], version).size).toBe(0);
         const bumped = { ...version, promptVersion: version.promptVersion + 1 };
-        expect(judgedUnderVersion([asRead(scoreRequests(holistic, NOW).trace)], bumped).size).toBe(0);
+        expect(judgedUnderVersion([asRead(scoreRequests(holistic, PROD).trace)], bumped).size).toBe(0);
     });
 
     it('promptVersion matches across number and string metadata', () => {
@@ -416,9 +445,10 @@ describe('computeRollup', () => {
             verdictsFor('t2', { agent_judge: 0, agent_judge_errorRecovery: 1, agent_judge_taskCompletion: 0 }),
             verdictsFor('t3', { agent_judge: 1, agent_judge_errorRecovery: 0 }),
         ];
-        const r = computeRollup({ date: NOW, verdicts, sampleRate: 0.2, maxItems: 100, coverage });
+        const r = computeRollup({ target: PROD, verdicts, sampleRate: 0.2, maxItems: 100, coverage });
 
         expect(r.date).toBe('2026-09-09');
+        expect(r.environment).toBe('prod');
         expect(r.runs).toBe(1);
         expect(r.n.agent_judge).toBe(3);
         expect(r.passes.agent_judge).toBe(2);
@@ -433,7 +463,7 @@ describe('computeRollup', () => {
     });
 
     it('empty verdicts give n 0 and a null pass rate for every name, and keep the coverage', () => {
-        const r = computeRollup({ date: NOW, verdicts: [], sampleRate: 0.2, maxItems: 100, coverage });
+        const r = computeRollup({ target: PROD, verdicts: [], sampleRate: 0.2, maxItems: 100, coverage });
         for (const name of ONLINE_SCORE_NAMES) {
             expect(r.n[name]).toBe(0);
             expect(r.passRate[name]).toBeNull();
@@ -444,7 +474,7 @@ describe('computeRollup', () => {
 
 describe('mergeRollup', () => {
     const fresh = computeRollup({
-        date: NOW,
+        target: PROD,
         verdicts: [verdictsFor('t1', { agent_judge: 0 })],
         sampleRate: 0.5,
         maxItems: 10,
@@ -458,9 +488,17 @@ describe('mergeRollup', () => {
         expect(mergeRollup({ ...fresh, passes: { agent_judge: 'x' } }, fresh)).toEqual(fresh);
     });
 
+    it('merges an item written before the environment field existed instead of replacing it', () => {
+        const { environment: _dropped, ...legacy } = fresh;
+        const merged = mergeRollup(legacy, fresh);
+        expect(merged.runs).toBe(2);
+        expect(merged.n.agent_judge).toBe(2);
+        expect(merged.environment).toBe('prod');
+    });
+
     it('sums counts and coverage, recomputes rates, keeps the latest run parameters', () => {
         const earlier: Rollup = computeRollup({
-            date: NOW,
+            target: PROD,
             verdicts: [verdictsFor('a'), verdictsFor('b')],
             sampleRate: 0.2,
             maxItems: 100,
@@ -488,20 +526,28 @@ describe('mergeRollup', () => {
 
 describe('rollupItemRequest', () => {
     it('targets the rollups dataset, keyed by date, run parameters as input and the numbers as metadata', () => {
-        const rollup = computeRollup({ date: NOW, verdicts: [], sampleRate: 0.2, maxItems: 100, coverage });
+        const rollup = computeRollup({ target: PROD, verdicts: [], sampleRate: 0.2, maxItems: 100, coverage });
         expect(rollupItemRequest(rollup)).toEqual({
             datasetName: ROLLUP_DATASET_NAME,
             id: 'rollup-2026-09-09',
-            input: { date: '2026-09-09', sampleRate: 0.2, maxItems: 100 },
+            input: { date: '2026-09-09', environment: 'prod', sampleRate: 0.2, maxItems: 100 },
             metadata: rollup,
         });
         expect(ROLLUP_DATASET_NAME).toBe('apify-ai-online-rollups');
+    });
+
+    it('a non-prod rollup is its own item in the same dataset', () => {
+        const rollup = computeRollup({ target: STAGING, verdicts: [], sampleRate: 0.2, maxItems: 100, coverage });
+        expect(rollupItemRequest(rollup)).toMatchObject({
+            datasetName: ROLLUP_DATASET_NAME,
+            id: 'rollup-2026-09-09-staging',
+        });
     });
 });
 
 describe('upsertDailyRollup', () => {
     const rollup = computeRollup({
-        date: NOW,
+        target: PROD,
         verdicts: [verdictsFor('t1')],
         sampleRate: 0.2,
         maxItems: 100,
@@ -546,23 +592,54 @@ describe('upsertDailyRollup', () => {
     });
 });
 
+describe('judgeFailureExceeded', () => {
+    it('is over half of what the judge was given, never zero tolerance', () => {
+        expect(MAX_JUDGE_FAILURE_RATIO).toBe(0.5);
+        expect(judgeFailureExceeded({ judged: 0, failedToJudge: 0 })).toBe(false);
+        expect(judgeFailureExceeded({ judged: 0, failedToJudge: 1 })).toBe(true);
+        expect(judgeFailureExceeded({ judged: 1, failedToJudge: 1 })).toBe(false);
+        expect(judgeFailureExceeded({ judged: 1, failedToJudge: 2 })).toBe(true);
+        expect(judgeFailureExceeded({ judged: 5, failedToJudge: 95 })).toBe(true);
+        expect(judgeFailureExceeded({ judged: 95, failedToJudge: 5 })).toBe(false);
+    });
+});
+
 describe('finishOnlineRun', () => {
     const checkpoint: Checkpoint = {
         upperBound: '2026-09-09T09:42:00.000Z',
         runId: 'r1',
         writtenAt: NOW.toISOString(),
     };
-    const base = { date: NOW, sampleRate: 0.2, maxItems: 100, coverage: judgeCoverage, checkpoint };
+    const base = {
+        target: PROD,
+        sampleRate: 0.2,
+        maxItems: 100,
+        coverage: judgeCoverage,
+        checkpoint,
+        failedToWrite: 0,
+    };
 
-    it('writes scores, then the rollup, then the checkpoint', async () => {
+    /** The run's writes as main.ts accumulates them, trace by trace. */
+    async function writeAll(verdicts: OnlineVerdicts[], api: ReturnType<typeof fakeScoresApi>['api'], target = PROD) {
+        let failedToWrite = 0;
+        const written: OnlineVerdicts[] = [];
+        for (const v of verdicts) {
+            const r = await writeOnlineScores({ verdicts: [v], scores: api, target });
+            written.push(...r.written);
+            failedToWrite += r.failedToWrite;
+        }
+        return { written, failedToWrite };
+    }
+
+    it('rolls up what was written, then writes the checkpoint last', async () => {
         const order: string[] = [];
-        const scores = {
-            create: async (r: CreateScoreRequest) => {
-                order.push(`score ${r.id}`);
-                return {};
-            },
-        };
+        const { api } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
+        rollupApi.api.datasetItems.create = async (request) => {
+            order.push(`rollup ${request.id}`);
+            rollupApi.items.push(request);
+            return { id: request.id as string };
+        };
         const { store, writes } = memoryCheckpoints();
         store.write = async (c) => {
             order.push('checkpoint');
@@ -571,8 +648,7 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            verdicts: [verdictsFor('t1')],
-            scores,
+            ...(await writeAll([verdictsFor('t1')], api)),
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
@@ -588,9 +664,28 @@ describe('finishOnlineRun', () => {
             coverage: { ...judgeCoverage, scoresWritten: 1, failedToWrite: 0 },
         });
         expect(writes).toEqual([checkpoint]);
-        expect(order[order.length - 1]).toBe('checkpoint');
-        expect(order.filter((o) => o.startsWith('score')).length).toBe(ONLINE_SCORE_NAMES.length * 2);
-        expect(rollupApi.calls[rollupApi.calls.length - 1]).toBe('datasetItems.create rollup-2026-09-09');
+        expect(order).toEqual(['rollup rollup-2026-09-09', 'checkpoint']);
+    });
+
+    it('keeps a staging run out of the prod run copy and the prod rollup', async () => {
+        const { api, requests } = fakeScoresApi();
+        const rollupApi = fakeRollupApi();
+        const { store } = memoryCheckpoints();
+
+        await finishOnlineRun({
+            ...base,
+            target: STAGING,
+            ...(await writeAll([verdictsFor('t1')], api, STAGING)),
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        for (const r of requests) expect(r.environment).toBe('staging');
+        const runIds = new Set(requests.map((r) => r.datasetRunId).filter(Boolean));
+        expect(runIds.has(onlineRunId(NOW))).toBe(false);
+        expect(runIds).toEqual(new Set(['apify-ai-online-2026-09-09-staging']));
+        expect(rollupApi.items[0].id).not.toBe(rollupItemId(NOW));
+        expect(rollupApi.items[0].id).toBe('rollup-2026-09-09-staging');
     });
 
     it('does not write the checkpoint when the rollup fails, and reports the error', async () => {
@@ -600,8 +695,7 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            verdicts: [verdictsFor('t1')],
-            scores: api,
+            ...(await writeAll([verdictsFor('t1')], api)),
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
@@ -620,8 +714,7 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            verdicts: [verdictsFor('bad'), verdictsFor('good')],
-            scores: api,
+            ...(await writeAll([verdictsFor('bad'), verdictsFor('good')], api)),
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
@@ -641,8 +734,7 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            verdicts: [verdictsFor('a'), verdictsFor('b')],
-            scores: api,
+            ...(await writeAll([verdictsFor('a'), verdictsFor('b')], api)),
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
@@ -659,37 +751,77 @@ describe('finishOnlineRun', () => {
     });
 
     it('a batch where every trace failed to judge is a failure: no rollup, no checkpoint, typed error', async () => {
-        const { api, requests } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
         const { store, writes } = memoryCheckpoints();
 
         const result = await finishOnlineRun({
             ...base,
             coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 3 },
-            verdicts: [],
-            scores: api,
+            written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
 
         expect(result).toMatchObject({ scoresWritten: 0, rollupItemId: null, checkpointWritten: false });
-        expect(result.error).toBeInstanceOf(AllJudgementsFailedError);
-        expect(String(result.error)).toContain('3 traces');
-        expect(requests).toEqual([]);
+        expect(result.error).toBeInstanceOf(TooManyJudgeFailuresError);
+        expect(String(result.error)).toContain('3 of the 3 traces');
         expect(rollupApi.calls).toEqual([]);
         expect(writes).toEqual([]);
     });
 
-    it('everything pre-filtered (judged 0, failedToJudge 0) is not a judge failure', async () => {
+    it('holds the checkpoint when most of the batch failed to judge', async () => {
         const { api } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
         const { store, writes } = memoryCheckpoints();
 
         const result = await finishOnlineRun({
             ...base,
+            coverage: { ...judgeCoverage, sampled: 100, judged: 5, failedToJudge: 95 },
+            ...(await writeAll(
+                ['t1', 't2', 't3', 't4', 't5'].map((id) => verdictsFor(id)),
+                api,
+            )),
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        expect(result.checkpointWritten).toBe(false);
+        expect(writes).toEqual([]);
+        expect(result.error).toBeInstanceOf(TooManyJudgeFailuresError);
+        expect(String(result.error)).toContain('95 of the 100 traces');
+        // The five written traces stay in Langfuse; the retry's pre-filter skips them.
+        expect(result.scoresWritten).toBe(5);
+        expect(rollupApi.calls).toEqual([]);
+    });
+
+    it('tolerates judge failures up to half of the batch', async () => {
+        const { api } = fakeScoresApi();
+        const rollupApi = fakeRollupApi();
+        const { store, writes } = memoryCheckpoints();
+
+        const result = await finishOnlineRun({
+            ...base,
+            coverage: { ...judgeCoverage, sampled: 10, judged: 5, failedToJudge: 5 },
+            ...(await writeAll(
+                ['t1', 't2', 't3', 't4', 't5'].map((id) => verdictsFor(id)),
+                api,
+            )),
+            rollupApi: rollupApi.api,
+            checkpoints: store,
+        });
+
+        expect(result).toMatchObject({ error: null, checkpointWritten: true, rollupItemId: 'rollup-2026-09-09' });
+        expect(writes).toEqual([checkpoint]);
+    });
+
+    it('everything pre-filtered (judged 0, failedToJudge 0) is not a judge failure', async () => {
+        const rollupApi = fakeRollupApi();
+        const { store, writes } = memoryCheckpoints();
+
+        const result = await finishOnlineRun({
+            ...base,
             coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 0 },
-            verdicts: [],
-            scores: api,
+            written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
@@ -699,15 +831,13 @@ describe('finishOnlineRun', () => {
     });
 
     it('skips the rollup when nothing was sampled or judged, but still moves the checkpoint', async () => {
-        const { api } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
         const { store, writes } = memoryCheckpoints();
 
         const result = await finishOnlineRun({
             ...base,
             coverage: { tracesInWindow: 3, completedTraces: 0, sampled: 0, judged: 0, failedToJudge: 0 },
-            verdicts: [],
-            scores: api,
+            written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
         });
@@ -718,7 +848,6 @@ describe('finishOnlineRun', () => {
     });
 
     it('writes no checkpoint when selection returned none (override or empty window)', async () => {
-        const { api } = fakeScoresApi();
         const rollupApi = fakeRollupApi();
         const { store, writes } = memoryCheckpoints();
 
@@ -726,8 +855,7 @@ describe('finishOnlineRun', () => {
             ...base,
             checkpoint: null,
             coverage: { ...judgeCoverage, judged: 0, failedToJudge: 0 },
-            verdicts: [],
-            scores: api,
+            written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
         });

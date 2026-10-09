@@ -180,6 +180,26 @@ describe('reconstructTurn from the real export shape', () => {
 });
 
 describe('toolCallsOf', () => {
+    it('keeps a repeated short reply ("yes" ... "yes") as its own message', () => {
+        const conversation = [
+            system,
+            user('Scrape example.com'),
+            assistantText('Should I include images?'),
+            user('yes'),
+            assistantText('Done, 10 pages. Export them to CSV?'),
+            user('yes'),
+        ];
+        const turn = reconstructTurn('r1', [chat('g1', '2026-09-08T10:00:00.500Z', conversation, 'Exported.'), search]);
+
+        expect(turn.prompt).toBe('yes');
+        expect(turn.priorMessages).toEqual([
+            { role: 'user', text: 'Scrape example.com' },
+            { role: 'assistant', text: 'Should I include images?' },
+            { role: 'user', text: 'yes' },
+            { role: 'assistant', text: 'Done, 10 pages. Export them to CSV?' },
+        ]);
+    });
+
     it('flags an errored span by level, statusMessage, isError, or a serialised error in the output', () => {
         const byLevel = tool('e1', '1', 'search-actors', {}, undefined, { level: 'ERROR', statusMessage: 'MCP error' });
         const byStatus = tool('e2', '2', 'search-actors', {}, 'boom', { statusMessage: 'failed' });
