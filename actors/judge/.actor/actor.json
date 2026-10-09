@@ -2,7 +2,7 @@
     "actorSpecification": 1,
     "name": "eval-judge",
     "title": "Eval Judge",
-    "description": "Judge for eval traces (ai-team#242/#244): reads a Langfuse dataset run, applies the versioned 6-dimension rubric plus deterministic schema-validity checks, writes append-only versioned scores back. Idempotent re-runs; never starts the evaluated agent.",
+    "description": "Judge for eval traces (ai-team#242/#244/#249). datasetRun mode reads a Langfuse dataset run, applies the versioned 6-dimension rubric plus deterministic schema-validity checks, writes append-only versioned scores back. online mode samples finished production apify-ai turns from a daily window and scores them with the online rubric (agent_judge scores). Idempotent re-runs; never starts the evaluated agent.",
     "version": "0.1",
     "buildTag": "latest",
     "input": "./input_schema.json",
