@@ -63,6 +63,19 @@
             "description": "Start the Judge Actor when the agents finish so the results link already shows verdicts and fix areas. Turn off only to re-judge later with a different judge model.",
             "default": true
         },
+        "skillSets": {
+            "title": "Skill sets (optional)",
+            "type": "array",
+            "description": "Agent skills to inject, one experiment per entry so the compare view shows which skills help. Each entry is 'none' or skill names joined with '+', e.g. none, notion-research-documentation, notion-knowledge-capture+notion-research-documentation. Skills live in skills/<name>/SKILL.md; the suite profile lists which apply (agentSkills). Empty = one run without skills.",
+            "editor": "stringList",
+            "default": []
+        },
+        "skillCombinations": {
+            "title": "Every skill combination",
+            "type": "boolean",
+            "description": "Run every subset of the skills (from Skill sets, or the suite's agentSkills when empty), including 'none'. Four skills = 16 experiments; filter scenarios first.",
+            "default": false
+        },
         "models": {
             "title": "Model matrix (optional)",
             "type": "array",
@@ -82,7 +95,7 @@
         "runName": {
             "title": "Run name (optional)",
             "type": "string",
-            "description": "Defaults to \"<suite> \u00b7 <model> \u00b7 <scope> \u00b7 <date time> \u00b7 <trigger>\".",
+            "description": "Defaults to \"<suite> · <model> · <scope> · <date time> · <trigger>\".",
             "editor": "textfield",
             "nullable": true
         },
@@ -125,7 +138,7 @@
         "mcpUrl": {
             "title": "MCP server URL",
             "type": "string",
-            "description": "Apify MCP server the agent uses. Each scenario narrows it with ?tools=.",
+            "description": "Apify MCP server used by suites whose profile names no other server. Each scenario narrows it with ?tools=.",
             "editor": "textfield",
             "default": "https://mcp.apify.com",
             "sectionCaption": "Maintainer",
@@ -142,6 +155,13 @@
             "type": "boolean",
             "description": "Skip the MCP tools/list and LLM proxy check that fails a broken environment in seconds.",
             "default": false
+        },
+        "mcpEnv": {
+            "title": "MCP server environment (JSON)",
+            "type": "object",
+            "description": "Values for ${VAR} placeholders in the suite's MCP server config (e.g. {\"NOTION_TOKEN\": \"ntn_...\"}). Overrides the Actor environment. Not encrypted: prefer Actor environment variables for real runs.",
+            "editor": "json",
+            "nullable": true
         },
         "trigger": {
             "title": "Trigger label",

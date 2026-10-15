@@ -48,11 +48,14 @@ RUN npm install --omit=dev --omit=optional --audit=false && rm -rf /root/.npm
 
 COPY --from=builder /usr/src/app/contract/dist ./contract/dist
 COPY --from=builder /usr/src/app/actors/workflow-runner/dist ./actors/workflow-runner/dist
+# Agent skills the runner can inject into sessions (skills/<name>/SKILL.md).
+COPY skills/ ./skills/
 
 RUN chown -R root:root /usr/src/app && chmod -R 755 /usr/src/app \
     && mkdir -p /home/myuser/.codex && chown -R myuser:myuser /home/myuser
 
 USER myuser
 ENV CODEX_HOME=/home/myuser/.codex
+ENV SKILLS_DIR=/usr/src/app/skills
 WORKDIR /usr/src/app/actors/workflow-runner
 CMD ["node", "dist/main.js"]
