@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,7 @@ import {
     type Evidence,
     infraStatus,
     runChecks,
+    surfacesUsed,
     validateAgentSpanMetadata,
     validateAgentSpanOutput,
 } from '@apify-evals/contract';
@@ -40,6 +42,8 @@ import type { ArtifactStore, SnapshotCache } from './artifacts.js';
 import {
     enrichFromApify,
     extractFromTools,
+    findMarkedRuns,
+    type SessionWindow,
     summarizeRuns,
     type RawToolCall,
     type RawToolResult,
@@ -47,6 +51,14 @@ import {
 } from './evidence.js';
 import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
 import { installSkills, skillSetLabel } from './skills.js';
+import {
+    curlrc,
+    surfaceAllowedTools,
+    surfaceItemMetadata,
+    surfacePrompt,
+    sessionPath,
+    type ResolvedSurface,
+} from './surfaces.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -78,6 +90,10 @@ export interface SessionContext {
     /** Agent skills injected into this session (skills/<name>); [] = none. */
     skillSet: string[];
     skillsRoot: string;
+    /** How the agent reaches Apify (surfaces/<name>.yaml); absent = the item as is (MCP). */
+    surface?: ResolvedSurface;
+    /** Per-session marker in the curl user agent, for finding API-started runs (set by runSession). */
+    runMarker?: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
@@ -99,11 +115,16 @@ export interface SessionContext {
     }) => Promise<void>;
 }
 
+/** The trace `version` dashboards slice by: the model, plus the surface when it is not the default. */
+export function traceVersion(model: string, surface: Pick<ResolvedSurface, 'name'> | undefined): string {
+    return !surface || surface.name === 'mcp' ? model : `${model} · ${surface.name}`;
+}
+
 /** Trace tags are what Langfuse dashboards can filter and (for low-cardinality
  * values) group by. `trigger:` and `repeats:` let the scheduled daily series be
  * told apart from team reruns and 3-repeat diagnostics. */
 export function buildTraceTags(
-    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats'> & { skillSet?: string[] },
+    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats' | 'surface'> & { skillSet?: string[] },
     meta: Partial<DatasetItemMetadata> & { tags?: unknown },
 ): string[] {
     // The platform reports the scheduler origin as APIFY_META_ORIGIN=SCHEDULER, so
@@ -119,6 +140,7 @@ export function buildTraceTags(
         ...(meta.team ? [`team:${meta.team}`] : []),
         ...(meta.skill ? [`skill:${meta.skill}`] : []),
         `skills:${skillSetLabel(ctx.skillSet ?? [])}`,
+        `surface:${ctx.surface?.name ?? 'mcp'}`,
         ...(Array.isArray(meta.tags) ? meta.tags.map(String) : []),
     ];
 }
@@ -331,10 +353,13 @@ export function buildClaudeArgs(opts: {
     mcpConfigPath: string | null;
     /** `--allowedTools` patterns for the MCP server's tools (see mcp.ts). */
     allowedMcpTools?: string[];
+    /** Built-in tools the surface adds (WebFetch for the API surface). */
+    extraAllowedTools?: string[];
 }): string[] {
     const { prompt, meta, harness, mcpConfigPath } = opts;
     const allowedTools: string[] = [];
     if (meta.allowBash) allowedTools.push('Bash');
+    allowedTools.push(...(opts.extraAllowedTools ?? []));
 
     const args = [
         '-p',
@@ -359,15 +384,20 @@ export function buildClaudeArgs(opts: {
     return args;
 }
 
-function buildClaudeEnv(opts: {
+export function buildClaudeEnv(opts: {
     home: string;
     harness: HarnessConfig;
     apifyToken: string;
     useOpenRouterProxy: boolean;
+    surface?: ResolvedSurface;
 }): Record<string, string | undefined> {
-    const { home, harness, apifyToken, useOpenRouterProxy } = opts;
+    const { home, harness, apifyToken, useOpenRouterProxy, surface } = opts;
     return {
-        PATH: process.env.PATH,
+        // The surface first, so it cannot override the harness settings below.
+        ...(surface?.env ?? {}),
+        PATH: sessionPath(process.env.PATH, surface),
+        // curl reads $CURL_HOME/.curlrc (the session marker) in both HOME modes.
+        CURL_HOME: home,
         // USER/LOGNAME/TMPDIR: required for macOS Keychain auth lookup in local
         // dev mode; harmless in the container.
         USER: process.env.USER,
@@ -441,9 +471,11 @@ function runClaudeCodeOnce(
         mkdirSync(work);
         const meta = item.metadata ?? {};
 
-        // All filesystem effects live here: session dir, the injected skills,
-        // then the secret-bearing MCP config when the item has tools.
-        installSkills(home, skillSet, skillsRoot);
+        // All filesystem effects live here: session dir, the injected skills
+        // (project skills of the working directory, the only setting source),
+        // the curl marker, then the secret-bearing MCP config when the item has tools.
+        installSkills(work, skillSet, skillsRoot);
+        if (ctx.runMarker) writeFileSync(join(home, '.curlrc'), curlrc(ctx.runMarker));
         const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
         if (mcp) {
@@ -451,11 +483,18 @@ function runClaudeCodeOnce(
             // Same resolved spec as the schema snapshot, by construction.
             writeFileSync(mcpConfigPath, JSON.stringify(claudeMcpConfig(mcp)), { mode: 0o600 });
         }
-        const secrets = [apifyToken, ...(mcp?.secrets ?? [])].filter(Boolean);
+        const secrets = [apifyToken, ...(mcp?.secrets ?? []), ...(ctx.surface?.secrets ?? [])].filter(Boolean);
         const redact = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, '[REDACTED]'), text);
 
-        const args = buildClaudeArgs({ prompt, meta, harness, mcpConfigPath, allowedMcpTools: mcp?.allowedTools });
-        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy });
+        const args = buildClaudeArgs({
+            prompt,
+            meta,
+            harness,
+            mcpConfigPath,
+            allowedMcpTools: mcp?.allowedTools,
+            extraAllowedTools: surfaceAllowedTools(ctx.surface),
+        });
+        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy, surface: ctx.surface });
 
         // detached: the child leads its own process group, so the timeout kill
         // reaches grandchildren (Bash tool shells) that share the stdio pipes.
@@ -640,7 +679,18 @@ async function collectEvidence(
         else results.push({ toolUseId: e.toolUseId, content: e.content, isError: e.isError });
     }
     const extracted = extractFromTools(calls, results);
-    const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead);
+    const used = surfacesUsed(extracted.toolCalls);
+    const window: SessionWindow = {
+        from: r.startedAt,
+        to: r.startedAt + Number((r.metrics as { durationMs?: number }).durationMs ?? 0),
+        ...(ctx.runMarker ? { marker: ctx.runMarker } : {}),
+    };
+    // Runs no output named (run-sync endpoints): only raw HTTP leaves those.
+    if (ctx.surface?.kind === 'api' || used.includes('api')) {
+        const known = new Set(extracted.actorRuns.map((run) => run.runId));
+        extracted.actorRuns.push(...(await findMarkedRuns(window, known)));
+    }
+    const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead, window);
 
     let reference = null;
     const refSpec = meta.reference as
@@ -675,7 +725,9 @@ async function collectEvidence(
         datasets: enriched.datasets,
         reference,
         ...(r.workspaceFiles ? { workspaceFiles: r.workspaceFiles } : {}),
+        surfacesUsed: used,
         session: {
+            surface: { name: ctx.surface?.name ?? 'mcp', kind: ctx.surface?.kind ?? 'mcp' },
             timedOut: Boolean(m.timedOut),
             stdoutTruncated: Boolean(m.stdoutTruncated),
             harnessBroke: r.harnessBroke,
@@ -833,7 +885,17 @@ function emitTimeline(
  * trace. Emits the v1 contract: validated output + metadata, full log and
  * tool-schema snapshot in the named artifact store, pointers on the span.
  */
-export async function runSession(ctx: SessionContext): Promise<{ output: string }> {
+export async function runSession(sessionCtx: SessionContext): Promise<{ output: string }> {
+    // The surface decides the session setup: from here on, everything sees the
+    // item as the surface runs it (no MCP tools for CLI / API, Bash on).
+    const ctx: SessionContext = {
+        ...sessionCtx,
+        item: {
+            ...sessionCtx.item,
+            metadata: surfaceItemMetadata(sessionCtx.item.metadata ?? {}, sessionCtx.surface),
+        },
+        runMarker: `apify-evals/${randomBytes(8).toString('hex')}`,
+    };
     const { item, harness } = ctx;
     const input = item.input as { prompt?: string; query?: string } | string | undefined;
     // TEMPORARY: `query` is what the mcp-server-evals datasets call the prompt,
@@ -841,7 +903,10 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     // dataset from being handed `{"query":"..."}` as its literal prompt. The
     // real fix is one key across every dataset (apify/ai-team#327); drop the
     // `query` fallback once they are normalised.
-    const prompt = typeof input === 'string' ? input : (input?.prompt ?? input?.query ?? JSON.stringify(input));
+    const prompt = surfacePrompt(
+        typeof input === 'string' ? input : (input?.prompt ?? input?.query ?? JSON.stringify(input)),
+        ctx.surface,
+    );
     const adapter = ADAPTERS[harness.kind];
 
     // Trace tags are what Langfuse dashboards can group by, so this is where
@@ -904,6 +969,10 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                     // Session setup: the eval variables beyond the model.
                     ...(mcp ? { mcpServer: mcp.name } : {}),
                     agentSkills: ctx.skillSet,
+                    surface: ctx.surface?.name ?? 'mcp',
+                    surfaceKind: ctx.surface?.kind ?? 'mcp',
+                    surfacesUsed: evidence.surfacesUsed ?? [],
+                    ...(ctx.surface?.cliVersion ? { cliVersion: ctx.surface.cliVersion } : {}),
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef
@@ -958,7 +1027,9 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     return propagateAttributes(
         {
             tags,
-            version: harness.model,
+            // version = model on the default surface, so the existing per-model
+            // dashboards keep their series; other surfaces get their own.
+            version: traceVersion(harness.model, ctx.surface),
             ...(meta.actor ? { sessionId: String(meta.actor), userId: String(meta.actor) } : {}),
             ...(typeof meta.title === 'string' && meta.title ? { traceName: meta.title } : {}),
         },

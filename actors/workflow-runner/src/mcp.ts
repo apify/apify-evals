@@ -58,10 +58,16 @@ export function apifyMcpSpec(mcpUrl: string): McpServerSpec {
     };
 }
 
-function fill(value: string, env: Record<string, string | undefined>, where: string, secrets: Set<string>): string {
+/** Fill `${VAR}` placeholders from the runner environment; every filled value is a secret to redact. */
+export function fillPlaceholders(
+    value: string,
+    env: Record<string, string | undefined>,
+    where: string,
+    secrets: Set<string>,
+): string {
     return value.replace(PLACEHOLDER, (_, name: string) => {
         const v = env[name];
-        if (!v) throw new Error(`MCP server config ${where} needs ${name}, which is not set in the runner environment`);
+        if (!v) throw new Error(`${where} needs ${name}, which is not set in the runner environment`);
         secrets.add(v);
         return v;
     });
@@ -80,20 +86,20 @@ export function resolveMcp(
     const raw = meta.mcp ?? apifyMcpSpec(opts.mcpUrl);
     const secrets = new Set<string>();
     const spec: McpServerSpec = { ...raw };
-    const where = `"${raw.name}"`;
+    const where = `MCP server config "${raw.name}"`;
     if (raw.transport === 'http') {
         if (!raw.url) throw new Error(`MCP server ${where}: http transport needs a url`);
         spec.url = raw.toolsQuery ? toolsUrl(raw.url, tools) : raw.url;
         if (raw.headers) {
             spec.headers = Object.fromEntries(
-                Object.entries(raw.headers).map(([k, v]) => [k, fill(v, opts.env, where, secrets)]),
+                Object.entries(raw.headers).map(([k, v]) => [k, fillPlaceholders(v, opts.env, where, secrets)]),
             );
         }
     } else {
         if (!raw.command) throw new Error(`MCP server ${where}: stdio transport needs a command`);
         if (raw.env) {
             spec.env = Object.fromEntries(
-                Object.entries(raw.env).map(([k, v]) => [k, fill(v, opts.env, where, secrets)]),
+                Object.entries(raw.env).map(([k, v]) => [k, fillPlaceholders(v, opts.env, where, secrets)]),
             );
         }
     }

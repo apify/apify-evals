@@ -1,0 +1,14 @@
+# Raw HTTP to the Apify API: Bash with curl and jq, and WebFetch. No MCP server
+# and no Apify CLI on PATH. Client libraries (apify-client) count as the SDK
+# surface, which is not part of this one.
+name: api
+kind: api
+description: Apify REST API over curl or WebFetch, authenticated with APIFY_TOKEN. No MCP server, no CLI.
+mcp: false
+bash: true
+webFetch: true
+env:
+    APIFY_TOKEN: ${APIFY_TOKEN}
+promptSuffix: >-
+    You can call the Apify API at https://api.apify.com/v2 (reference: https://docs.apify.com/api/v2). The
+    environment variable APIFY_TOKEN holds an API token for it.

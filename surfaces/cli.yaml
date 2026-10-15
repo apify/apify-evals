@@ -1,0 +1,19 @@
+# The Apify CLI in Bash, logged in through APIFY_TOKEN. No MCP server. The agent
+# is not blocked from other surfaces (it can still curl the API); the evidence
+# records what it used (surfacesUsed, check surface.used).
+#
+# Test another CLI build without editing this file: the runner input
+# `cliVersion` (e.g. "beta" or "1.10.1-beta.37") overrides `cli.version` for
+# every CLI surface in the run.
+name: cli
+kind: cli
+description: Apify CLI in Bash, authenticated with APIFY_TOKEN. No MCP server.
+mcp: false
+bash: true
+cli:
+    package: apify-cli
+    version: 1.10.0
+env:
+    APIFY_TOKEN: ${APIFY_TOKEN}
+promptSuffix: >-
+    The Apify CLI (`apify`) is installed and authenticated through the APIFY_TOKEN environment variable.

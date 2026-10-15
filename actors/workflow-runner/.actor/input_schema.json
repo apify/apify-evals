@@ -63,6 +63,20 @@
             "description": "Start the Judge Actor when the agents finish so the results link already shows verdicts and fix areas. Turn off only to re-judge later with a different judge model.",
             "default": true
         },
+        "surfaces": {
+            "title": "Surfaces (optional)",
+            "type": "array",
+            "description": "How the agent reaches Apify, one experiment per entry so the compare view shows them side by side: mcp (Apify MCP server, the default), cli (Apify CLI in Bash), api (raw HTTP to the Apify API). Each name is a file surfaces/<name>.yaml. Combines with skill sets: surfaces x skill sets x models.",
+            "editor": "stringList",
+            "default": []
+        },
+        "cliVersion": {
+            "title": "Apify CLI version (optional)",
+            "type": "string",
+            "description": "Test another Apify CLI build on every CLI surface in this run, e.g. beta or 1.10.1-beta.37. Empty = the version pinned in the surface file.",
+            "editor": "textfield",
+            "nullable": true
+        },
         "skillSets": {
             "title": "Skill sets (optional)",
             "type": "array",
@@ -155,6 +169,13 @@
             "type": "boolean",
             "description": "Skip the MCP tools/list and LLM proxy check that fails a broken environment in seconds.",
             "default": false
+        },
+        "maxSessions": {
+            "title": "Session limit",
+            "type": "integer",
+            "description": "Refuse to start (exit 15) when models x surfaces x skill sets x scenarios x repeats is larger than this. Filter scenarios or raise the limit on purpose.",
+            "default": 400,
+            "minimum": 1
         },
         "mcpEnv": {
             "title": "MCP server environment (JSON)",
