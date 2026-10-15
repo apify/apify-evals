@@ -59,7 +59,6 @@ function extractJson(text: string): unknown {
     return JSON.parse(text.slice(start, end + 1));
 }
 
-
 /**
  * Structured output first (`response_format: json_schema`); if the proxy or
  * model rejects it (HTTP 400), retry without it and parse by brace scan.
