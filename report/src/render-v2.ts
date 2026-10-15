@@ -18,8 +18,8 @@ const CSS = readFileSync(new URL('../assets/report-v2.css', import.meta.url), 'u
 /**
  * Score fields the client reads, and nothing more: the page embeds every
  * canonical observation, so each kept comment is paid for once per attempt.
- * - judge.fixArea: comment (the judge's diagnosis, shown on every attempt)
- * - judge.disagreement, check.all, rubric.taskCompletion: value only
+ * - judge.fixArea: comment (the judge's diagnosis), except the pass / nothing-to-fix boilerplate
+ * - judge.disagreement, check.all, rubric.taskCompletion: value only, and only on a disagreement
  * - check.infra: comment only on infrastructure failures
  * - check.<id>: comment for failed checks (the evidence list)
  */
@@ -28,9 +28,13 @@ type CompactScore = { value?: number | null; comment?: string | null };
 function compactScores(o: Observation): Record<string, CompactScore> {
     const out: Record<string, CompactScore> = {};
     const s = o.scores;
-    if (s['judge.fixArea']?.comment) out['judge.fixArea'] = { comment: s['judge.fixArea'].comment };
-    for (const name of ['judge.disagreement', 'check.all', 'rubric.taskCompletion'])
-        if (s[name] && s[name].value !== null) out[name] = { value: s[name].value };
+    // The pass-with-nothing-to-fix diagnosis is boilerplate; the page says so without it.
+    if (s['judge.fixArea']?.comment && !(o.verdict === 'pass' && (o.fixArea === 'none' || o.fixArea === null)))
+        out['judge.fixArea'] = { comment: s['judge.fixArea'].comment };
+    // The page reads check.all and the rubric only to explain a disagreement.
+    if (s['judge.disagreement']?.value === 1)
+        for (const name of ['judge.disagreement', 'check.all', 'rubric.taskCompletion'])
+            if (s[name] && s[name].value !== null) out[name] = { value: s[name].value };
     if (s['check.infra'] && o.infraOk === false && s['check.infra'].comment)
         out['check.infra'] = { comment: s['check.infra'].comment };
     for (const c of o.failedChecks) {

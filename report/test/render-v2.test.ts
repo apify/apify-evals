@@ -78,14 +78,7 @@ describe('buildV2Model', () => {
         const m = buildV2Model(data([o]), agg([o]));
         expect(m.traceBaseUrl).toBe('https://lf/project/p/traces/');
         expect(m.observations[0].traceUrl).toBe('t1?observation=o1');
-        expect(Object.keys(m.observations[0].scores).sort()).toEqual([
-            'check.all',
-            'check.rightActor',
-            'judge.disagreement',
-            'judge.fixArea',
-            'rubric.taskCompletion',
-        ]);
-        expect(m.observations[0].scores['rubric.taskCompletion']).toEqual({ value: 0 });
+        expect(Object.keys(m.observations[0].scores).sort()).toEqual(['check.rightActor', 'judge.fixArea']);
         expect(m.observations[0].scores['judge.fixArea']).toEqual({ comment: 'diagnosis' });
         expect(m.observations[0].scores['check.rightActor']).toEqual({ value: 0, comment: 'FAIL: used y/b' });
         expect(m.observations[0].scores['check.infra']).toBeUndefined();
@@ -107,6 +100,21 @@ describe('buildV2Model', () => {
         expect(m.observations[0].scores['judge.fixArea']).toEqual({ comment: 'diagnosis' });
         expect(m.observations[0].scores['check.infra']).toBeUndefined();
         expect(m.observations[1].scores['check.infra']).toEqual({ comment: 'MCP returned no tools' });
+        const boiler = obs({ verdict: 'pass', fixArea: 'none', failedChecks: [] });
+        expect(buildV2Model(data([boiler]), agg([boiler])).observations[0].scores['judge.fixArea']).toBeUndefined();
+        const dis = obs({
+            scores: {
+                ...obs({}).scores,
+                'judge.disagreement': { value: 1, stringValue: null, comment: null, timestamp: 't' },
+            },
+        });
+        expect(Object.keys(buildV2Model(data([dis]), agg([dis])).observations[0].scores).sort()).toEqual([
+            'check.all',
+            'check.rightActor',
+            'judge.disagreement',
+            'judge.fixArea',
+            'rubric.taskCompletion',
+        ]);
     });
 
     it('lists model slots with first day and resolved ids, and the judge per day', () => {
