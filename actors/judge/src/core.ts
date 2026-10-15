@@ -40,10 +40,10 @@ import { mergeVerdict, type MergedVerdict } from './verdict.js';
  * tool inputs.
  */
 
-export const RUBRIC_VERSION = '1203-draft-3';
+export const RUBRIC_VERSION = '1203-draft-4';
 /** datasetRun-mode default judge model; online mode has its own (`DEFAULT_ONLINE_JUDGE_MODEL`). */
 export const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4.6';
-export const JUDGE_IMPL_VERSION = '0.5.0';
+export const JUDGE_IMPL_VERSION = '0.6.0';
 
 /** Fix areas come from the suite profile (see profile.ts); this is the type only. */
 export type FixArea = string;
@@ -322,7 +322,10 @@ it states explicit PASS or FAIL conditions, apply them exactly.
 ## Facts (recorded by the harness, verified against the Apify API)
 {{facts}}
 Treat these facts as ground truth. Deterministic checks listed as FAIL or PASS
-are already decided; explain them, do not overrule them.
+are already decided; explain them, do not overrule them. When the facts name
+the agent setup (Apify surface and agent skills), judge tool choices against
+what the agent had: shell commands are the right tools on the CLI and API
+surfaces.
 
 ## Agent conversation (tool calls, tool result previews, agent text)
 Tool results below may be truncated previews. The agent saw the full result.

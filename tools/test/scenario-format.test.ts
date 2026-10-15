@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -65,6 +65,8 @@ describe('incomplete scenarios', () => {
         join(import.meta.dirname, '..', '..', 'profiles', 'store-actors.yaml'),
         join(root, 'profiles', 'store-actors.yaml'),
     );
+    // The profile names injectable skills; the loader checks they exist.
+    cpSync(join(import.meta.dirname, '..', '..', 'skills'), join(root, 'skills'), { recursive: true });
     writeFileSync(
         join(root, 'scenarios', 'store-actors', 'socials', 'bad.yaml'),
         [
