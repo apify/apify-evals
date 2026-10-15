@@ -14,6 +14,7 @@
 import { Ajv } from 'ajv';
 
 import type { DeterministicCheck } from './index.js';
+import type { SurfaceKind } from './surfaces.js';
 
 export interface ActorRunEvidence {
     /** `owner/name` as the agent named it (from call-actor input or CLI). */
@@ -27,6 +28,9 @@ export interface ActorRunEvidence {
     consoleUrl?: string;
     /** Total platform cost of the run when known (USD). */
     costUsd?: number;
+    /** How the run was found: an MCP result, CLI or API output, or the
+     * session-window lookup by the session's user agent marker. */
+    origin?: 'mcp' | 'cli' | 'api' | 'window';
 }
 
 export interface ToolCallEvidence {
@@ -54,7 +58,11 @@ export interface Evidence {
     datasets: Record<string, unknown[]>;
     reference?: ReferenceEvidence | null;
     workspaceFiles?: { path: string; size?: number; content?: string }[];
+    /** Apify surfaces the agent used (see surfaces.ts). */
+    surfacesUsed?: SurfaceKind[];
     session: {
+        /** The configured surface: name and kind. */
+        surface?: { name: string; kind: SurfaceKind };
         timedOut: boolean;
         stdoutTruncated: boolean;
         harnessBroke: boolean;
@@ -166,6 +174,8 @@ function evaluate(check: AnyCheck, ev: Evidence): Partial {
             return workspaceFile(check, ev);
         case 'reference':
             return reference(check, ev);
+        case 'surface.used':
+            return surfaceUsed(check, ev);
         default:
             return na(`unknown check type "${check.type}"`);
     }
@@ -422,6 +432,33 @@ function toolCalled(check: AnyCheck, ev: Evidence): Partial {
     if (hits.length < min) return fail(`${hits.length} matching tool call(s), expected at least ${min}`);
     if (hits.length > max) return fail(`${hits.length} matching tool call(s), expected at most ${max}`);
     return pass(`${hits.length} matching tool call(s)`);
+}
+
+/**
+ * Which Apify surfaces the agent used. `only: [cli]` fails when the agent used
+ * any other surface; `includes: api` fails when it did not use that one. With
+ * neither, the configured surface's kind is the only allowed one, so a suite
+ * can carry the check without knowing which surface a run configures.
+ */
+function surfaceUsed(check: AnyCheck, ev: Evidence): Partial {
+    if (!ev.surfacesUsed) return na('no surface classification in the evidence');
+    const used = ev.surfacesUsed;
+    const shown = used.length > 0 ? used.join(', ') : 'none';
+    if (typeof check.includes === 'string') {
+        return used.includes(check.includes as SurfaceKind)
+            ? pass(`used ${check.includes} (all: ${shown})`)
+            : fail(`did not use ${check.includes} (used: ${shown})`);
+    }
+    const only = Array.isArray(check.only)
+        ? check.only.map(String)
+        : ev.session.surface
+          ? [ev.session.surface.kind]
+          : null;
+    if (!only) return na('no `only` list and no configured surface');
+    const other = used.filter((k) => !only.includes(k));
+    return other.length === 0
+        ? pass(`used only ${only.join(', ')} (used: ${shown})`)
+        : fail(`fell back to ${other.join(', ')} (allowed: ${only.join(', ')})`);
 }
 
 /**
