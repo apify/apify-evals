@@ -304,7 +304,11 @@ const summaries: ModelRunSummary[] = [];
 let flushFailed = false;
 
 for (const model of models) {
-    const harness = { ...baseHarness, model };
+    const harness = {
+        ...baseHarness,
+        model,
+        ...(resolvedModels[model] ? { resolvedModel: resolvedModels[model] } : {}),
+    };
     const shortModel = model.replace(/^[^/]+\//, '');
     const nameParts = [datasetName, shortModel];
     if (harness.kind !== 'claude-code') nameParts.push(harness.kind);
