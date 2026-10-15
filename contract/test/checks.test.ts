@@ -413,6 +413,11 @@ describe('infraStatus', () => {
         const ok = infraStatus({ ...evidence, session: { ...evidence.session, mcpExpected: true, mcpToolCount: 12 } });
         expect(ok.ok).toBe(true);
     });
+    it('flags a run the account concurrent run limit refused', () => {
+        const r = infraStatus({ ...evidence, session: { ...evidence.session, runLimitHit: true } });
+        expect(r.ok).toBe(false);
+        expect(r.reasons).toEqual(['the account concurrent Actor run limit refused a run']);
+    });
 });
 
 describe('helpers', () => {

@@ -42,6 +42,13 @@
             "editor": "stringList",
             "default": []
         },
+        "scenarioIds": {
+            "title": "Only these scenarios (optional)",
+            "type": "array",
+            "description": "Scenario ids (dataset item ids, e.g. google-search-scraper-usage-german-serp) to run. Combines with the other filters.",
+            "editor": "stringList",
+            "default": []
+        },
         "owners": {
             "title": "Only this team (optional)",
             "type": "array",

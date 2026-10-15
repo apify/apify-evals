@@ -76,6 +76,8 @@ export interface Evidence {
         mcpExpected?: boolean;
         /** Sessions restarted because the MCP tools did not load. */
         mcpRestarts?: number;
+        /** The account's concurrent Actor run limit refused a run the agent started. */
+        runLimitHit?: boolean;
     };
 }
 
@@ -112,6 +114,8 @@ export function infraStatus(evidence: Evidence): { ok: boolean; reasons: string[
         if (r.status && TERMINAL_BAD.has(r.status)) reasons.push(`Actor run ${r.runId} (${r.actor}) ${r.status}`);
     }
     if (evidence.reference?.error) reasons.push(`reference run failed: ${evidence.reference.error}`);
+    // Not the agent's fault and not the surface's: the account was out of run slots.
+    if (evidence.session.runLimitHit) reasons.push('the account concurrent Actor run limit refused a run');
     return { ok: reasons.length === 0, reasons };
 }
 

@@ -21,7 +21,7 @@ import {
 } from '@apify-evals/contract';
 import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing';
 import { trace } from '@opentelemetry/api';
-import { log } from 'apify';
+import { Actor, log } from 'apify';
 
 import { runCodex } from './adapters/codex.js';
 import {
@@ -773,9 +773,26 @@ async function collectEvidence(
             ...(typeof m.mcpToolCount === 'number' ? { mcpToolCount: m.mcpToolCount } : {}),
             mcpExpected: Boolean(m.mcpExpected),
             mcpRestarts: m.mcpRestarts ?? 0,
+            ...(results.some((res) => RUN_LIMIT_RE.test(res.content)) ? { runLimitHit: true } : {}),
         },
     };
 }
+
+/** Abort the agent's Actor runs that are still running after its session ended. */
+async function abortLeftoverRuns(evidence: Evidence): Promise<void> {
+    for (const run of evidence.actorRuns) {
+        if (!run.runId || !(run.status === 'RUNNING' || run.status === 'READY')) continue;
+        try {
+            await Actor.apifyClient.run(run.runId).abort();
+            log.info(`aborted run ${run.runId} (${run.actor}) left running after the session`);
+        } catch (err) {
+            log.warning(`could not abort leftover run ${run.runId}: ${err}`);
+        }
+    }
+}
+
+/** What the platform answers when the account has no free run slot (API, CLI and MCP all relay it). */
+const RUN_LIMIT_RE = /exceed your limit of \d+ concurrent Actor runs/i;
 
 /**
  * Write check.<id> per check (not-applicable checks are skipped, not failed),
@@ -981,6 +998,9 @@ export async function runSession(sessionCtx: SessionContext): Promise<{ output: 
                 } else {
                     log.warning('no active experiment span; check scores not written');
                 }
+                // The evidence is frozen: Actor runs the agent left running only
+                // cost money and hold run slots other sessions need.
+                await abortLeftoverRuns(evidence);
 
                 const mcp = resolveMcp(meta, { mcpUrl: ctx.mcpUrl, env: ctx.mcpEnv });
                 let snapshotRef = null;

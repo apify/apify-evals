@@ -48,6 +48,8 @@ interface Input {
     itemLimit?: number;
     /** Team-facing filters: subject ids (owner/name) and owners (teams). */
     subjects?: string[];
+    /** Scenario ids (dataset item ids) to run; applied with the other filters. */
+    scenarioIds?: string[];
     owners?: string[];
     /** Deprecated alias of subjects, matched against metadata.category (slug). */
     categories?: string[];
@@ -239,6 +241,7 @@ const ownerOf = (m: Meta) => m.owner ?? m.team ?? '';
 const slugOf = (s: string) => s.split('/').pop() ?? s;
 const wantSubjects = new Set([...subjects, ...categories].map((s) => s.trim()).filter(Boolean));
 const wantOwners = new Set(owners.map((o) => o.trim()).filter(Boolean));
+const wantIds = new Set((input.scenarioIds ?? []).map((s) => s.trim()).filter(Boolean));
 
 const filtered = dataset.items
     .filter((i) => i.status !== 'ARCHIVED')
@@ -251,7 +254,8 @@ const filtered = dataset.items
             wantSubjects.has(slugOf(subject)) ||
             wantSubjects.has(m.category ?? '');
         const byOwner = wantOwners.size === 0 || wantOwners.has(ownerOf(m));
-        return bySubject && byOwner;
+        const byId = wantIds.size === 0 || wantIds.has(String(i.id));
+        return bySubject && byOwner && byId;
     });
 const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
 
@@ -326,6 +330,7 @@ const plannedSessions =
 const scopeParts: string[] = [];
 if (wantOwners.size > 0) scopeParts.push(`owner:${[...wantOwners].join(',')}`);
 if (wantSubjects.size > 0) scopeParts.push(`subject:${[...wantSubjects].map(slugOf).join(',')}`);
+if (wantIds.size > 0) scopeParts.push(`scenarios:${wantIds.size}`);
 if (itemLimit > 0) scopeParts.push(`limit:${itemLimit}`);
 const scope = scopeParts.length === 0 ? 'all' : scopeParts.join(' ');
 const fullScope = scope === 'all';
@@ -421,6 +426,25 @@ if (!skipPreflight) {
             await closeMcpc(probeHome);
             rmSync(probeHome, { recursive: true, force: true });
         }
+    }
+    // Each session may start Actor runs; this run holds one slot of the account's
+    // concurrent run limit. Too many parallel sessions get runs refused (the
+    // sessions then count as inconclusive), so say so before paying for them.
+    try {
+        const limits = (await (
+            await fetch('https://api.apify.com/v2/users/me/limits', {
+                headers: { Authorization: `Bearer ${apifyToken}` },
+                signal: AbortSignal.timeout(20_000),
+            })
+        ).json()) as { data?: { limits?: { maxConcurrentActorJobs?: number } } };
+        const max = limits.data?.limits?.maxConcurrentActorJobs;
+        if (typeof max === 'number' && concurrency + 1 > max) {
+            log.warning(
+                `concurrency ${concurrency} + this run exceeds the account's ${max} concurrent Actor runs: agents' runs will be refused and those sessions marked inconclusive. Use concurrency ${Math.max(1, Math.floor((max - 1) / 2))} on this account.`,
+            );
+        }
+    } catch {
+        /* the limit is a hint; the run goes on without it */
     }
     // API surfaces: the token must be accepted.
     for (const surface of surfaces.filter((x) => x.kind === 'api')) {
