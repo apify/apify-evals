@@ -66,7 +66,7 @@ reachable artifact do the checks fall back to the runner's single legacy
 ## Run directly (re-grading)
 
 ```sh
-apify call artogahr/eval-judge --memory 1024 --timeout 1800 -i '{
+apify call internal-apps/eval-judge --memory 1024 --timeout 1800 -i '{
     "datasetRunId": "<Langfuse experiment id, from the runner OUTPUT>",
     "judgeModel": "anthropic/claude-sonnet-4.6",
     "force": true

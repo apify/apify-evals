@@ -17,7 +17,7 @@ import {
 const execFile = promisify(execFileCb);
 
 const OUTPUT_PREVIEW_CAP = 500;
-const DEFAULT_JUDGE_ACTOR = 'artogahr/eval-judge';
+const DEFAULT_JUDGE_ACTOR = 'internal-apps/eval-judge';
 const OPENROUTER_PROXY_URL = 'https://openrouter.apify.actor/api';
 
 /**
