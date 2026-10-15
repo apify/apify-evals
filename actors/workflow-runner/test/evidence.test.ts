@@ -202,6 +202,18 @@ describe('runs through mcpc', () => {
         expect(runsInText(out).map((r) => r.runId)).toEqual(['RunRunRunRunRun02']);
     });
 
+    it('reads the run id from mcpc arguments', () => {
+        // Commands seen in a matrix run (2026-10-15).
+        const commands = [
+            `sleep 30 && mcpc @apify tools-call get-actor-run runId:='"7NjnNnxy9HBOz6hWO"' waitSecs:=45`,
+            'mcpc @apify tools-call get-actor-run runId:=7NjnNnxy9HBOz6hWP',
+        ];
+        expect(commands.flatMap((c) => runsInText(c).map((r) => r.runId))).toEqual([
+            '7NjnNnxy9HBOz6hWO',
+            '7NjnNnxy9HBOz6hWP',
+        ]);
+    });
+
     it('keeps the dataset id of the readable output as a hint for its run', () => {
         // Readable output of `mcpc @apify tools-call get-actor-run` (mcpc 0.7.0, apify-mcp-server 0.18.2).
         const text =

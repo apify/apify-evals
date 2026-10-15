@@ -221,8 +221,10 @@ type FoundRun = Pick<ActorRunEvidence, 'runId' | 'actorId' | 'datasetId' | 'stat
 
 // Run ids in URLs: Console (every form) and the API's run endpoints.
 const RUN_URL_RES = [
-    // `--json` output of MCP tools through mcpc (call-actor, get-actor-run).
+    // `--json` output of MCP tools through mcpc (call-actor, get-actor-run), and
+    // mcpc's own argument syntax in commands (`runId:=X`, `runId:='"X"'`).
     /"runId"\s*:\s*"([A-Za-z0-9]{17})"/g,
+    /\brunId:=\s*['"]*([A-Za-z0-9]{17})\b/g,
     /console\.apify\.com\/(?:view\/)?(?:actors\/(?:[A-Za-z0-9]{17}\/)?)?runs\/([A-Za-z0-9]{17})\b/g,
     /api\.apify\.com\/v2\/actor-runs\/([A-Za-z0-9]{17})\b/g,
     /api\.apify\.com\/v2\/acts\/[^/\s]+\/runs\/([A-Za-z0-9]{17})\b/g,
