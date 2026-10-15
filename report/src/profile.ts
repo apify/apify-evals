@@ -18,6 +18,8 @@ export interface ReportProfile {
     skills: Record<string, { label: string }>;
     wrongSubjectLabel: string;
     fixAreas: FixArea[];
+    /** Optional display names for model slots (alias id -> label); derived from the alias when absent. */
+    modelLabels: Record<string, string>;
 }
 
 /** Short labels for the store profile's fix areas; unknown ids fall back to the id. */
@@ -36,6 +38,7 @@ const FALLBACK: ReportProfile = {
     skills: { find: { label: 'Found' }, use: { label: 'Works' } },
     wrongSubjectLabel: 'wrong-actor',
     fixAreas: [],
+    modelLabels: {},
 };
 
 export function loadReportProfile(rootDir: string, name: string): ReportProfile {
@@ -46,6 +49,7 @@ export function loadReportProfile(rootDir: string, name: string): ReportProfile 
             skills?: Record<string, { label?: string }>;
             wrongSubjectLabel?: string;
             fixAreas?: { id: string; label?: string; owner?: string; description?: string }[];
+            modelLabels?: Record<string, string>;
         };
         return {
             name: doc.name ?? name,
@@ -60,6 +64,7 @@ export function loadReportProfile(rootDir: string, name: string): ReportProfile 
                 owner: f.owner ?? 'subject',
                 description: f.description ?? '',
             })),
+            modelLabels: doc.modelLabels ?? {},
         };
     } catch {
         return { ...FALLBACK, name };

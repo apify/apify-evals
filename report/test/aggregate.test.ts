@@ -3,12 +3,21 @@ import { describe, expect, it } from 'vitest';
 import { canonicalExperimentIds } from '../src/aggregate.js';
 import type { Observation } from '../src/collect.js';
 
-const obs = (experimentId: string, scenarioId: string, day: string, startTime: string, trigger = 'scheduler'): Observation =>
+const obs = (
+    experimentId: string,
+    scenarioId: string,
+    day: string,
+    startTime: string,
+    trigger = 'scheduler',
+    model: string | null = null,
+): Observation =>
     ({
         scenarioId,
         experimentId,
         experimentName: experimentId,
-        model: null,
+        model,
+        resolvedModel: null,
+        judgeModel: null,
         trigger,
         repeats: 1,
         fullScope: true,
@@ -49,5 +58,25 @@ describe('canonicalExperimentIds', () => {
             obs('m2', 'a', '2026-09-29', '2026-09-29T10:00:00Z', 'cli'),
         ]);
         expect([...ids].sort()).toEqual(['late', 'manual', 'y']);
+    });
+
+    it('keeps one scheduled run per day and model slot, mapping legacy Haiku 4.5 into the alias slot', () => {
+        const ids = canonicalExperimentIds([
+            obs('haiku-old', 'a', '2026-10-15', '2026-10-15T04:00:00Z', 'scheduler', 'anthropic/claude-haiku-4.5'),
+            obs('haiku', 'a', '2026-10-16', '2026-10-16T04:00:00Z', 'scheduler', '~anthropic/claude-haiku-latest'),
+            obs('luna', 'a', '2026-10-16', '2026-10-16T04:25:00Z', 'scheduler', '~openai/gpt-luna-latest'),
+            obs('flash', 'a', '2026-10-16', '2026-10-16T04:50:00Z', 'scheduler', '~deepseek/deepseek-flash-latest'),
+            // a restarted Haiku run on the 16th: more items wins, not the later start
+            obs(
+                'haiku-restart',
+                'a',
+                '2026-10-16',
+                '2026-10-16T04:10:00Z',
+                'scheduler',
+                '~anthropic/claude-haiku-latest',
+            ),
+            obs('haiku', 'b', '2026-10-16', '2026-10-16T04:00:00Z', 'scheduler', '~anthropic/claude-haiku-latest'),
+        ]);
+        expect([...ids].sort()).toEqual(['flash', 'haiku', 'haiku-old', 'luna']);
     });
 });
