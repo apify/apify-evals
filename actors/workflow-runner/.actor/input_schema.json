@@ -15,25 +15,10 @@
         "model": {
             "title": "Model",
             "type": "string",
-            "description": "The model the agent runs on (OpenRouter id via the Apify proxy; no API key needed). The harness override selects Claude Code (default) or Codex.",
-            "editor": "select",
+            "description": "OpenRouter model id the agent runs on, through the Apify proxy (no API key needed). Any id OpenRouter serves works, including moving aliases such as ~anthropic/claude-haiku-latest, ~openai/gpt-luna-latest or ~deepseek/deepseek-flash-latest; the concrete model behind an alias is recorded on the experiment as resolvedModel. The harness override selects Claude Code (default) or Codex.",
+            "editor": "textfield",
             "default": "anthropic/claude-haiku-4.5",
-            "enum": [
-                "anthropic/claude-haiku-4.5",
-                "anthropic/claude-sonnet-4.6",
-                "openai/gpt-5-mini",
-                "openai/gpt-5.4",
-                "google/gemini-3-flash",
-                "deepseek/deepseek-v4-pro"
-            ],
-            "enumTitles": [
-                "Claude Haiku 4.5 (default, cheap)",
-                "Claude Sonnet 4.6",
-                "GPT-5 mini",
-                "GPT-5.4",
-                "Gemini 3 Flash",
-                "DeepSeek V4 Pro"
-            ]
+            "prefill": "anthropic/claude-haiku-4.5"
         },
         "subjects": {
             "title": "Only these Actors (optional)",
@@ -66,7 +51,7 @@
         "models": {
             "title": "Model matrix (optional)",
             "type": "array",
-            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set.",
+            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set. Each id is preflighted and resolved before any session starts.",
             "editor": "stringList",
             "default": [],
             "sectionCaption": "Advanced",
@@ -75,7 +60,7 @@
         "judgeModel": {
             "title": "Judge model",
             "type": "string",
-            "description": "Model that grades the agent runs. Keep it fixed across runs you want to compare.",
+            "description": "Model that grades the agent runs, pinned id or moving alias (~anthropic/claude-sonnet-latest). The judge resolves an alias once per batch and stamps the concrete model into every score. Keep it fixed across runs you want to compare.",
             "editor": "textfield",
             "default": "anthropic/claude-sonnet-4.6"
         },
@@ -169,7 +154,10 @@
             "description": "Named key-value store for full agent logs, evidence snapshots and tool-schema snapshots. Leave empty to use the store from the Actor environment (ARTIFACT_STORE_ID).",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
-            "resourcePermissions": ["READ", "WRITE"],
+            "resourcePermissions": [
+                "READ",
+                "WRITE"
+            ],
             "nullable": true
         },
         "langfuseBaseUrl": {
@@ -196,5 +184,7 @@
             "nullable": true
         }
     },
-    "required": ["datasetName"]
+    "required": [
+        "datasetName"
+    ]
 }

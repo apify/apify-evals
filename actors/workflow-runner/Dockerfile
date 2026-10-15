@@ -27,12 +27,11 @@ FROM apify/actor-node:24
 USER root
 RUN apk add --no-cache curl bash git jq ca-certificates
 
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && cp /root/.local/bin/claude /usr/local/bin/claude \
-    && chmod 755 /usr/local/bin/claude \
+# Pinned: the agent version is part of the measurement. Bump deliberately and mark the day in the report.
+RUN npm install --global @anthropic-ai/claude-code@2.1.300 --audit=false \
     && claude --version
 
-RUN npm install --global @openai/codex@0.154.0 --audit=false \
+RUN npm install --global @openai/codex@0.162.1 --audit=false \
     && codex --version
 
 COPY package*.json ./

@@ -8,8 +8,14 @@
             "type": "string",
             "description": "datasetRun judges one Langfuse dataset run (requires datasetRunId). online samples finished production apify-ai traces from a time window; the sampleRate, maxItems, environment, windowStart and windowEnd inputs apply only here.",
             "default": "datasetRun",
-            "enum": ["datasetRun", "online"],
-            "enumTitles": ["Dataset run", "Online (production traces)"]
+            "enum": [
+                "datasetRun",
+                "online"
+            ],
+            "enumTitles": [
+                "Dataset run",
+                "Online (production traces)"
+            ]
         },
         "datasetRunId": {
             "title": "Langfuse dataset-run id",
@@ -53,13 +59,21 @@
             "description": "Only traces from this Langfuse environment are selected. The same service emits the same span names from dev, staging and prod into one project, so without this they would be scored as one population. apify-ai-agent sets it from its own environment setting: prod, staging or dev. Use \"staging\" to backfill staging traffic. An enum, because an unknown value returns zero rows without an error and would silently advance the checkpoint.",
             "default": "prod",
             "editor": "select",
-            "enum": ["prod", "staging", "dev"],
-            "enumTitles": ["prod", "staging", "dev"]
+            "enum": [
+                "prod",
+                "staging",
+                "dev"
+            ],
+            "enumTitles": [
+                "prod",
+                "staging",
+                "dev"
+            ]
         },
         "judgeModel": {
             "title": "Judge model (OpenRouter id)",
             "type": "string",
-            "description": "Exact model id, never an alias; stamped into every score. Defaults per mode: anthropic/claude-sonnet-4.6 in datasetRun mode, deepseek/deepseek-v4-flash in online mode.",
+            "description": "OpenRouter model id through the Apify proxy, for example anthropic/claude-sonnet-4.6 or the moving alias ~anthropic/claude-sonnet-latest. An alias is resolved once per batch and the concrete model is stamped into every score as judgeModelResolved. Defaults per mode: anthropic/claude-sonnet-4.6 in datasetRun mode, deepseek/deepseek-v4-flash in online mode.",
             "editor": "textfield",
             "nullable": true
         },
@@ -120,7 +134,9 @@
             "description": "Named key-value store for full agent logs and tool-schema snapshots. Pick the store named eval-artifacts (id XPeEjJNZjVIblYlqX); the picker grants this run access. Leave empty to use the default store by name.",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
-            "resourcePermissions": ["READ"],
+            "resourcePermissions": [
+                "READ"
+            ],
             "nullable": true
         },
         "writeRunScores": {
@@ -168,8 +184,14 @@
             "type": "string",
             "description": "v1: narrative page. v2: Actor table with trend charts and in-place evidence (28-day window).",
             "editor": "select",
-            "enum": ["v1", "v2"],
-            "enumTitles": ["v1 narrative", "v2 Actor table + charts"],
+            "enum": [
+                "v1",
+                "v2"
+            ],
+            "enumTitles": [
+                "v1 narrative",
+                "v2 Actor table + charts"
+            ],
             "default": "v2"
         },
         "reportKeyPrefix": {
