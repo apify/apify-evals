@@ -139,7 +139,8 @@ export function buildV2Model(data: ReportData, agg: Aggregate, latestJsonUrl?: s
         failedChecks: o.failedChecks,
         fixArea: o.fixArea,
         subjectCalled: o.subjectCalled,
-        judgeComment: o.judgeComment,
+        // A passing result's comment restates the pass; keep it only when it explains a disagreement.
+        judgeComment: o.verdict === 'pass' && o.scores['judge.disagreement']?.value !== 1 ? null : o.judgeComment,
         traceUrl: o.traceUrl.startsWith(traceBaseUrl) ? o.traceUrl.slice(traceBaseUrl.length) : o.traceUrl,
         scores: compactScores(o),
     }));

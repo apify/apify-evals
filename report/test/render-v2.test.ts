@@ -117,6 +117,32 @@ describe('buildV2Model', () => {
         ]);
     });
 
+    it('drops the judge comment on passes unless it explains a disagreement', () => {
+        const pass = obs({
+            verdict: 'pass',
+            fixArea: 'none',
+            failedChecks: [],
+            judgeComment: 'PASS: fine',
+            scores: {
+                'judge.disagreement': { value: 0, stringValue: null, comment: 'agree', timestamp: 't' },
+            },
+        });
+        const disputed = obs({
+            verdict: 'pass',
+            fixArea: 'none',
+            failedChecks: [],
+            judgeComment: 'PASS: checks failed but the task was done',
+            scores: {
+                'judge.disagreement': { value: 1, stringValue: null, comment: 'disagree', timestamp: 't' },
+                'check.all': { value: 0, stringValue: null, comment: 'failed', timestamp: 't' },
+            },
+        });
+        const m = buildV2Model(data([pass, disputed]), agg([pass, { ...disputed, day: '2026-10-11' }]));
+        expect(m.observations[0].judgeComment).toBeNull();
+        expect(m.observations[1].judgeComment).toBe('PASS: checks failed but the task was done');
+        expect(obs({}).judgeComment).toBe('FAIL: wrong');
+    });
+
     it('lists model slots with first day and resolved ids, and the judge per day', () => {
         const old = obs({
             day: '2026-10-15',
