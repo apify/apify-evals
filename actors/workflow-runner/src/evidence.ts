@@ -11,8 +11,9 @@
  *  2. The Apify API, with the run's own token: run status and cost, dataset
  *     items (capped), the run's INPUT record. The agent's runs belong to this
  *     account because every surface ran them with the same token. Runs that no
- *     output names (`run-sync-get-dataset-items`) are found by the session's
- *     marker in the run's user agent (see surfaces.ts `curlrc`).
+ *     output names (`run-sync-get-dataset-items`, `apify call -s`) are found by
+ *     the session's marker in the run's user agent (surfaces.ts `curlrc` and
+ *     `MARKER_PRELOAD`).
  *  3. An optional reference run of the subject Actor (fresh ground truth),
  *     started once per experiment per cacheKey and shared by repeats.
  */
@@ -242,10 +243,13 @@ export interface SessionWindow {
 
 /**
  * Runs that no output named but that carry the session's marker in their user
- * agent (`run-sync-get-dataset-items` returns items, not a run). The list
+ * agent (`run-sync-get-dataset-items` and `apify call -s` return items, not a run). The list
  * endpoint has no user agent, so each API-started candidate in the session
  * window is fetched once.
  */
+/** Run origins the session marker can be on: curl (API) and the session's CLI. */
+const MARKED_ORIGINS = new Set(['API', 'CLI']);
+
 export async function findMarkedRuns(window: SessionWindow, known: Set<string>): Promise<ActorRunEvidence[]> {
     if (!window.marker) return [];
     const client = Actor.apifyClient;
@@ -254,7 +258,12 @@ export async function findMarkedRuns(window: SessionWindow, known: Set<string>):
         const page = await client.runs().list({ desc: true, limit: 100 });
         const candidates = page.items.filter((r) => {
             const t = new Date(r.startedAt).getTime();
-            return t >= window.from - 5_000 && t <= window.to + 5_000 && !known.has(r.id) && r.meta?.origin === 'API';
+            return (
+                t >= window.from - 5_000 &&
+                t <= window.to + 5_000 &&
+                !known.has(r.id) &&
+                MARKED_ORIGINS.has(String(r.meta?.origin))
+            );
         });
         for (const c of candidates.slice(0, 25)) {
             const info = await client.run(c.id).get();

@@ -154,7 +154,16 @@ const { ReferenceRunner } = await import('./evidence.js');
 const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
 const { assertSkillsExist, fetchSkillsRef, resolveSkillSets, skillSetLabel, skillsRoot } = await import('./skills.js');
-const { installCli, loadSurface, resolveSurface, resolveSurfaceNames, surfacesRoot } = await import('./surfaces.js');
+const {
+    installCli,
+    isolatedCliEnv,
+    loadSurface,
+    loginCli,
+    logoutCli,
+    resolveSurface,
+    resolveSurfaceNames,
+    surfacesRoot,
+} = await import('./surfaces.js');
 const { surfaceApplies } = await import('@apify-evals/contract');
 
 // `model` / `models` are the team-facing inputs; the `harness` object stays
@@ -254,6 +263,9 @@ const surfacesDir = surfacesRoot();
 const surfaces = resolveSurfaceNames(input.surfaces).map((name) =>
     resolveSurface(loadSurface(surfacesDir, name), { env: mcpEnv, cliVersion: input.cliVersion }),
 );
+// Failed CLI commands echo their arguments (`apify login --token ...`).
+const redactSecrets = (text: string) =>
+    surfaces.flatMap((x) => x.secrets).reduce((acc, secret) => acc.replaceAll(secret, '[REDACTED]'), text);
 const surfacesVaried = surfaces.length > 1 || surfaces[0].name !== 'mcp';
 const multiVariant = skillsVaried || surfacesVaried;
 const itemsFor = (surface: (typeof surfaces)[number]) =>
@@ -328,9 +340,12 @@ for (const surface of surfaces) {
     if (!surface.cli) continue;
     try {
         await installCli(surface, { preinstalledRoot: process.env.CLI_ROOT });
-        log.info(`surface ${surface.name}: ${surface.cli.package} ${surface.cliVersion} at ${surface.cliBinDir}`);
+        await loginCli(surface);
+        log.info(
+            `surface ${surface.name}: ${surface.cli.package} ${surface.cliVersion} at ${surface.cliBinDir}, logged in`,
+        );
     } catch (err) {
-        const message = `surface ${surface.name}: installing ${surface.cli.package}@${surface.cli.version} failed: ${String((err as Error).message ?? err).slice(0, 300)}`;
+        const message = `surface ${surface.name}: installing or logging in ${surface.cli.package}@${surface.cli.version} failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 300)}`;
         log.error(message);
         await Actor.setValue('OUTPUT', { error: 'preflight failed', problems: [message], scope, datasetName });
         await Actor.exit({ exitCode: EXIT.preflight, statusMessage: message });
@@ -367,11 +382,11 @@ if (!skipPreflight) {
         try {
             await execFile(`${surface.cliBinDir}/apify`, ['info'], {
                 timeout: 30_000,
-                env: { PATH: process.env.PATH, HOME: process.env.HOME, ...surface.env },
+                env: isolatedCliEnv(surface.env, surface.cliLoginHome),
             });
         } catch (err) {
             problems.push(
-                `surface ${surface.name}: \`apify info\` failed: ${String((err as Error).message ?? err).slice(0, 200)}`,
+                `surface ${surface.name}: \`apify info\` failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 200)}`,
             );
         }
     }
@@ -418,7 +433,7 @@ if (!skipPreflight) {
         await Actor.setValue('OUTPUT', { error: 'preflight failed', problems, scope, datasetName });
         await Actor.exit({ exitCode: EXIT.preflight, statusMessage: `Preflight failed: ${problems[0]}` });
     }
-    log.info('preflight ok: every surface answered, LLM proxy answered');
+    log.info(`preflight ok: every surface answered${useOpenRouterProxy ? ', LLM proxy answered' : ''}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +659,9 @@ for (const { model, surface, skillSet } of variants) {
         `Model ${model}, surface ${surface.name}, skills ${skillLabel}: ${result.itemResults.length}/${variantItems.length} sessions completed; results ${resultsUrl}`,
     );
 }
+
+// The CLI logins hold the token in a file; they are not needed after the sessions.
+for (const surface of surfaces) logoutCli(surface);
 
 try {
     await otel.shutdown();

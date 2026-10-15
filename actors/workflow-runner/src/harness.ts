@@ -53,6 +53,7 @@ import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
 import { installSkills, skillSetLabel } from './skills.js';
 import {
     curlrc,
+    installCliShim,
     surfaceAllowedTools,
     surfaceItemMetadata,
     surfacePrompt,
@@ -376,8 +377,11 @@ export function buildClaudeArgs(opts: {
         '--setting-sources',
         'project',
     ];
+    // Strict always: without an item MCP config the agent gets no MCP server at
+    // all, never the developer's own (or claude.ai connector) servers.
+    args.push('--strict-mcp-config');
     if (mcpConfigPath) {
-        args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
+        args.push('--mcp-config', mcpConfigPath);
         allowedTools.push(...(opts.allowedMcpTools ?? []));
     }
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(' '));
@@ -390,12 +394,15 @@ export function buildClaudeEnv(opts: {
     apifyToken: string;
     useOpenRouterProxy: boolean;
     surface?: ResolvedSurface;
+    /** The session's `apify` shim directory (surfaces.ts `installCliShim`), first on PATH. */
+    shimDir?: string;
 }): Record<string, string | undefined> {
-    const { home, harness, apifyToken, useOpenRouterProxy, surface } = opts;
+    const { home, harness, apifyToken, useOpenRouterProxy, surface, shimDir } = opts;
     return {
         // The surface first, so it cannot override the harness settings below.
         ...(surface?.env ?? {}),
-        PATH: sessionPath(process.env.PATH, surface),
+        ...(surface ? { APIFY_CLI_SKIP_UPDATE_CHECK: '1', APIFY_CLI_DISABLE_TELEMETRY: '1' } : {}),
+        PATH: sessionPath(process.env.PATH, shimDir),
         // curl reads $CURL_HOME/.curlrc (the session marker) in both HOME modes.
         CURL_HOME: home,
         // USER/LOGNAME/TMPDIR: required for macOS Keychain auth lookup in local
@@ -476,6 +483,7 @@ function runClaudeCodeOnce(
         // the curl marker, then the secret-bearing MCP config when the item has tools.
         installSkills(work, skillSet, skillsRoot);
         if (ctx.runMarker) writeFileSync(join(home, '.curlrc'), curlrc(ctx.runMarker));
+        const shimDir = ctx.surface ? installCliShim(home, ctx.surface, ctx.runMarker) : undefined;
         const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
         if (mcp) {
@@ -494,7 +502,7 @@ function runClaudeCodeOnce(
             allowedMcpTools: mcp?.allowedTools,
             extraAllowedTools: surfaceAllowedTools(ctx.surface),
         });
-        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy, surface: ctx.surface });
+        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy, surface: ctx.surface, shimDir });
 
         // detached: the child leads its own process group, so the timeout kill
         // reaches grandchildren (Bash tool shells) that share the stdio pipes.
@@ -685,8 +693,9 @@ async function collectEvidence(
         to: r.startedAt + Number((r.metrics as { durationMs?: number }).durationMs ?? 0),
         ...(ctx.runMarker ? { marker: ctx.runMarker } : {}),
     };
-    // Runs no output named (run-sync endpoints): only raw HTTP leaves those.
-    if (ctx.surface?.kind === 'api' || used.includes('api')) {
+    // Runs no output named (run-sync endpoints, `apify call -s`): curl and the
+    // session's CLI mark their requests, so look them up by the marker.
+    if (ctx.surface?.kind !== 'mcp' || used.includes('api') || used.includes('cli')) {
         const known = new Set(extracted.actorRuns.map((run) => run.runId));
         extracted.actorRuns.push(...(await findMarkedRuns(window, known)));
     }

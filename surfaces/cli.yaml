@@ -16,4 +16,4 @@ cli:
 env:
     APIFY_TOKEN: ${APIFY_TOKEN}
 promptSuffix: >-
-    The Apify CLI (`apify`) is installed and authenticated through the APIFY_TOKEN environment variable.
+    The Apify CLI (`apify`) is installed and logged in.

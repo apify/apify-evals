@@ -12,7 +12,7 @@
  * evidence records which surfaces the agent used (contract `surfacesUsed`).
  */
 import { execFile as execFileCb } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -40,6 +40,8 @@ export interface ResolvedSurface {
     /** Set by installCli: the directory that holds the `apify` binary, and its reported version. */
     cliBinDir?: string;
     cliVersion?: string;
+    /** Set by loginCli: a HOME whose CLI login every session copies. */
+    cliLoginHome?: string;
 }
 
 /** Where the repo's `surfaces/` directory is: the image sets SURFACES_DIR; a
@@ -149,9 +151,52 @@ export async function installCli(
         }
     }
     const binDir = join(prefix, 'node_modules', '.bin');
-    const { stdout } = await execFile(join(binDir, 'apify'), ['--version'], { timeout: 30_000 });
+    const { stdout } = await execFile(join(binDir, 'apify'), ['--version'], {
+        timeout: 30_000,
+        env: isolatedCliEnv({}),
+    });
     surface.cliBinDir = binDir;
     surface.cliVersion = parseCliVersion(stdout) ?? version;
+}
+
+/** CLI settings for every call the eval makes: file credentials (never the
+ * Keychain), no update check, no telemetry. */
+const CLI_ENV = { APIFY_DISABLE_KEYRING: '1', APIFY_CLI_SKIP_UPDATE_CHECK: '1', APIFY_CLI_DISABLE_TELEMETRY: '1' };
+
+/**
+ * Environment for the runner's own CLI calls (version, login, preflight): a
+ * HOME of its own, so no developer login or Keychain entry is ever read.
+ */
+export function isolatedCliEnv(
+    extra: Record<string, string>,
+    home = join(tmpdir(), 'apify-evals-cli-home'),
+): Record<string, string | undefined> {
+    mkdirSync(home, { recursive: true });
+    return { PATH: process.env.PATH, HOME: home, ...CLI_ENV, ...extra };
+}
+
+/**
+ * Log the surface's CLI in once per run. The CLI ignores APIFY_TOKEN in the
+ * environment (1.10.0 reads only its own login), so a session needs a login:
+ * `apify login --token` into a throwaway HOME with file credentials, which
+ * every session then copies (installCliShim). Remove it with logoutCli.
+ */
+export async function loginCli(surface: ResolvedSurface): Promise<void> {
+    if (!surface.cliBinDir) return;
+    const token = surface.env.APIFY_TOKEN;
+    if (!token) throw new Error(`surface "${surface.name}": the CLI needs APIFY_TOKEN in the surface env to log in`);
+    const home = mkdtempSync(join(tmpdir(), 'apify-evals-cli-login-'));
+    await execFile(join(surface.cliBinDir, 'apify'), ['login', '--token', token], {
+        timeout: 60_000,
+        env: isolatedCliEnv({}, home),
+    });
+    surface.cliLoginHome = home;
+}
+
+/** Delete the run's CLI login (it holds the token in a file). */
+export function logoutCli(surface: ResolvedSurface): void {
+    if (surface.cliLoginHome) rmSync(surface.cliLoginHome, { recursive: true, force: true });
+    surface.cliLoginHome = undefined;
 }
 
 /** `apify-cli/1.10.0 (1832d57) running on ...` -> `1.10.0`. */
@@ -159,8 +204,81 @@ export function parseCliVersion(output: string): string | null {
     return output.match(/apify-cli\/(\S+)/)?.[1] ?? null;
 }
 
-/** PATH for a session: the surface's CLI first, then the runner's own PATH. */
-export function sessionPath(basePath: string | undefined, surface: ResolvedSurface | undefined): string | undefined {
-    if (!surface?.cliBinDir) return basePath;
-    return basePath ? `${surface.cliBinDir}:${basePath}` : surface.cliBinDir;
+/**
+ * The session's own `apify` command, first on PATH. The CLI keeps its login in
+ * `$HOME/.apify` (on macOS backed by the Keychain), so it runs with an empty
+ * HOME of its own: the session's APIFY_TOKEN is the only credential it sees,
+ * and a local run never reaches the developer's login. On a surface without
+ * the CLI the command is missing, as in the image, even when the developer's
+ * PATH has one.
+ */
+export function cliShim(
+    sessionHome: string,
+    surface: ResolvedSurface,
+    marker?: string,
+): { binDir: string; script: string } {
+    const binDir = join(sessionHome, 'bin');
+    const lines = ['#!/bin/sh', 'export APIFY_DISABLE_KEYRING=1'];
+    if (marker) {
+        // The CLI's API requests carry the session marker (see MARKER_PRELOAD).
+        lines.push(
+            `export APIFY_EVALS_MARKER=${shellQuote(marker)}`,
+            `export NODE_OPTIONS="--import=${join(binDir, MARKER_PRELOAD_FILE)} $NODE_OPTIONS"`,
+        );
+    }
+    lines.push(
+        `HOME=${shellQuote(join(sessionHome, 'cli-home'))} exec ${shellQuote(join(surface.cliBinDir ?? '', 'apify'))} "$@"`,
+    );
+    const script = surface.cliBinDir
+        ? `${lines.join('\n')}\n`
+        : '#!/bin/sh\necho "apify: command not found" >&2\nexit 127\n';
+    return { binDir, script };
+}
+
+const MARKER_PRELOAD_FILE = 'apify-evals-marker.mjs';
+
+/**
+ * Node preload for the session's CLI: appends the session marker to the
+ * User-Agent of every request to api.apify.com. Apify stores it on the run
+ * (`meta.userAgent`), so the evidence finds CLI runs whose output names no
+ * run (`apify call -s` prints only the items). The CLI's own user agent
+ * setting (APIFY_CLI_USER_AGENT) feeds telemetry only, not the API.
+ */
+export const MARKER_PRELOAD = `import https from 'node:https';
+const marker = process.env.APIFY_EVALS_MARKER;
+if (marker) {
+    const original = https.request;
+    https.request = function (...args) {
+        const req = original.apply(this, args);
+        try {
+            if (/(^|\\.)api\\.apify\\.com$/.test(req.host ?? '')) {
+                const ua = req.getHeader('user-agent');
+                req.setHeader('user-agent', ua ? \`\${ua} \${marker}\` : marker);
+            }
+        } catch {}
+        return req;
+    };
+}
+`;
+
+/** Write the shim into the session directory; returns the directory to put first on PATH. */
+export function installCliShim(sessionHome: string, surface: ResolvedSurface, marker?: string): string {
+    const { binDir, script } = cliShim(sessionHome, surface, marker);
+    const cliHome = join(sessionHome, 'cli-home');
+    if (surface.cliLoginHome) cpSync(surface.cliLoginHome, cliHome, { recursive: true });
+    else mkdirSync(cliHome, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'apify'), script, { mode: 0o755 });
+    if (marker && surface.cliBinDir) writeFileSync(join(binDir, MARKER_PRELOAD_FILE), MARKER_PRELOAD);
+    return binDir;
+}
+
+/** PATH for a session: the shim directory first, then the runner's own PATH. */
+export function sessionPath(basePath: string | undefined, shimDir: string | undefined): string | undefined {
+    if (!shimDir) return basePath;
+    return basePath ? `${shimDir}:${basePath}` : shimDir;
+}
+
+function shellQuote(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
 }

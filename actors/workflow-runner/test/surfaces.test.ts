@@ -1,10 +1,16 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { buildClaudeArgs, buildClaudeEnv } from '../src/harness.js';
 import {
+    MARKER_PRELOAD,
+    cliShim,
     curlrc,
+    installCliShim,
     loadSurface,
     parseCliVersion,
     resolveSurface,
@@ -89,9 +95,64 @@ describe('the session a surface builds', () => {
         expect(surfacePrompt('Task.', api)).toMatch(/^Task\.\n\nYou can call the Apify API/);
     });
 
-    it('puts the installed CLI first on PATH', () => {
-        expect(sessionPath('/usr/bin', cli)).toBe('/usr/bin');
-        expect(sessionPath('/usr/bin', { ...cli, cliBinDir: '/opt/cli/bin' })).toBe('/opt/cli/bin:/usr/bin');
+    it('puts the session shim first on PATH', () => {
+        expect(sessionPath('/usr/bin', undefined)).toBe('/usr/bin');
+        expect(sessionPath('/usr/bin', '/s/bin')).toBe('/s/bin:/usr/bin');
+    });
+
+    it('runs the CLI with its own empty HOME, so it never sees the developer login', () => {
+        const { binDir, script } = cliShim('/tmp/s', { ...cli, cliBinDir: '/opt/cli/bin' });
+        expect(binDir).toBe('/tmp/s/bin');
+        expect(script).toBe(
+            "#!/bin/sh\nexport APIFY_DISABLE_KEYRING=1\nHOME='/tmp/s/cli-home' exec '/opt/cli/bin/apify' \"$@\"\n",
+        );
+    });
+
+    it('marks the CLI requests with the session marker through a Node preload', () => {
+        const { script } = cliShim('/tmp/s', { ...cli, cliBinDir: '/opt/cli/bin' }, 'apify-evals/abc');
+        expect(script).toContain("export APIFY_EVALS_MARKER='apify-evals/abc'");
+        expect(script).toContain('export NODE_OPTIONS="--import=/tmp/s/bin/apify-evals-marker.mjs $NODE_OPTIONS"');
+    });
+
+    it('the preload appends the marker to api.apify.com requests only', async () => {
+        const home = mkdtempSync(join(tmpdir(), 'preload-'));
+        try {
+            const file = join(home, 'mark.mjs');
+            writeFileSync(file, MARKER_PRELOAD);
+            const probe = [
+                "import https from 'node:https';",
+                "const a = https.request('https://api.apify.com/v2/users/me', { headers: { 'User-Agent': 'ApifyClient/2' } });",
+                "const b = https.request('https://example.com/');",
+                "console.log(JSON.stringify([a.getHeader('user-agent'), b.getHeader('user-agent') ?? null]));",
+                // No traffic: drop both requests before they connect.
+                "for (const r of [a, b]) { r.on('error', () => {}); r.destroy(); }",
+            ].join('\n');
+            const out = execFileSync(process.execPath, [`--import=${file}`, '--input-type=module', '-e', probe], {
+                encoding: 'utf8',
+                env: { ...process.env, APIFY_EVALS_MARKER: 'apify-evals/abc' },
+            });
+            expect(JSON.parse(out)).toEqual(['ApifyClient/2 apify-evals/abc', null]);
+        } finally {
+            rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it('hides any apify on PATH on a surface without the CLI', () => {
+        expect(cliShim('/tmp/s', api).script).toContain('exit 127');
+    });
+
+    it('works end to end: the shim answers and keeps HOME apart', () => {
+        const home = mkdtempSync(join(tmpdir(), 'shim-'));
+        try {
+            const fakeBin = join(home, 'fake');
+            mkdirSync(fakeBin);
+            writeFileSync(join(fakeBin, 'apify'), '#!/bin/sh\necho "home=$HOME args=$*"\n', { mode: 0o755 });
+            const dir = installCliShim(home, { ...cli, cliBinDir: fakeBin });
+            const out = execFileSync(join(dir, 'apify'), ['call', 'a/b'], { encoding: 'utf8' });
+            expect(out.trim()).toBe(`home=${join(home, 'cli-home')} args=call a/b`);
+        } finally {
+            rmSync(home, { recursive: true, force: true });
+        }
     });
 
     it('marks the curl user agent with the session marker', () => {
@@ -120,6 +181,8 @@ describe('Claude Code session setup per surface', () => {
         });
         expect(args[args.indexOf('--allowedTools') + 1]).toBe('Bash WebFetch');
         expect(args).not.toContain('--mcp-config');
+        // No MCP config still means strict: no developer or claude.ai connector servers.
+        expect(args).toContain('--strict-mcp-config');
     });
 
     it('gives the session the surface env, the CLI on PATH and the curl marker home', () => {
@@ -128,11 +191,13 @@ describe('Claude Code session setup per surface', () => {
             harness,
             apifyToken: 'runner-token',
             useOpenRouterProxy: true,
-            surface: { ...api, cliBinDir: '/opt/cli/bin' },
+            surface: api,
+            shimDir: '/tmp/session/bin',
         });
         expect(env.APIFY_TOKEN).toBe('apify_api_secret');
         expect(env.CURL_HOME).toBe('/tmp/session');
-        expect(env.PATH?.startsWith('/opt/cli/bin:')).toBe(true);
+        expect(env.PATH?.startsWith('/tmp/session/bin:')).toBe(true);
+        expect(env.APIFY_CLI_SKIP_UPDATE_CHECK).toBe('1');
         // The harness settings win over anything a surface sets.
         expect(env.HOME).toBe('/tmp/session');
         expect(env.ANTHROPIC_AUTH_TOKEN).toBe('runner-token');
