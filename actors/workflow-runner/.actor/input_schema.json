@@ -84,6 +84,13 @@
             "editor": "stringList",
             "default": []
         },
+        "mcpcVersion": {
+            "title": "mcpc version (optional)",
+            "type": "string",
+            "description": "Test another mcpc build on every surface that installs it (the cli surface), e.g. beta or 0.7.0-beta.2. Empty = the version pinned in the surface file.",
+            "editor": "textfield",
+            "nullable": true
+        },
         "skillsRef": {
             "title": "Skills from GitHub (optional)",
             "type": "string",

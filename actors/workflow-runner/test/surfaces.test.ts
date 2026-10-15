@@ -58,6 +58,11 @@ describe('resolveSurface', () => {
         expect(s.env).toEqual({ APIFY_TOKEN: 'apify_api_secret' });
         expect(s.secrets).toEqual(['apify_api_secret']);
         expect(s.cli).toEqual({ package: 'apify-cli', version: '1.10.0' });
+        expect(s.mcpc).toEqual({ package: '@apify/mcpc', version: '0.7.0' });
+    });
+
+    it('takes the run-level mcpc version override', () => {
+        expect(resolveSurface(cli, { env: { APIFY_TOKEN: 't' }, mcpcVersion: 'beta' }).mcpc?.version).toBe('beta');
     });
 
     it('takes the run-level CLI version override', () => {
@@ -137,8 +142,14 @@ describe('the session a surface builds', () => {
         }
     });
 
-    it('hides any apify on PATH on a surface without the CLI', () => {
+    it('runs mcpc with its own state folder in the session', () => {
+        const { mcpcScript } = cliShim('/tmp/s', { ...cli, mcpcBinDir: '/opt/mcpc/bin' });
+        expect(mcpcScript).toBe("#!/bin/sh\nexport MCPC_HOME_DIR='/tmp/s/mcpc'\nexec '/opt/mcpc/bin/mcpc' \"$@\"\n");
+    });
+
+    it('hides any apify or mcpc on PATH on a surface without them', () => {
         expect(cliShim('/tmp/s', api).script).toContain('exit 127');
+        expect(cliShim('/tmp/s', api).mcpcScript).toContain('mcpc: command not found');
     });
 
     it('works end to end: the shim answers and keeps HOME apart', () => {

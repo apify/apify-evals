@@ -8,7 +8,11 @@
  * fallback. The runner and the judge share them.
  */
 
-/** `mcp`: the Apify MCP server. `cli`: the `apify` command. `api`: raw HTTP to api.apify.com. */
+/**
+ * `mcp`: the Apify MCP server as the agent's own MCP tools. `cli`: shell
+ * commands, the `apify` CLI and `mcpc` (the MCP CLI client, which reaches the
+ * MCP server from Bash). `api`: raw HTTP to api.apify.com.
+ */
 export const SURFACE_KINDS = ['mcp', 'cli', 'api'] as const;
 export type SurfaceKind = (typeof SURFACE_KINDS)[number];
 
@@ -19,6 +23,7 @@ const APIFY_MCP_PREFIX = 'mcp__apify__';
 // `.` or `/` (api.apify.com, ~/.apify) does not count.
 const CLI_RE = /(?:^|[\s;&|(`$])(?:npx\s+(?:-y\s+)?)?apify(?:-cli)?\s+-{0,2}[a-z]/;
 const API_RE = /\bapi\.apify\.com\b/;
+const MCPC_RE = /(?:^|[\s;&|(`$])(?:npx\s+(?:-y\s+)?(?:@apify\/)?)?mcpc\s+\S/;
 
 function bashCommand(input: unknown): string {
     if (typeof input === 'string') return input;
@@ -34,7 +39,7 @@ export function surfacesOfCall(tool: string, input: unknown): SurfaceKind[] {
     if (tool === 'Bash') {
         const command = bashCommand(input);
         const out: SurfaceKind[] = [];
-        if (CLI_RE.test(command)) out.push('cli');
+        if (CLI_RE.test(command) || MCPC_RE.test(command)) out.push('cli');
         if (API_RE.test(command)) out.push('api');
         return out;
     }

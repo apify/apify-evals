@@ -1,4 +1,7 @@
 import { execFile as execFileCb } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
@@ -66,6 +69,8 @@ interface Input {
     surfaces?: string[];
     /** Apify CLI version for every CLI surface in the run (overrides the surface file). */
     cliVersion?: string;
+    /** mcpc version for every surface that installs it (overrides the surface file). */
+    mcpcVersion?: string;
     /** Refuse to start when models x surfaces x skill sets x scenarios x repeats exceeds this. */
     maxSessions?: number;
     useOpenRouterProxy?: boolean;
@@ -155,7 +160,11 @@ const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
 const { assertSkillsExist, fetchSkillsRef, resolveSkillSets, skillSetLabel, skillsRoot } = await import('./skills.js');
 const {
+    closeMcpc,
+    connectMcpc,
     installCli,
+    installCliShim,
+    installMcpc,
     isolatedCliEnv,
     loadSurface,
     loginCli,
@@ -261,7 +270,11 @@ const skillsVaried = skillSets.length > 1 || skillSets[0].length > 0;
 // is its own experiment too: model x surface x skill set.
 const surfacesDir = surfacesRoot();
 const surfaces = resolveSurfaceNames(input.surfaces).map((name) =>
-    resolveSurface(loadSurface(surfacesDir, name), { env: mcpEnv, cliVersion: input.cliVersion }),
+    resolveSurface(loadSurface(surfacesDir, name), {
+        env: mcpEnv,
+        cliVersion: input.cliVersion,
+        mcpcVersion: input.mcpcVersion,
+    }),
 );
 // Failed CLI commands echo their arguments (`apify login --token ...`).
 const redactSecrets = (text: string) =>
@@ -335,17 +348,21 @@ if (plannedSessions > maxSessions) {
     await Actor.exit({ exitCode: EXIT.tooLarge, statusMessage: message });
 }
 
-// Every CLI version the surfaces need, once per run, before any session.
+// Every CLI tool version the surfaces need, once per run, before any session.
 for (const surface of surfaces) {
-    if (!surface.cli) continue;
+    if (!surface.cli && !surface.mcpc) continue;
     try {
-        await installCli(surface, { preinstalledRoot: process.env.CLI_ROOT });
-        await loginCli(surface);
-        log.info(
-            `surface ${surface.name}: ${surface.cli.package} ${surface.cliVersion} at ${surface.cliBinDir}, logged in`,
-        );
+        if (surface.cli) {
+            await installCli(surface, { preinstalledRoot: process.env.CLI_ROOT });
+            await loginCli(surface);
+            log.info(`surface ${surface.name}: ${surface.cli.package} ${surface.cliVersion}, logged in`);
+        }
+        if (surface.mcpc) {
+            await installMcpc(surface, { preinstalledRoot: process.env.CLI_ROOT });
+            log.info(`surface ${surface.name}: ${surface.mcpc.package} ${surface.mcpcVersion}`);
+        }
     } catch (err) {
-        const message = `surface ${surface.name}: installing or logging in ${surface.cli.package}@${surface.cli.version} failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 300)}`;
+        const message = `surface ${surface.name}: installing the CLI tools failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 300)}`;
         log.error(message);
         await Actor.setValue('OUTPUT', { error: 'preflight failed', problems: [message], scope, datasetName });
         await Actor.exit({ exitCode: EXIT.preflight, statusMessage: message });
@@ -388,6 +405,21 @@ if (!skipPreflight) {
             problems.push(
                 `surface ${surface.name}: \`apify info\` failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 200)}`,
             );
+        }
+    }
+    // mcpc: connect to the MCP server the way a session will, then close.
+    for (const surface of surfaces.filter((x) => x.mcpcBinDir)) {
+        const probeHome = mkdtempSync(join(tmpdir(), 'mcpc-preflight-'));
+        try {
+            installCliShim(probeHome, surface);
+            await connectMcpc(probeHome, surface, surface.spec.mcpUrl ?? mcpUrl);
+        } catch (err) {
+            problems.push(
+                `surface ${surface.name}: mcpc could not connect: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 200)}`,
+            );
+        } finally {
+            await closeMcpc(probeHome);
+            rmSync(probeHome, { recursive: true, force: true });
         }
     }
     // API surfaces: the token must be accepted.
@@ -504,7 +536,7 @@ for (const { model, surface, skillSet } of variants) {
             runName: effectiveRunName,
             description: [
                 `Runner: ${harness.kind} / ${model}`,
-                `Surface: ${surface.name}${surface.cliVersion ? ` (CLI ${surface.cliVersion})` : ''}`,
+                `Surface: ${surface.name}${surface.cliVersion ? ` (CLI ${surface.cliVersion})` : ''}${surface.mcpcVersion ? ` (mcpc ${surface.mcpcVersion})` : ''}`,
                 `Skills: ${skillLabel}${skillsSource ? ` from ${skillsSource.repo}@${skillsSource.commit.slice(0, 7)}` : ''}`,
                 `Scope: ${scope}`,
                 judge ? `Judge: ${judgeModel}` : 'Not judged',
@@ -523,6 +555,7 @@ for (const { model, surface, skillSet } of variants) {
                 surface: surface.name,
                 surfaceKind: surface.kind,
                 ...(surface.cliVersion ? { cliVersion: surface.cliVersion } : {}),
+                ...(surface.mcpcVersion ? { mcpcVersion: surface.mcpcVersion } : {}),
                 runner: 'workflow-runner',
                 actorRunId,
                 repeats: safeRepeats,

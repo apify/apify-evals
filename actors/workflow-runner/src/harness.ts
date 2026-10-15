@@ -43,6 +43,7 @@ import {
     enrichFromApify,
     extractFromTools,
     findMarkedRuns,
+    runsFromDatasets,
     type SessionWindow,
     summarizeRuns,
     type RawToolCall,
@@ -52,6 +53,8 @@ import {
 import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
 import { installSkills, skillSetLabel } from './skills.js';
 import {
+    closeMcpc,
+    connectMcpc,
     curlrc,
     installCliShim,
     surfaceAllowedTools,
@@ -463,27 +466,52 @@ export function sessionTimeoutSecs(meta: DatasetItemMetadata | Record<string, un
     return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : fallback;
 }
 
-function runClaudeCodeOnce(
+/**
+ * One session in its own throwaway directory. The surface's command wrappers
+ * go in first, and its mcpc session is connected before the agent starts;
+ * afterwards every mcpc session is closed (each holds a bridge process) and
+ * the directory is removed.
+ */
+async function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
+): Promise<AdapterResult> {
+    const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
+    try {
+        const shimDir = ctx.surface ? installCliShim(home, ctx.surface, ctx.runMarker) : undefined;
+        if (ctx.surface?.mcpcBinDir) await connectMcpc(home, ctx.surface, ctx.mcpUrl);
+        return await runClaudeCodeIn(ctx, abortOnMissingMcp, home, shimDir);
+    } finally {
+        await closeMcpc(home);
+        try {
+            rmSync(home, { recursive: true, force: true });
+        } catch {
+            /* best effort */
+        }
+    }
+}
+
+function runClaudeCodeIn(
+    ctx: SessionContext & { prompt: string },
+    abortOnMissingMcp: boolean,
+    home: string,
+    shimDir: string | undefined,
 ): Promise<AdapterResult> {
     const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, skillSet, skillsRoot, useOpenRouterProxy } = ctx;
     const { perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
-        const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
         // The agent works in a clean subdirectory, not in its HOME: what it leaves
         // there is the workspace evidence (CLI / SDK / Actor-building suites).
         const work = join(home, 'work');
         mkdirSync(work);
         const meta = item.metadata ?? {};
 
-        // All filesystem effects live here: session dir, the injected skills
-        // (project skills of the working directory, the only setting source),
-        // the curl marker, then the secret-bearing MCP config when the item has tools.
+        // All filesystem effects live here: the injected skills (project
+        // skills of the working directory, the only setting source), the curl
+        // marker, then the secret-bearing MCP config when the item has tools.
         installSkills(work, skillSet, skillsRoot);
         if (ctx.runMarker) writeFileSync(join(home, '.curlrc'), curlrc(ctx.runMarker));
-        const shimDir = ctx.surface ? installCliShim(home, ctx.surface, ctx.runMarker) : undefined;
         const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
         if (mcp) {
@@ -561,11 +589,6 @@ function runClaudeCodeOnce(
             if (graceTimer) clearTimeout(graceTimer);
             if (rssTimer) clearInterval(rssTimer);
             const workspaceFiles = meta.allowBash ? snapshotWorkspace(work) : undefined;
-            try {
-                rmSync(home, { recursive: true, force: true });
-            } catch {
-                /* best effort */
-            }
 
             const {
                 conversation,
@@ -698,6 +721,10 @@ async function collectEvidence(
     if (ctx.surface?.kind !== 'mcp' || used.includes('api') || used.includes('cli')) {
         const known = new Set(extracted.actorRuns.map((run) => run.runId));
         extracted.actorRuns.push(...(await findMarkedRuns(window, known)));
+    }
+    if (extracted.datasetHints.length > 0) {
+        const known = new Set(extracted.actorRuns.map((run) => run.runId));
+        extracted.actorRuns.push(...(await runsFromDatasets(extracted.datasetHints, known)));
     }
     const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead, window);
 
@@ -982,6 +1009,7 @@ export async function runSession(sessionCtx: SessionContext): Promise<{ output: 
                     surfaceKind: ctx.surface?.kind ?? 'mcp',
                     surfacesUsed: evidence.surfacesUsed ?? [],
                     ...(ctx.surface?.cliVersion ? { cliVersion: ctx.surface.cliVersion } : {}),
+                    ...(ctx.surface?.mcpcVersion ? { mcpcVersion: ctx.surface.mcpcVersion } : {}),
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef

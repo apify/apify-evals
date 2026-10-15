@@ -44,11 +44,17 @@ export interface RawToolResult {
 export function extractFromTools(
     calls: RawToolCall[],
     results: RawToolResult[],
-): { toolCalls: ToolCallEvidence[]; actorRuns: ActorRunEvidence[]; datasetsRead: string[] } {
+): {
+    toolCalls: ToolCallEvidence[];
+    actorRuns: ActorRunEvidence[];
+    datasetsRead: string[];
+    datasetHints: DatasetHint[];
+} {
     const resultById = new Map(results.map((r) => [r.toolUseId, r]));
     const toolCalls: ToolCallEvidence[] = [];
     const runs = new Map<string, ActorRunEvidence>();
     const datasetsRead = new Set<string>();
+    const datasetHints = new Map<string, DatasetHint>();
 
     for (const call of calls) {
         const short = call.name.replace(/^mcp__[^_]+__/, '');
@@ -121,7 +127,11 @@ export function extractFromTools(
             const command = String((call.name === 'Bash' ? input.command : input.url) ?? '');
             const origin = surfacesOfCall(call.name, call.input).includes('cli') ? 'cli' : 'api';
             const actor = cliActor(command) ?? apiActor(command);
-            for (const found of runsInText(`${command}\n${res?.content ?? ''}`)) {
+            const text = `${command}\n${res?.content ?? ''}`;
+            for (const datasetId of datasetIdsInText(text)) {
+                if (!datasetHints.has(datasetId)) datasetHints.set(datasetId, { datasetId, actor, origin });
+            }
+            for (const found of runsInText(text)) {
                 const prev = runs.get(found.runId);
                 runs.set(found.runId, {
                     ...found,
@@ -137,7 +147,63 @@ export function extractFromTools(
         toolCalls,
         actorRuns: [...runs.values()].filter((r) => r.runId || r.status === 'CALL-FAILED'),
         datasetsRead: [...datasetsRead],
+        datasetHints: [...datasetHints.values()],
     };
+}
+
+/** A dataset id seen in CLI or API output; its run is found through the dataset (`actRunId`). */
+export interface DatasetHint {
+    datasetId: string;
+    actor: string | null;
+    origin: 'cli' | 'api';
+}
+
+/**
+ * Dataset ids in free text: `datasetId=...` (mcpc and the MCP server's text
+ * results name only the dataset), JSON `"datasetId"` / `"defaultDatasetId"`,
+ * and Console or API dataset URLs.
+ */
+export function datasetIdsInText(text: string): string[] {
+    const out = new Set<string>();
+    for (const re of [
+        /\b(?:default)?[dD]atasetId["']?\s*[=:]\s*["']?([A-Za-z0-9]{17})\b/g,
+        /console\.apify\.com\/storage\/datasets\/([A-Za-z0-9]{17})\b/g,
+        /api\.apify\.com\/v2\/datasets\/([A-Za-z0-9]{17})\b/g,
+    ]) {
+        for (const m of text.matchAll(re)) out.add(m[1]);
+    }
+    return [...out];
+}
+
+/**
+ * Runs behind dataset ids the agent saw (mcpc prints `datasetId=...`, not the
+ * run id). The dataset records the run that wrote it; runs already known are
+ * skipped, and enrichFromApify drops runs that started before the session.
+ */
+export async function runsFromDatasets(hints: DatasetHint[], known: Set<string>): Promise<ActorRunEvidence[]> {
+    const client = Actor.apifyClient;
+    const out: ActorRunEvidence[] = [];
+    for (const hint of hints.slice(0, 25)) {
+        try {
+            const info = (await client.dataset(hint.datasetId).get()) as
+                | { actRunId?: string; actId?: string }
+                | undefined;
+            const runId = info?.actRunId;
+            if (!runId || known.has(runId)) continue;
+            known.add(runId);
+            out.push({
+                actor: hint.actor ?? 'unknown',
+                ...(info?.actId ? { actorId: info.actId } : {}),
+                runId,
+                datasetId: hint.datasetId,
+                origin: hint.origin,
+                consoleUrl: `https://console.apify.com/actors/runs/${runId}`,
+            });
+        } catch (err) {
+            log.warning(`evidence: dataset ${hint.datasetId} lookup failed: ${err}`);
+        }
+    }
+    return out;
 }
 
 function cliActor(command: string): string | null {
@@ -155,6 +221,8 @@ type FoundRun = Pick<ActorRunEvidence, 'runId' | 'actorId' | 'datasetId' | 'stat
 
 // Run ids in URLs: Console (every form) and the API's run endpoints.
 const RUN_URL_RES = [
+    // `--json` output of MCP tools through mcpc (call-actor, get-actor-run).
+    /"runId"\s*:\s*"([A-Za-z0-9]{17})"/g,
     /console\.apify\.com\/(?:view\/)?(?:actors\/(?:[A-Za-z0-9]{17}\/)?)?runs\/([A-Za-z0-9]{17})\b/g,
     /api\.apify\.com\/v2\/actor-runs\/([A-Za-z0-9]{17})\b/g,
     /api\.apify\.com\/v2\/acts\/[^/\s]+\/runs\/([A-Za-z0-9]{17})\b/g,

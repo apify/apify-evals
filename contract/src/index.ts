@@ -106,11 +106,12 @@ export const agentSpanMetadataSchema = {
         skillsLoaded: { type: 'array', items: { type: 'string' } },
         // Surface (contract 1.3): the configured surface (`surfaces/<name>.yaml`),
         // its kind, the Apify surfaces the agent actually used, and the CLI
-        // version on PATH when the surface installs one.
+        // and mcpc versions on PATH when the surface installs them.
         surface: { type: 'string' },
         surfaceKind: { enum: [...SURFACE_KINDS] },
         surfacesUsed: { type: 'array', items: { enum: [...SURFACE_KINDS] } },
         cliVersion: { type: 'string' },
+        mcpcVersion: { type: 'string' },
     },
     required: ['harness', 'model', 'harnessBroke', 'fullLogUrl', 'fullLogHash'],
     additionalProperties: true,
@@ -214,6 +215,14 @@ export const surfaceSchema = {
         bash: { type: 'boolean' },
         webFetch: { type: 'boolean' },
         cli: {
+            type: 'object',
+            properties: { package: { type: 'string' }, version: { type: 'string' } },
+            required: ['version'],
+            additionalProperties: false,
+        },
+        // mcpc (MCP CLI client) on PATH, connected to the Apify MCP server as a
+        // session before the agent starts; part of the CLI tools.
+        mcpc: {
             type: 'object',
             properties: { package: { type: 'string' }, version: { type: 'string' } },
             required: ['version'],

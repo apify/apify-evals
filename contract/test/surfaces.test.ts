@@ -23,6 +23,14 @@ describe('surfacesOfCall', () => {
         }
     });
 
+    it('counts mcpc, the MCP CLI client, as the CLI surface', () => {
+        expect(surfacesOfCall('Bash', { command: 'mcpc @apify tools-call search-actors keywords:=maps' })).toEqual([
+            'cli',
+        ]);
+        expect(surfacesOfCall('Bash', { command: 'npx -y @apify/mcpc @apify tools-list' })).toEqual(['cli']);
+        expect(surfacesOfCall('Bash', { command: 'ls ~/.mcpc' })).toEqual([]);
+    });
+
     it('does not take Apify hosts or paths for the CLI', () => {
         expect(surfacesOfCall('Bash', { command: 'cat ~/.apify/auth.json' })).toEqual([]);
         expect(surfacesOfCall('Bash', { command: 'curl https://docs.apify.com/cli' })).toEqual([]);
@@ -80,6 +88,7 @@ describe('validateSurface', () => {
                 mcp: false,
                 bash: true,
                 cli: { package: 'apify-cli', version: '1.7.0' },
+                mcpc: { package: '@apify/mcpc', version: '0.7.0' },
                 env: { APIFY_TOKEN: '${APIFY_TOKEN}' },
             }),
         ).toBe(true);
