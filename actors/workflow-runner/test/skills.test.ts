@@ -12,6 +12,7 @@ import {
     parseSkillSet,
     resolveSkillSets,
     skillSetLabel,
+    parseSkillsRef,
     skillsRoot,
 } from '../src/skills.js';
 
@@ -118,5 +119,35 @@ describe('skills on disk', () => {
     it('resolves the repo skills directory from SKILLS_DIR first', () => {
         expect(skillsRoot({ SKILLS_DIR: root })).toBe(root);
         expect(skillsRoot({}, join(root, 'alpha'))).toBe(join(root, 'alpha', 'skills'));
+    });
+});
+
+describe('parseSkillsRef', () => {
+    it('reads owner/repo#ref with an optional path', () => {
+        expect(parseSkillsRef('apify/agent-skills#main')).toEqual({
+            owner: 'apify',
+            repo: 'agent-skills',
+            ref: 'main',
+            path: 'skills',
+        });
+        expect(parseSkillsRef('apify/agent-skills#feat/new-skill:plugins/skills')).toEqual({
+            owner: 'apify',
+            repo: 'agent-skills',
+            ref: 'feat/new-skill',
+            path: 'plugins/skills',
+        });
+    });
+
+    it('rejects anything else', () => {
+        expect(() => parseSkillsRef('agent-skills')).toThrow(/Invalid skillsRef/);
+        expect(() => parseSkillsRef('apify/agent-skills')).toThrow(/Invalid skillsRef/);
+        expect(() => parseSkillsRef('apify/agent-skills#main; rm -rf /')).toThrow(/Invalid skillsRef/);
+    });
+});
+
+describe('the vendored Apify skills', () => {
+    it('are in this repo', () => {
+        const repoRoot = skillsRoot({}, join(import.meta.dirname, '..'));
+        expect(availableSkills(repoRoot)).toContain('apify-ultimate-scraper');
     });
 });

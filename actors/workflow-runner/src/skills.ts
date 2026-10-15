@@ -12,8 +12,13 @@
  * session is started with `--setting-sources project` so nothing from the
  * developer's own `~/.claude/skills` leaks into a "no skills" variant.
  */
-import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { execFile as execFileCb } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFile = promisify(execFileCb);
 
 export const NO_SKILLS = 'none';
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -110,4 +115,52 @@ export function installSkills(home: string, set: string[], root: string): void {
         if (!existsSync(join(src, 'SKILL.md'))) throw new Error(`Skill "${name}" has no SKILL.md under ${root}`);
         cpSync(src, join(target, name), { recursive: true });
     }
+}
+
+export interface SkillsSource {
+    repo: string;
+    ref: string;
+    commit: string;
+    /** The directory that holds the skills, ready to be used as the skills root. */
+    root: string;
+}
+
+const SKILLS_REF_RE = /^([\w.-]+)\/([\w.-]+)#([\w./-]+?)(?::([\w./-]+))?$/;
+
+/** `apify/agent-skills#my-branch` or `owner/repo#ref:path/to/skills` (path defaults to `skills`). */
+export function parseSkillsRef(spec: string): { owner: string; repo: string; ref: string; path: string } {
+    const m = spec.trim().match(SKILLS_REF_RE);
+    if (!m) throw new Error(`Invalid skillsRef "${spec}"; expected owner/repo#ref or owner/repo#ref:path`);
+    return { owner: m[1], repo: m[2], ref: m[3], path: m[4] ?? 'skills' };
+}
+
+/**
+ * Download skills from a public GitHub ref once per run, so a skill author can
+ * evaluate a branch without a new runner build. The ref is resolved to a
+ * commit first, and the run records it.
+ */
+export async function fetchSkillsRef(
+    spec: string,
+    dir = mkdtempSync(join(tmpdir(), 'skills-ref-')),
+): Promise<SkillsSource> {
+    const { owner, repo, ref, path } = parseSkillsRef(spec);
+    const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
+        headers: { Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(30_000),
+    });
+    if (!commitRes.ok) throw new Error(`skillsRef ${spec}: GitHub returned HTTP ${commitRes.status} for the ref`);
+    const commit = ((await commitRes.json()) as { sha?: string }).sha;
+    if (!commit) throw new Error(`skillsRef ${spec}: no commit for the ref`);
+    const tarball = await fetch(`https://codeload.github.com/${owner}/${repo}/tar.gz/${commit}`, {
+        signal: AbortSignal.timeout(120_000),
+    });
+    if (!tarball.ok) throw new Error(`skillsRef ${spec}: tarball download returned HTTP ${tarball.status}`);
+    const archive = join(dir, 'source.tar.gz');
+    writeFileSync(archive, Buffer.from(await tarball.arrayBuffer()));
+    const out = join(dir, 'source');
+    mkdirSync(out);
+    await execFile('tar', ['-xzf', archive, '-C', out, '--strip-components=1'], { timeout: 60_000 });
+    const root = join(out, path);
+    if (availableSkills(root).length === 0) throw new Error(`skillsRef ${spec}: no <name>/SKILL.md under ${path}`);
+    return { repo: `${owner}/${repo}`, ref, commit, root };
 }

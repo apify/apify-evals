@@ -84,6 +84,13 @@
             "editor": "stringList",
             "default": []
         },
+        "skillsRef": {
+            "title": "Skills from GitHub (optional)",
+            "type": "string",
+            "description": "Take the skills from a public GitHub ref instead of the ones in the image, to test a skill change before it is merged: owner/repo#ref or owner/repo#ref:path (path defaults to skills), e.g. apify/agent-skills#my-branch. The run records the resolved commit.",
+            "editor": "textfield",
+            "nullable": true
+        },
         "skillCombinations": {
             "title": "Every skill combination",
             "type": "boolean",

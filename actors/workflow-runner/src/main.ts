@@ -60,6 +60,8 @@ interface Input {
     skillSets?: string[];
     /** Expand the skills into every subset (incl. none). */
     skillCombinations?: boolean;
+    /** Take the skills from a public GitHub ref instead of the image (owner/repo#ref[:path]). */
+    skillsRef?: string;
     /** Surface variants (surfaces/<name>.yaml): one experiment each; default ["mcp"]. */
     surfaces?: string[];
     /** Apify CLI version for every CLI surface in the run (overrides the surface file). */
@@ -151,7 +153,7 @@ const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artif
 const { ReferenceRunner } = await import('./evidence.js');
 const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
-const { assertSkillsExist, resolveSkillSets, skillSetLabel, skillsRoot } = await import('./skills.js');
+const { assertSkillsExist, fetchSkillsRef, resolveSkillSets, skillSetLabel, skillsRoot } = await import('./skills.js');
 const { installCli, loadSurface, resolveSurface, resolveSurfaceNames, surfacesRoot } = await import('./surfaces.js');
 const { surfaceApplies } = await import('@apify-evals/contract');
 
@@ -239,7 +241,10 @@ const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
 // The suite's injectable skills travel on the items (profile agentSkills).
 const suiteSkills = [...new Set(selected.flatMap((i) => (meta(i) as { agentSkills?: string[] }).agentSkills ?? []))];
 const skillSets = resolveSkillSets(input, suiteSkills);
-const skillsDir = skillsRoot();
+// Skills come from the image, or from a GitHub ref to test a skill change.
+const skillsSource = input.skillsRef?.trim() ? await fetchSkillsRef(input.skillsRef) : null;
+if (skillsSource) log.info(`skills from ${skillsSource.repo}#${skillsSource.ref} (${skillsSource.commit.slice(0, 7)})`);
+const skillsDir = skillsSource?.root ?? skillsRoot();
 assertSkillsExist(skillSets, skillsDir);
 const skillsVaried = skillSets.length > 1 || skillSets[0].length > 0;
 
@@ -485,7 +490,7 @@ for (const { model, surface, skillSet } of variants) {
             description: [
                 `Runner: ${harness.kind} / ${model}`,
                 `Surface: ${surface.name}${surface.cliVersion ? ` (CLI ${surface.cliVersion})` : ''}`,
-                `Skills: ${skillLabel}`,
+                `Skills: ${skillLabel}${skillsSource ? ` from ${skillsSource.repo}@${skillsSource.commit.slice(0, 7)}` : ''}`,
                 `Scope: ${scope}`,
                 judge ? `Judge: ${judgeModel}` : 'Not judged',
                 consoleRunUrl,
@@ -497,6 +502,9 @@ for (const { model, surface, skillSet } of variants) {
                 model,
                 skillSet: skillLabel,
                 agentSkills: skillSet,
+                ...(skillsSource
+                    ? { skillsSource: { repo: skillsSource.repo, ref: skillsSource.ref, commit: skillsSource.commit } }
+                    : {}),
                 surface: surface.name,
                 surfaceKind: surface.kind,
                 ...(surface.cliVersion ? { cliVersion: surface.cliVersion } : {}),
@@ -713,6 +721,7 @@ const summary = {
     models,
     surfaces: surfaces.map((x) => x.name),
     skillSets: skillSets.map(skillSetLabel),
+    skillsSource: skillsSource ? { repo: skillsSource.repo, ref: skillsSource.ref, commit: skillsSource.commit } : null,
     // One row per (model, surface, skill set), best pass rate first; null when not judged.
     variants: variantRows,
     bestVariant: variantRows[0]?.passRate !== null ? variantRows[0] : null,
