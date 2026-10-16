@@ -55,6 +55,26 @@
             "description": "Start the Judge Actor when the agents finish so the results link already shows verdicts and fix areas. Turn off only to re-judge later with a different judge model.",
             "default": true
         },
+        "skillSets": {
+            "title": "Skill sets (optional)",
+            "type": "array",
+            "description": "Agent skills to inject, one experiment per entry so the compare view shows which skills help. Each entry is 'none' or skill names joined with '+', e.g. none, notion-research-documentation, notion-knowledge-capture+notion-research-documentation. Skills come from apify/agent-skills at a pinned commit (or Skills from GitHub); the suite profile lists which apply (agentSkills). Empty = one run without skills.",
+            "editor": "stringList",
+            "default": []
+        },
+        "skillsRef": {
+            "title": "Skills from GitHub (optional)",
+            "type": "string",
+            "description": "Take the skills from a public GitHub ref instead of the pinned apify/agent-skills commit, to test a skill change before it is merged: owner/repo#ref or owner/repo#ref:path (path defaults to skills), e.g. apify/agent-skills#my-branch. The run records the resolved commit.",
+            "editor": "textfield",
+            "nullable": true
+        },
+        "skillCombinations": {
+            "title": "Every skill combination",
+            "type": "boolean",
+            "description": "Run every subset of the skills (from Skill sets, or the suite's agentSkills when empty), including 'none'. Four skills = 16 experiments; filter scenarios first.",
+            "default": false
+        },
         "models": {
             "title": "Model matrix (optional)",
             "type": "array",
@@ -134,6 +154,13 @@
             "type": "boolean",
             "description": "Skip the MCP tools/list and LLM proxy check that fails a broken environment in seconds.",
             "default": false
+        },
+        "maxSessions": {
+            "title": "Session limit",
+            "type": "integer",
+            "description": "Refuse to start (exit 15) when models x skill sets x scenarios x repeats is larger than this. Filter scenarios or raise the limit on purpose.",
+            "default": 400,
+            "minimum": 1
         },
         "mcpEnv": {
             "title": "MCP server environment (JSON)",
