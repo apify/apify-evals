@@ -38,7 +38,7 @@ Each scenario can declare checks that are decided by code, not by the judge: whi
 
 Scenarios live in this repo under `scenarios/store-actors/<team>/<actor>.yaml`,
 two per Actor: discovery (the prompt does not name the Actor) and usage (it
-does). Open a pull request; CI runs the scenario check; a maintainer syncs
+does). Open a pull request; CI runs the scenario check; the AI team syncs
 merged files into the Langfuse dataset. Edits made in the Langfuse UI are
 overwritten by the next sync.
 
@@ -50,7 +50,7 @@ passes the check.
 
 The daily report needs no login. Trace links, the compare view and the team
 dashboards are in Langfuse. Sign in at https://langfuse.apify.dev with your
-Apify Google account and ask the evals maintainers to add you to the
+Apify Google account (the only sign-in method) and ask the AI team to add you to the
 "Store Actors Evals" project.
 
 ### Models
