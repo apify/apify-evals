@@ -34,15 +34,32 @@ Three numbers, in this order:
 
 Each scenario can declare checks that are decided by code, not by the judge: which Actor was actually called, the input the agent built, how many items the run produced and which fields they have, whether the numbers in the answer exist in the Actor output, and comparisons against a fresh reference run. See [scenarios/README.md](../../scenarios/README.md). A failed check makes the verdict `fail` even if the judge liked the answer; an infrastructure failure (Actor run failed, MCP exposed no tools, timeout) makes it `inconclusive` and is not charged to anyone.
 
-### Add a scenario
+### Add or change a scenario
 
-Scenarios live in the Langfuse dataset `store-actors`, one item each. Copy an existing item of the same type and edit:
+Scenarios live in this repo under `scenarios/store-actors/<team>/<actor>.yaml`,
+two per Actor: discovery (the prompt does not name the Actor) and usage (it
+does). Open a pull request; CI lints it; a maintainer syncs merged files into
+the Langfuse dataset. Edits in the Langfuse UI are overwritten by the next
+sync.
 
-- `input.prompt`: what a user would ask an agent. Discovery prompts end with `Actor: <username/name of the Apify Actor you used>` so the check can read the answer; usage prompts name your Actor.
-- `expectedOutput`: one paragraph describing what a correct run looks like. The judge reads it; nothing greps it.
-- `metadata`: `actor`, `team`, `skill` (`actor-discovery` or `actor-usage`), `category` (Actor slug), `title` (one line, becomes the trace name), `tools` (MCP allowlist: discovery gets `search-actors`, usage does not), `maxTurns`, `checks` (`contains` the Actor name for discovery; a `regex` on the answer shape for usage).
+Format, prompt rules and check types: [scenarios/README.md](../../scenarios/README.md).
+The `evals-scenario` skill in `apify/agent-skills-internal` writes a file that
+passes the lint.
 
-Keep prompts finishable in about two minutes: cap result counts, no whole-site crawls. Live values (follower counts, prices) go in the judge's prose, never in a deterministic check.
+### Langfuse access
+
+The daily report needs no login. Trace links, the compare view and the team
+dashboards are in Langfuse. Sign in at https://langfuse.apify.dev with your
+Apify Google account and ask the evals maintainers to add you to the
+"Store Actors Evals" project.
+
+### Models
+
+The daily run uses OpenRouter aliases: `~anthropic/claude-haiku-latest` and
+`~openai/gpt-luna-latest` for the agent, `~anthropic/claude-sonnet-latest` for
+the judge. When a provider moves an alias, the report shows the day and the
+model before and after. Curves can shift on that day without any Actor change.
+Manual runs accept any OpenRouter id. Compare runs on the same model.
 
 ### Reading the numbers honestly
 
