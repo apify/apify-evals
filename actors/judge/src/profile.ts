@@ -21,7 +21,9 @@ const STORE_FIX_AREAS = [
     { id: 'readme-docs', owner: 'subject', description: 'The agent misunderstood what the Actor does or which mode or sibling to use, although it read the Actor details.' },
     { id: 'output-format', owner: 'subject', description: 'The Actor returned data but the agent could not find or use the right fields.' },
     { id: 'error-messages', owner: 'subject', description: 'The Actor failed or returned an error the agent could not act on.' },
-    { id: 'discoverability', owner: 'store-search', description: 'The agent could not find, or picked the wrong, Actor in store search.' },
+    { id: 'discoverability', owner: 'store-search', description: 'The agent could not find, or picked the wrong, Actor in store search (through any surface).' },
+    { id: 'surface', owner: 'surface', description: 'The surface itself blocked the agent although the Actor was fine (a missing or confusing CLI command or flag, an unclear API error, MCP tool behaviour, or docs that sent it the wrong way).' },
+    { id: 'skill-instructions', owner: 'skills', description: 'An injected agent skill sent the agent down the wrong path (commands or tools it does not have on this surface, a workflow that does not fit the task).' },
     { id: 'agent-or-model', owner: 'none', description: 'The Actor did its part; the failure is the agent’s reasoning or the model.' },
 ];
 
@@ -49,6 +51,7 @@ const GENERIC_PROFILE: JudgeProfile = {
         'apify.items': 'tool-output',
         reference: 'tool-output',
         'apify.run': 'error-messages',
+        'surface.used': 'agent-or-model',
     },
 };
 

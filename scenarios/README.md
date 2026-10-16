@@ -36,7 +36,22 @@ derives the rest from the folder and the profile: `owner` from the folder name,
 trailer line the checks rely on (`Actor: <username/name ...>`). Optional per
 scenario: `title`, `maxTurns`, `timeoutSecs`, `tools`, `allowBash`,
 `appendSuffix: false`, `notes` (for humans, never shown to the judge), `tags`,
-`reference`.
+`reference`, `surfaces`.
+
+### Write for every surface
+
+A run can send the same scenario through the Apify MCP server, the Apify CLI
+or the raw API (`surfaces/`, runner input `surfaces`), with or without agent
+skills. So say what the user wants, not how to reach Apify: no tool names, no
+"use the MCP server", no CLI commands in the prompt. `tools` is the MCP
+allowlist and applies only on the `mcp` surface. `apify.*` checks, `answer.*`
+checks and `reference` work on every surface, because the runner finds the
+runs and reads their input from the platform.
+
+When a scenario only makes sense on some surfaces (it checks an MCP tool with
+`tool.called`, or a CLI command), list them: `surfaces: [mcp]`. A surface name
+or kind matches (`mcp` also covers a `mcp-staging` surface). Other surfaces
+skip the scenario.
 
 ### Titles are chart labels
 
@@ -91,6 +106,7 @@ check makes the verdict `fail` even when the judge liked the answer.
 | `tool.called`     | a tool was called, including `Bash` with the command in its input (CLI / SDK suites)                                                              | `name`, `inputRegex`, `min`                                                                                        |
 | `workspace.file`  | a file exists in the agent's working directory after the session (needs `allowBash` on the scenario or skill; CLI, SDK and Actor-building suites) | `path` glob, `jsonSchema` (validated against the inline content of small text files)                               |
 | `reference`       | compare against a fresh run of the subject made by the eval                                                                                       | see below                                                                                                          |
+| `surface.used`    | which Apify surfaces the agent used (`mcp`, `cli`, `api`); defaults to "only the configured surface's kind" and to severity `warn` in practice    | `only: [cli]` or `includes: api`                                                                                   |
 
 `contains` and `regex` still work as aliases of `answer.contains` / `answer.regex`.
 

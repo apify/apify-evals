@@ -94,6 +94,42 @@ describe('incomplete scenarios', () => {
     });
 });
 
+describe('scenario surfaces', () => {
+    it('travel on the dataset item, so the runner can skip other surfaces', () => {
+        const root = mkdtempSync(join(tmpdir(), 'scenario-surfaces-'));
+        try {
+            mkdirSync(join(root, 'profiles'), { recursive: true });
+            mkdirSync(join(root, 'scenarios', 'store-actors', 'socials'), { recursive: true });
+            copyFileSync(
+                join(import.meta.dirname, '..', '..', 'profiles', 'store-actors.yaml'),
+                join(root, 'profiles', 'store-actors.yaml'),
+            );
+            writeFileSync(
+                join(root, 'scenarios', 'store-actors', 'socials', 'actor.yaml'),
+                [
+                    'subject: some/actor',
+                    'scenarios:',
+                    '  - id: mcp-only',
+                    '    skill: use',
+                    '    prompt: Using the some/actor Actor, get 5 things.',
+                    '    expected: The agent gets 5 things.',
+                    '    surfaces: [mcp]',
+                    '  - id: every-surface',
+                    '    skill: use',
+                    '    prompt: Using the some/actor Actor, get 5 things.',
+                    '    expected: The agent gets 5 things.',
+                ].join('\n'),
+            );
+            const suite = loadSuite(root, 'store-actors');
+            expect(suite.problems.filter((p) => !p.includes(': warning: '))).toEqual([]);
+            expect(suite.items.find((i) => i.id === 'mcp-only')?.metadata.surfaces).toEqual(['mcp']);
+            expect(suite.items.find((i) => i.id === 'every-surface')?.metadata).not.toHaveProperty('surfaces');
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+});
+
 describe('profiles', () => {
     it('load every stub profile', () => {
         for (const name of ['store-actors', 'mcp-tools', 'cli-tasks', 'sdk-tasks', 'apify-ai']) {

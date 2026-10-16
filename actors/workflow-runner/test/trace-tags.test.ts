@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildTraceTags } from '../src/harness.js';
+import { buildTraceTags, traceVersion } from '../src/harness.js';
 
 const ctx = {
     datasetName: 'store-actors',
@@ -24,6 +24,7 @@ describe('buildTraceTags', () => {
             'team:socials',
             'skill:find',
             'skills:none',
+            'surface:mcp',
             'family:instagram',
         ]);
     });
@@ -40,6 +41,15 @@ describe('buildTraceTags', () => {
             expect(tags).toContain('trigger:manual');
             expect(tags).toContain('repeats:3');
         }
+    });
+    it('labels the surface', () => {
+        const tags = buildTraceTags({ ...(ctx as object), surface: { name: 'cli' } } as never, {});
+        expect(tags).toContain('surface:cli');
+    });
+    it('keeps version = model on the default surface only', () => {
+        expect(traceVersion('m', undefined)).toBe('m');
+        expect(traceVersion('m', { name: 'mcp' })).toBe('m');
+        expect(traceVersion('m', { name: 'cli' })).toBe('m · cli');
     });
     it('labels the injected skill set', () => {
         const tags = buildTraceTags({ ...(ctx as object), skillSet: ['b', 'a'] } as never, {});
