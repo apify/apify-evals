@@ -117,19 +117,17 @@ function application(raw) {
       });
     }
     const step=data.length>1?480/(data.length-1):0;
-    // Vertical markers: model moves (grey) and the reader's change marker (red). Labels sit in
-    // two rows; a label that would overlap the previous one drops to the second row.
-    const byDay=new Map(); for(const mv of moves(ds,s)) byDay.set(mv.day,[...(byDay.get(mv.day)||[]),mv.who]);
+    // Vertical markers: model moves (grey) and the reader's change marker (red). The line is
+    // always visible; a short label appears on hover or focus. Markers on the same day share
+    // one hover target. Details live in the Model updates menu and the change-marker form.
     const md=d=>d.slice(5).replace('-','/');
-    const markers=[...byDay].map(([day,who])=>{const names=who.map(w=>w==='Judge'?'judge':w); const txt=names.length===1?`${names[0]} model changed ${md(day)}`:`${names.slice(0,-1).join(', ')} and ${names.at(-1)} models changed ${md(day)}`; return {day,label:txt,stroke:'#607086'};});
-    if(s.mark) markers.push({day:s.mark,label:`marker ${md(s.mark)}`,stroke:'#a63d27'});
-    let prev=null;
-    for(const mk of markers.map(m=>({...m,i:ds.indexOf(m.day)})).filter(m=>m.i>=0).sort((a,b)=>a.i-b.i)){
-      const mx=mk.i>0?x(mk.i)-step/2:x(0)-10, anchor=mk.i===0?'start':mk.i===data.length-1?'end':'middle', w=mk.label.length*5.6;
-      const left=anchor==='start'?mx:anchor==='end'?mx-w:mx-w/2, right=left+w;
-      const row=prev&&prev.row===0&&left<prev.right+8?1:0; prev={row,right};
-      const ty=row?20:9;
-      svg+=`<line x1="${mx}" y1="${ty+4}" x2="${mx}" y2="170" stroke="${mk.stroke}" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${mx}" y="${ty}" text-anchor="${anchor}" fill="${mk.stroke}">${esc(mk.label)}</text>`;
+    const byDay=new Map();
+    for(const mv of moves(ds,s)) if(!byDay.has(mv.day)) byDay.set(mv.day,[{label:`Model update ${md(mv.day)}`,stroke:'#607086'}]);
+    if(s.mark) byDay.set(s.mark,[...(byDay.get(s.mark)||[]),{label:`Marker ${md(s.mark)}`,stroke:'#a63d27'}]);
+    for(const [day,items] of byDay){
+      const i=ds.indexOf(day); if(i<0)continue;
+      const mx=i>0?x(i)-step/2:x(0)-10, w=Math.max(...items.map(t=>t.label.length))*6, anchor=mx-w/2<4?'start':mx+w/2>556?'end':'middle';
+      svg+=`<g class="marker" tabindex="0"><title>${esc(items.map(t=>t.label).join(' · '))}</title><rect x="${mx-7}" y="4" width="14" height="168" fill="transparent"/>${items.map((t,k)=>`<line x1="${mx+(k?1.5:0)}" y1="22" x2="${mx+(k?1.5:0)}" y2="170" stroke="${t.stroke}" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${mx}" y="${k?20:9}" text-anchor="${anchor}" fill="${t.stroke}">${esc(t.label)}</text>`).join('')}</g>`;
     }
     data.forEach((d,i)=>{
       const width=Math.min(36,400/data.length);

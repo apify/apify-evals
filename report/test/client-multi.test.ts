@@ -33,7 +33,7 @@ describe('report v2 client with three models', () => {
             'Model update in this period: Haiku changed from claude-haiku-5.5 to claude-haiku-5.6 on October 13, 2026; Judge changed from claude-sonnet-4.6 to claude-sonnet-5.5 on October 13, 2026.',
         );
         expect((h.match(/<polyline/g) || []).length).toBe(6); // 3 models x 2 charts, no dashed selection line
-        expect(h).toContain('Haiku and judge models changed 10/13');
+        expect(h).toContain('Model update 10/13');
     });
 
     it('summarises universal versus partial failures and sorts by failing attempts', () => {
