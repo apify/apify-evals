@@ -30,8 +30,9 @@ button.
   `profiles/<suite>.yaml` — what a suite tests, tools per skill, fix areas.
   `tools/` syncs scenarios to Langfuse (`npm run scenarios:sync`) and
   validates them (`npm run scenarios:check`). See `scenarios/README.md`.
-- `actors/runner/`, `shared/`, `docs/`, `spikes/`, `scenarios/*.md` — the
-  legacy markdown-scenario runner (Czech docs). Not part of the live system.
+- `docs/adding-a-suite.md` — how a team adds a suite. The numbered files in
+  `docs/`, plus `actors/runner/`, `shared/`, `spikes/`, `scenarios/*.md`, are
+  the legacy markdown-scenario runner (Czech docs). Not part of the live system.
 
 ## Conventions
 
