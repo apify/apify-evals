@@ -73,9 +73,16 @@
         "surfaces": {
             "title": "Surfaces (optional)",
             "type": "array",
-            "description": "How the agent reaches Apify, one experiment per entry so the compare view shows them side by side: mcp (Apify MCP server, the default), api (raw HTTP to the Apify API). Each name is a file surfaces/<name>.yaml. Combines with skill sets: surfaces x skill sets x models.",
+            "description": "How the agent reaches Apify, one experiment per entry so the compare view shows them side by side: mcp (Apify MCP server, the default), cli (Apify CLI in Bash), api (raw HTTP to the Apify API). Each name is a file surfaces/<name>.yaml. Combines with skill sets: surfaces x skill sets x models.",
             "editor": "stringList",
             "default": []
+        },
+        "cliVersion": {
+            "title": "Apify CLI version (optional)",
+            "type": "string",
+            "description": "Test another Apify CLI build on every CLI surface in this run, e.g. beta or 1.10.1-beta.37. Empty = the version pinned in the surface file.",
+            "editor": "textfield",
+            "nullable": true
         },
         "skillSets": {
             "title": "Skill sets (optional)",
@@ -83,6 +90,13 @@
             "description": "Agent skills to inject, one experiment per entry so the compare view shows which skills help. Each entry is 'none' or skill names joined with '+', e.g. none, notion-research-documentation, notion-knowledge-capture+notion-research-documentation. Skills come from apify/agent-skills at a pinned commit (or Skills from GitHub); the suite profile lists which apply (agentSkills). Empty = one run without skills.",
             "editor": "stringList",
             "default": []
+        },
+        "mcpcVersion": {
+            "title": "mcpc version (optional)",
+            "type": "string",
+            "description": "Test another mcpc build on every surface that installs it (the cli surface), e.g. beta or 0.7.0-beta.2. Empty = the version pinned in the surface file.",
+            "editor": "textfield",
+            "nullable": true
         },
         "skillsRef": {
             "title": "Skills from GitHub (optional)",
