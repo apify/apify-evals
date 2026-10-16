@@ -26,9 +26,9 @@ describe('report v2 client with three models', () => {
         expect(h).toContain('>Haiku<');
         expect(h).toContain('>GPT Luna<');
         expect(h).toContain('>DeepSeek Flash<');
-        expect(text(h)).toContain(
-            'Models in latest run: Haiku (claude-haiku-5.6) · DeepSeek Flash (deepseek-v4.1-flash) · GPT Luna (gpt-6-luna) · Judge: claude-sonnet-5.5',
-        );
+        // The tabs name the models; the resolved ids live under "How this is measured", not in a standing line.
+        expect(text(h)).not.toContain('Models in latest run');
+        expect(text(h)).toContain('Models in this export: Haiku (~anthropic/claude-haiku-latest');
         expect(text(h)).toContain(
             'Model update in this period: Haiku changed from claude-haiku-5.5 to claude-haiku-5.6 on October 13, 2026; Judge changed from claude-sonnet-4.6 to claude-sonnet-5.5 on October 13, 2026.',
         );
@@ -114,6 +114,6 @@ describe('report v2 client with three models', () => {
         expect(h).not.toContain('>All models<');
         expect(h).not.toContain('class="pill');
         expect(h).not.toContain('Models disagreed');
-        expect(text(h)).toContain('Model in latest run: Haiku');
+        expect(text(h)).not.toContain('Model in latest run');
     });
 });

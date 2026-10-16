@@ -91,13 +91,9 @@ function application(raw) {
   }
   const short = id => String(id||'').replace(/^~?[^/]+\//,'');
   function modelsLine(ds,s) {
-    const ms=s.model?[slotById.get(s.model)]:active(latest);
-    const parts=ms.map(m=>{const r=m.resolvedByDay?.[latest]; return `${esc(m.label)}${r?` (${esc(short(r))})`:''}`;});
-    const judge=raw.judgeByDay?.[latest];
-    let h=`<p class="models-line">${multi?'Models':'Model'} in latest run: ${parts.join(' · ')}${judge?` · Judge: ${esc(short(judge))}`:''}</p>`;
+    // The tabs name the models and "How this is measured" carries the resolved ids; only a move in the period is worth a line here.
     const mv=moves(ds,s);
-    if(mv.length)h+=`<p class="models-line update">Model update in this period: ${mv.map(x=>`${esc(x.who)} changed from ${esc(short(x.from))} to ${esc(short(x.to))} on ${esc(longDate(x.day))}`).join('; ')}.</p>`;
-    return h;
+    return mv.length?`<p class="models-line update">Model update in this period: ${mv.map(x=>`${esc(x.who)} changed from ${esc(short(x.from))} to ${esc(short(x.to))} on ${esc(longDate(x.day))}`).join('; ')}.</p>`:'';
   }
   function chart(tasks,ds,skill,s) {
     const one = s.model||!multi ? (s.model?slotById.get(s.model):slots[0]) : null;
