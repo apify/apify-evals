@@ -1,32 +1,36 @@
 # Apify agent evals
 
-A test harness for AI agents using Apify. You describe a task an agent
-should be able to do with some part of Apify (an Actor, an MCP tool, a CLI
-command, an SDK feature). The harness runs a real agent on it, checks the
-outcome by code, has a model grade the session, and reports what went wrong
-and who should fix it.
+A harness for testing how AI agents handle tools, APIs and services. You
+write a task an agent should be able to do, for example "find 10 coffee shops
+in Prague with their phone numbers". A real agent (Claude Code or Codex) gets
+the task and the tools for it, works through it and answers. Code checks what
+happened, a second model reads the session and grades it, and the result lands
+in a report that opens without a login.
 
-Tasks are grouped into suites. Each suite says what is under test and what a
-failure means, and gets its own report. The first suite, `store-actors`,
-tests whether agents find and use Apify-maintained Store Actors. Suites for
-MCP tools, the CLI and the SDK use the same engine.
+Tasks are grouped into suites. A suite says what is under test, which tools
+the agent gets, and which categories a failure can fall into. The first suite,
+`store-actors`, tests whether agents find and use Apify-maintained Store
+Actors. Other suites test MCP servers, the CLI or the SDK; a suite can point at
+anything an agent can reach.
 
-How it works:
+How a run works:
 
-1. Scenarios are YAML in this repo, synced to a Langfuse dataset per suite.
-2. The runner Actor runs one agent session per scenario (Claude Code or
-   Codex, any OpenRouter model) and collects evidence: tool calls, Actor runs,
-   results, files.
-3. Deterministic checks declared in the scenario decide what code can decide.
-4. The judge Actor reads the session and the checks, writes a verdict and a
-   fix area to Langfuse, and regenerates the suite's HTML report.
+1. Scenarios are YAML files in this repo, synced to a Langfuse dataset per
+   suite. Langfuse is where runs, sessions and scores are stored.
+2. The runner Actor starts one agent session per scenario and records what
+   happened: tool calls, Actor runs, results, files the agent wrote.
+3. Each scenario lists checks that code can decide, such as which tool ran,
+   what input it got and what it returned. The runner scores them.
+4. The judge Actor reads the session and the check results, writes a verdict
+   and a fix area (the category of the failure, so the owner knows where to
+   look), and regenerates the suite's HTML report.
 
 | You want to                                        | Read                                                                                                                    |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | See how the Store Actors are doing                 | the [daily report](https://api.apify.com/v2/key-value-stores/QEr12X3OJMj34ZRnb/records/report-store-actors-latest.html) |
 | Understand the numbers, check whether a fix helped | [Store Actor AI evals](actors/workflow-runner/README.md), "For store teams"                                             |
-| Add or change a scenario                           | [scenarios/README.md](scenarios/README.md) and the `evals-scenario` skill in `apify/agent-skills-internal`              |
-| Add a suite for your own surface                   | [docs/adding-a-suite.md](docs/adding-a-suite.md)                                                                        |
+| Add or change a scenario                           | [scenarios/README.md](scenarios/README.md) and the `use-apify-evals` skill in `apify/agent-skills-internal`             |
+| Add a suite for your own tool or service           | [docs/adding-a-suite.md](docs/adding-a-suite.md)                                                                        |
 | Query results from an agent                        | the [Langfuse skill](https://github.com/langfuse/skills)                                                                |
 | Change the engine                                  | [CLAUDE.md](CLAUDE.md)                                                                                                  |
 
@@ -39,7 +43,7 @@ actors/judge/            the judge: model grading, scores, trace comments, the r
 report/                  the HTML report (data layer + browser client)
 scenarios/<suite>/       scenario source of truth, synced to Langfuse
 profiles/<suite>.yaml    what a suite tests, tools per skill, fix areas
-tools/                   scenario lint and sync, report CLI, judge calibration
+tools/                   scenario check and sync, report CLI, judge calibration
 ```
 
 Production runs under the `internal-apps` org: `internal-apps/eval-runner` and
