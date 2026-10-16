@@ -69,7 +69,7 @@ describe('report v2 client with three models', () => {
             h.indexOf('data-actor="apify/facebook-posts-scraper"'),
         );
         // One segment per model in tab order; each carries that model's outcome.
-        expect(zillow).toMatch(/class="day-cell F mixed split"[^>]*>(<b class="seg [PFWIU]"[^>]*><\/b>){3}</);
+        expect(zillow).toMatch(/class="day-cell F mixed split"[^>]*>(<b class="seg [PFWIU]"[^>]*>[^<]*<\/b>){3}</);
     });
 
     it('a single-model view renders like the old page for that model', () => {

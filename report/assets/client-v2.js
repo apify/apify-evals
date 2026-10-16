@@ -287,7 +287,7 @@ function application(raw) {
     if(pass===el.length)return {c:'P',text:'✓',tip};
     if(pass===0){const c=worst(el);return {c,text:symbols[c],tip};}
     // Models disagree: one segment per model in tab order, each in that model's outcome colour.
-    return {c:worst(el)+' mixed split',text:as.map(x=>`<b class="seg ${code(x.a)}" title="${esc(x.m.label)}: ${names[code(x.a)]}"></b>`).join(''),tip,mixed:`${pass}/${el.length}`};
+    return {c:worst(el)+' mixed split',text:as.map(x=>{const c=code(x.a);return `<b class="seg ${c}" title="${esc(x.m.label)}: ${names[c]}">${symbols[c]}</b>`;}).join(''),tip,mixed:`${pass}/${el.length}`};
   }
   function history(a,ds,s) {
     const recent=ds.slice(-7);
@@ -328,7 +328,7 @@ function application(raw) {
       h+=`<aside class="point-detail"><strong>${esc(s.day)} · ${s.metric==='find'?'Discovery':'Named'} tasks${s.model?' · '+esc(slotById.get(s.model).label):''}</strong><span>${stat.pass}/${stat.n} passed · ${stat.infra} not counted · ${stat.missing} no result</span><a href="${esc(href(s,{metric:'',day:''}))}">Clear date</a><div>${picked.map(t=>{const cell=dayCell(t,s.day,s);return `<a href="${esc(href(s,{actor:t.subject,task:t.id,metric:'',day:s.day}))}" title="${esc(cell.tip)}">${badge(cell.c.split(' ')[0],cell.mixed?cell.mixed+' passed':undefined)} ${esc(nice(t.subject))}</a>`;}).join('')}</div></aside>`;
     }
     h+=beforeAfterTable(tasks,ds,s);
-    h+=`<section class="actors-section" aria-labelledby="actors-title"><div class="section-title"><div><h2 id="actors-title">Actors <span>${scoped.length}</span></h2><p>Latest outcome first. Counts cover the selected period${multi&&!s.model?' and every model':''}.</p></div><div class="legend">${Object.keys(names).map(c=>`<span><i class="day-cell ${c}">${symbols[c]}</i>${names[c]}</span>`).join('')}${multi&&!s.model?`<span><i class="day-cell F mixed split"><b class="seg P"></b><b class="seg F"></b></i>Models differ (${slots.map(m=>esc(m.label)).join(', ')})</span>`:''}</div></div><div class="column-head"><span>Actor</span><span>Discovery task</span><span>Named task</span><span>Recent outcomes <small class="date-head">${ds.slice(-7).map(d=>`<span>${d.slice(-2)}</span>`).join('')}</small></span></div><div class="actor-list">`;
+    h+=`<section class="actors-section" aria-labelledby="actors-title"><div class="section-title"><div><h2 id="actors-title">Actors <span>${scoped.length}</span></h2><p>Latest outcome first. Counts cover the selected period${multi&&!s.model?' and every model':''}.</p></div><div class="legend">${Object.keys(names).map(c=>`<span><i class="day-cell ${c}">${symbols[c]}</i>${names[c]}</span>`).join('')}${multi&&!s.model?`<span><i class="day-cell F mixed split"><b class="seg P">✓</b><b class="seg F">✗</b></i>Models differ (${slots.map(m=>esc(m.label)).join(', ')})</span>`:''}</div></div><div class="column-head"><span>Actor</span><span>Discovery task</span><span>Named task</span><span>Recent outcomes <small class="date-head">${ds.slice(-7).map(d=>`<span>${d.slice(-2)}</span>`).join('')}</small></span></div><div class="actor-list">`;
     let previous='';
     for(const a of ordered){
       if(s.team==='all'&&a.team!==previous){h+=`<div class="team-divider">${cap(a.team)} <span>${scoped.filter(x=>x.team===a.team).length} Actors</span></div>`;previous=a.team;}
