@@ -419,7 +419,7 @@ for (const model of models) {
                     judgeModel,
                     writeRunScores: fullScope,
                     ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}),
-                    ...judgeLangfuseInput(input, process.env),
+                    ...judgeLangfuseInput(process.env),
                 },
                 { memory: 1024, timeout: 1800 },
             );
