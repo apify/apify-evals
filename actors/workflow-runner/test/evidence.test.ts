@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractFromTools, runsInText } from '../src/evidence.js';
+import { datasetIdsInText, extractFromTools, runsInText } from '../src/evidence.js';
 
 // Shapes captured from real mcp.apify.com results on 2026-09-02.
 const callActorResult = JSON.stringify({
@@ -247,5 +247,53 @@ describe('runsInText', () => {
         expect(runsInText(`progress...\n${JSON.stringify(run)}\ndone`).map((r) => r.runId)).toEqual([
             'RunRunRunRunRun01',
         ]);
+    });
+});
+
+describe('runs through mcpc', () => {
+    it('reads the run id from `mcpc --json` output', () => {
+        const out = JSON.stringify({
+            structuredContent: { runId: 'RunRunRunRunRun02', datasetId: 'DsDsDsDsDsDsDsD02' },
+        });
+        expect(runsInText(out).map((r) => r.runId)).toEqual(['RunRunRunRunRun02']);
+    });
+
+    it('reads the run id from mcpc arguments', () => {
+        // Commands seen in a matrix run (2026-10-15).
+        const commands = [
+            `sleep 30 && mcpc @apify tools-call get-actor-run runId:='"7NjnNnxy9HBOz6hWO"' waitSecs:=45`,
+            'mcpc @apify tools-call get-actor-run runId:=7NjnNnxy9HBOz6hWP',
+        ];
+        expect(commands.flatMap((c) => runsInText(c).map((r) => r.runId))).toEqual([
+            '7NjnNnxy9HBOz6hWO',
+            '7NjnNnxy9HBOz6hWP',
+        ]);
+    });
+
+    it('keeps the dataset id of the readable output as a hint for its run', () => {
+        // Readable output of `mcpc @apify tools-call get-actor-run` (mcpc 0.7.0, apify-mcp-server 0.18.2).
+        const text =
+            'SUCCEEDED in 5.04s. 1 item; 1 fields available.\nUse get-dataset-items with datasetId=FApemntw8aw0dJBKf and limit (for example 20) to fetch items';
+        expect(datasetIdsInText(text)).toEqual(['FApemntw8aw0dJBKf']);
+        const out = extractFromTools(
+            [
+                {
+                    id: 'm',
+                    name: 'Bash',
+                    input: { command: "mcpc @apify tools-call call-actor actor:=apify/web-scraper input:='{}'" },
+                },
+            ],
+            [{ toolUseId: 'm', content: text, isError: false }],
+        );
+        expect(out.actorRuns).toEqual([]);
+        expect(out.datasetHints).toEqual([{ datasetId: 'FApemntw8aw0dJBKf', actor: null, origin: 'cli' }]);
+    });
+
+    it('finds dataset ids in JSON and URLs', () => {
+        expect(
+            datasetIdsInText(
+                '{"defaultDatasetId": "AAAAAAAAAAAAAAAA1"} https://console.apify.com/storage/datasets/AAAAAAAAAAAAAAAA2 https://api.apify.com/v2/datasets/AAAAAAAAAAAAAAAA3/items',
+            ),
+        ).toEqual(['AAAAAAAAAAAAAAAA1', 'AAAAAAAAAAAAAAAA2', 'AAAAAAAAAAAAAAAA3']);
     });
 });
