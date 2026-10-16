@@ -109,8 +109,8 @@ describe('dataset item metadata', () => {
     });
 });
 
-describe('dataset item metadata: MCP server', () => {
-    it('accepts a stdio server with env placeholders', () => {
+describe('dataset item metadata: MCP server and agent skills', () => {
+    it('accepts a stdio server with env placeholders and a skills list', () => {
         expect(
             validateDatasetItemMetadata({
                 tools: ['*'],
@@ -121,6 +121,7 @@ describe('dataset item metadata: MCP server', () => {
                     args: ['--transport', 'stdio'],
                     env: { NOTION_TOKEN: '${NOTION_TOKEN}' },
                 },
+                agentSkills: ['notion-research-documentation'],
             }),
         ).toBe(true);
     });

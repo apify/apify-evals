@@ -30,6 +30,8 @@ export interface Profile {
     description?: string;
     /** The MCP server the agent talks to; absent = the Apify MCP server. */
     mcp?: McpServerSpec;
+    /** Agent skills (names in apify/agent-skills) a run of this suite may inject. */
+    agentSkills?: string[];
     skills: Record<string, SkillConfig>;
     wrongSubjectLabel: string;
     fixAreas: FixArea[];
@@ -57,6 +59,13 @@ export function loadProfile(rootDir: string, name: string): Profile {
     }
     if (doc.mcp !== undefined && !validateDatasetItemMetadata({ mcp: doc.mcp })) {
         throw new Error(`profiles/${name}.yaml: invalid "mcp": ${JSON.stringify(validateDatasetItemMetadata.errors)}`);
+    }
+    // The skills are downloaded at run time; the runner fails on a name the
+    // skills source does not have before any session starts.
+    for (const skill of doc.agentSkills ?? []) {
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+            throw new Error(`profiles/${name}.yaml: agentSkills "${skill}" is not a skill name`);
+        }
     }
     cache.set(key, doc);
     return doc;
