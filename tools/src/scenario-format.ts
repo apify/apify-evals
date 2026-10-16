@@ -26,6 +26,8 @@ export interface ScenarioFileEntry {
     timeoutSecs?: number;
     tools?: string[];
     allowBash?: boolean;
+    /** Surface kinds or names the scenario applies to; absent = every surface. */
+    surfaces?: string[];
     appendSuffix?: boolean;
     notes?: string;
     tags?: string[];
@@ -149,6 +151,7 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
                     ...(fileProfile.agentSkills?.length ? { agentSkills: fileProfile.agentSkills } : {}),
                     checks,
                     ...((s.allowBash ?? skillCfg.allowBash) ? { allowBash: true } : {}),
+                    ...(s.surfaces?.length ? { surfaces: s.surfaces } : {}),
                     ...(s.timeoutSecs ? { timeoutSecs: s.timeoutSecs } : {}),
                     ...(s.reference ? { reference: s.reference } : {}),
                     ...(s.notes ? { notes: s.notes } : {}),
