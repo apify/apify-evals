@@ -15,7 +15,9 @@ import { createHash } from 'node:crypto';
 import { Ajv } from 'ajv';
 import type { FromSchema } from 'json-schema-to-ts';
 
-export const CONTRACT_VERSION = '1.2.0';
+import { SURFACE_KINDS } from './surfaces.js';
+
+export const CONTRACT_VERSION = '1.3.0';
 
 /** Contract-wide hash convention for artifact pointers: the stored bytes are
  * exactly the hashed bytes, so any consumer can verify a fetched record. */
@@ -102,6 +104,11 @@ export const agentSpanMetadataSchema = {
         mcpServer: { type: 'string' },
         agentSkills: { type: 'array', items: { type: 'string' } },
         skillsLoaded: { type: 'array', items: { type: 'string' } },
+        // Surface (contract 1.3): the configured surface (`surfaces/<name>.yaml`),
+        // its kind and the Apify surfaces the agent actually used.
+        surface: { type: 'string' },
+        surfaceKind: { enum: [...SURFACE_KINDS] },
+        surfacesUsed: { type: 'array', items: { enum: [...SURFACE_KINDS] } },
     },
     required: ['harness', 'model', 'harnessBroke', 'fullLogUrl', 'fullLogHash'],
     additionalProperties: true,
@@ -129,6 +136,7 @@ export const CHECK_TYPES = [
     'tool.called',
     'workspace.file',
     'reference',
+    'surface.used',
 ] as const;
 export type CheckType = (typeof CHECK_TYPES)[number];
 
@@ -181,6 +189,35 @@ export const mcpServerSchema = {
     additionalProperties: false,
 } as const;
 
+/**
+ * A surface: how the agent reaches Apify (`surfaces/<name>.yaml`). The kind
+ * groups variants of one surface (`mcp`, `mcp-staging`), so scenarios and
+ * checks name kinds and stay valid when someone adds a variant. The runner
+ * builds the session from it: MCP config, Bash, WebFetch, extra environment
+ * (`${VAR}` placeholders filled from the runner environment, never stored
+ * here) and an optional prompt suffix.
+ */
+export const surfaceSchema = {
+    $id: 'surface',
+    type: 'object',
+    properties: {
+        name: { type: 'string', pattern: '^[a-z][a-z0-9-]*$' },
+        kind: { enum: [...SURFACE_KINDS] },
+        description: { type: 'string' },
+        // true: the item's MCP tools (profile `skills.<skill>.tools`) on the
+        // suite's MCP server; false: no MCP server at all.
+        mcp: { type: 'boolean' },
+        // Overrides the run's Apify MCP URL (e.g. a staging server).
+        mcpUrl: { type: 'string' },
+        bash: { type: 'boolean' },
+        webFetch: { type: 'boolean' },
+        env: { type: 'object', additionalProperties: { type: 'string' } },
+        promptSuffix: { type: 'string' },
+    },
+    required: ['name', 'kind', 'mcp'],
+    additionalProperties: false,
+} as const;
+
 /** The thing under test. `kind` comes from the suite profile. */
 export const SUBJECT_KINDS = ['actor', 'mcp-tool', 'cli-command', 'sdk-feature', 'agent'] as const;
 
@@ -214,6 +251,8 @@ export const datasetItemMetadataSchema = {
         // runner's skillSets input picks which of them a run gets.
         agentSkills: { type: 'array', items: { type: 'string' } },
         allowBash: { type: 'boolean' },
+        // Surface kinds or names this scenario applies to; absent = every surface.
+        surfaces: { type: 'array', items: { type: 'string' } },
         maxTurns: { type: 'integer' },
         timeoutSecs: { type: 'integer' },
         checks: { type: 'array', items: checkSchema },
@@ -258,6 +297,7 @@ export type AgentSpanOutput = FromSchema<typeof agentSpanOutputSchema>;
 export type AgentSpanMetadata = FromSchema<typeof agentSpanMetadataSchema>;
 export type DatasetItemMetadata = FromSchema<typeof datasetItemMetadataSchema>;
 export type McpServerSpec = FromSchema<typeof mcpServerSchema>;
+export type SurfaceSpec = FromSchema<typeof surfaceSchema>;
 export type DeterministicCheck = FromSchema<typeof checkSchema>;
 export type ScoreMetadata = FromSchema<typeof scoreMetadataSchema>;
 
@@ -266,6 +306,7 @@ export const validateAgentSpanOutput = ajv.compile<AgentSpanOutput>(agentSpanOut
 export const validateAgentSpanMetadata = ajv.compile<AgentSpanMetadata>(agentSpanMetadataSchema);
 export const validateDatasetItemMetadata = ajv.compile<DatasetItemMetadata>(datasetItemMetadataSchema);
 export const validateScoreMetadata = ajv.compile<ScoreMetadata>(scoreMetadataSchema);
+export const validateSurface = ajv.compile<SurfaceSpec>(surfaceSchema);
 
 /** True when a span output predates the contract (v0): judge uses degraded mode. */
 export function isPreContract(output: unknown): boolean {
@@ -273,3 +314,4 @@ export function isPreContract(output: unknown): boolean {
 }
 
 export * from './checks.js';
+export * from './surfaces.js';

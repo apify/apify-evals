@@ -1,0 +1,7 @@
+# The Apify MCP server, narrowed per scenario to the tools in the suite profile
+# (skills.<find|use>.tools). This is the default surface and the behaviour of
+# every run before surfaces existed.
+name: mcp
+kind: mcp
+description: Apify MCP server with the scenario's tools. No Bash unless the scenario asks for it.
+mcp: true
