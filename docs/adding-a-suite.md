@@ -101,9 +101,10 @@ Three projects, pick by how long the results should live:
   a member; the keys are in 1Password ("Langfuse Generic Evals"). Data stays
   until someone deletes it, and nobody reads it on your behalf.
 - **Your own project**: anything recurring, scheduled, or with owners and a
-  report. Create it at https://langfuse.apify.dev, create an API key pair, and
-  keep the keys in 1Password.
-- **Store Actors Evals**: the `store-actors` suite only.
+  report. Sign in at https://langfuse.apify.dev with Google, create the
+  project and an API key pair, and keep the keys in 1Password.
+- **Store Actors Evals**: the `store-actors` suite only. The AI team adds
+  members.
 
 The Actors use the Store project unless you pass keys. For any other project,
 set the task inputs `langfusePublicKey` and `langfuseSecretKey` (secret
@@ -119,7 +120,7 @@ LANGFUSE_BASE_URL=https://langfuse.apify.dev LANGFUSE_PUBLIC_KEY=... LANGFUSE_SE
 
 `--dry-run` shows what would change. Sync matches scenarios by `id` and
 archives items whose file is gone, so never rename an id. For a suite on
-`main`, a maintainer runs the sync after merge. For a one-off run, sync from
+`main`, the AI team runs the sync after merge. For a one-off run, sync from
 your branch with the Generic Evals keys.
 
 ## 4. Run it
@@ -178,9 +179,9 @@ work too. Keep the judge model fixed across runs you want to compare.
 - **Slack digest**: `notify: true` on the task posts one message per owner
   after the run. It needs a webhook in the runner's environment
   (`SLACK_WEBHOOK_URL`, or `SLACK_WEBHOOKS_BY_OWNER` as JSON mapping owner to
-  webhook). Ask the maintainers to add yours.
+  webhook). Ask the AI team to add yours.
 
-## What needs a maintainer
+## What needs the AI team
 
 - Membership in the Store Langfuse project, Slack webhooks, Actor environment
   variables.
