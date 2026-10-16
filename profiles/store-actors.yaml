@@ -3,7 +3,7 @@
 # fix areas the judge may name, and how Found / Works are defined.
 name: store-actors
 subjectKind: actor
-description: Apify-maintained Actors driven through the Apify MCP server.
+description: Apify-maintained Actors driven through any Apify surface (MCP server, CLI or API; see surfaces/).
 # Agent skills a run of this suite may inject (names in apify/agent-skills); the runner's
 # skillSets input picks which, skillCombinations tries every subset.
 agentSkills: [apify-ultimate-scraper]
@@ -12,6 +12,7 @@ skills:
     label: Found
     legacy: actor-discovery
     description: The agent must pick the intended Actor in store search, then use it.
+    # MCP tools on the mcp surface; the cli and api surfaces have no MCP server.
     tools: [search-actors, fetch-actor-details, call-actor, get-actor-run, get-dataset-items]
     maxTurns: 14
     promptSuffix: |-
@@ -30,7 +31,7 @@ fixAreas:
     description: The agent built wrong or missing Actor input (required fields missed, wrong types, wrong mode flags).
   - id: readme-docs
     owner: subject
-    description: The agent misunderstood what the Actor does or which mode or sibling to use, although it read the Actor details.
+    description: The agent misunderstood what the Actor does or which mode or sibling to use, although it read the Actor details (README or input schema).
   - id: output-format
     owner: subject
     description: The Actor returned data but the agent could not find or use the right fields, or the output did not match what the Actor promises.
@@ -39,8 +40,14 @@ fixAreas:
     description: The Actor failed or returned an error the agent could not act on.
   - id: discoverability
     owner: store-search
-    description: The agent could not find, or picked the wrong, Actor in store search.
+    description: The agent could not find, or picked the wrong, Actor in store search (through any surface).
+  - id: surface
+    owner: surface
+    description: The surface itself blocked the agent although the Actor was fine (a missing or confusing CLI command or flag, an unclear API error, MCP tool behaviour, or docs that sent it the wrong way).
+  - id: skill-instructions
+    owner: skills
+    description: An injected agent skill sent the agent down the wrong path (commands or tools it does not have on this surface, a workflow that does not fit the task).
   - id: agent-or-model
     owner: none
     description: The Actor did its part; the failure is the agent's reasoning or the model.
-evidence: [apify-runs-from-mcp]
+evidence: [apify-runs-from-mcp, apify-runs-from-cli, apify-runs-from-api]

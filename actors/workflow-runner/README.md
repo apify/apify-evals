@@ -57,14 +57,22 @@ went wrong with evidence.
 4. A filtered run never writes run-level scores or the report, so it does not
    move the suite's trend. Only full runs do.
 
-### Compare agent skills
+### Compare surfaces and agent skills
 
-The same scenarios can run with or without agent skills. Use this to see which skills help, or to test a change to one of them.
+The same scenarios can run through different ways of reaching Apify, with or without agent skills. Use this to compare MCP and API, or to test a change to one of them.
 
+- **Surfaces** (`surfaces` input): `mcp` (the Apify MCP server, the default) and `api` (curl, jq and WebFetch against `api.apify.com`). Each name is a file in [`surfaces/`](../../surfaces). Add a file to compare a variant, for example a staging MCP server (`mcpUrl`).
 - **Skill sets** (`skillSets` input): `none`, `apify-ultimate-scraper`, or names joined with `+`. The runner downloads them from [apify/agent-skills](https://github.com/apify/agent-skills) at the commit pinned in `src/skills.ts` (`DEFAULT_SKILLS_REF`); `skillsRef` takes another ref. See [`skills/README.md`](../../skills/README.md). `skillCombinations` runs every subset of the suite's `agentSkills`.
-- Every model × skill set is its own experiment run, named for example `store-actors · haiku-4.5 · skills:apify-ultimate-scraper · …`. Open the compare view and put two of them side by side. OUTPUT `variants` lists every combination with its pass rate, best first.
+- Every model × surface × skill set is its own experiment run, named for example `store-actors · haiku-4.5 · surface:api · skills:apify-ultimate-scraper · …`. Open the compare view and put two of them side by side. OUTPUT `variants` lists every combination with its pass rate, best first.
+- The agent is not blocked from other surfaces. The span records `surfacesUsed`, and the `surface.used` check (default severity `warn`) says when the agent left the configured surface.
 
-To test a skill change before release, run `skillSets: ["none", "<skill>"]` with `skillsRef: "apify/agent-skills#<branch>"`.
+To test a change before release:
+
+| You changed     | Run with                                                                     |
+| --------------- | ---------------------------------------------------------------------------- |
+| An agent skill  | `skillSets: ["none", "<skill>"]`, `skillsRef: "apify/agent-skills#<branch>"` |
+| The MCP server  | a surface file with `mcpUrl` set to your server, next to `mcp`               |
+| The API or docs | `surfaces: ["api"]` before and after the change                              |
 
 Start small: filter to a few subjects and use `repeats: 3`. `maxSessions` (default 400) refuses a run that would start more sessions than that.
 
@@ -75,7 +83,7 @@ Each scenario can declare checks that are decided by code, not by the judge: whi
 ### Reading the numbers honestly
 
 - Models run inside the selected harness, Claude Code by default or Codex. Compare the same model and harness; Codex run names include `codex`.
-- Compare skill sets on the same model, scenarios and judge.
+- Compare surfaces and skill sets on the same model, scenarios and judge. Runs on a surface other than `mcp` have trace `version` = `<model> · <surface>`, so per-model dashboard widgets keep them apart.
 - One run is a sample. Compare runs on the same model and judge; use repeats or the dashboard trend before acting.
 - The judge is a model. Its fix area is a hint with evidence, not a verdict.
 
@@ -84,9 +92,9 @@ Each scenario can declare checks that are decided by code, not by the judge: whi
 ### What the Actor does
 
 1. Fetches the Langfuse dataset by name, filters by `metadata.category`, repeats items if asked.
-2. Runs one isolated headless session in the selected harness per item, in parallel inside this Actor run (pool with `concurrency`, per-item timeout). Each session gets hosted `mcp.apify.com` narrowed by `?tools=` (spec D1) and, for Claude Code, Bash only when the item asks. Injected agent skills go into the session's working directory, and Claude Code reads only that directory's settings (`--setting-sources project`).
-3. Under the agent span, the session is replayed as child observations for humans: a generation per model turn (text, tool calls, token usage when the harness exposes per-call counts) and a tool observation per tool call (arguments, result up to 20 kB, ERROR level on tool errors), timed from stdout arrival. The agent span itself carries the judge-ready conversation JSON (spec D10) validated against `contract/`; full logs and tool-schema snapshots go to the named `eval-artifacts` key-value store with URL + sha256 pointers on the span. Traces are named after the scenario title and tagged `dataset:`, `model:`, `actor:`, `team:`, `skill:`, `skills:`. Because Langfuse dashboards can only group scores by a fixed set of trace attributes (and group `tags` by the whole array), the team-facing slices are also mapped onto them: trace `userId` = Actor (and `sessionId` = Actor, so the Sessions page lists every trace of one Actor), `version` = model; team stays a tag used as the dashboard-level filter. The dashboards' per-Actor and per-model widgets read those.
-4. Collects **evidence** from the full tool results (the Actor runs the agent triggered with run ids, status, dataset ids and the input the agent built; tool calls; dataset items fetched from the Apify API, capped at 1000; an optional reference run of the subject Actor for fresh ground truth; for Bash-enabled scenarios also every shell command the agent ran, Actor run ids found in its output, and a snapshot of the files it left in its working directory, capped at 300 files with small text files inline) and runs the scenario's deterministic checks against it (`contract/src/checks.ts`). Writes one `check.<id>` score per check onto the experiment item, plus `check.all` and `check.infra`, freezes the evidence and check results as `evidence-<traceId>.json` in `eval-artifacts`, and links `call-actor` observations to the Console run and dataset.
+2. Runs one isolated headless session in the selected harness per item, in parallel inside this Actor run (pool with `concurrency`, per-item timeout). The session is built from the surface (`surfaces/<name>.yaml`): on `mcp` it gets hosted `mcp.apify.com` narrowed by `?tools=` (spec D1) and, for Claude Code, Bash only when the item asks; on `api` it gets no MCP server, Bash, WebFetch and `APIFY_TOKEN`. Injected agent skills go into the session's working directory, and Claude Code reads only that directory's settings (`--setting-sources project`).
+3. Under the agent span, the session is replayed as child observations for humans: a generation per model turn (text, tool calls, token usage when the harness exposes per-call counts) and a tool observation per tool call (arguments, result up to 20 kB, ERROR level on tool errors), timed from stdout arrival. The agent span itself carries the judge-ready conversation JSON (spec D10) validated against `contract/`; full logs and tool-schema snapshots go to the named `eval-artifacts` key-value store with URL + sha256 pointers on the span. Traces are named after the scenario title and tagged `dataset:`, `model:`, `actor:`, `team:`, `skill:`, `skills:`, `surface:`. Because Langfuse dashboards can only group scores by a fixed set of trace attributes (and group `tags` by the whole array), the team-facing slices are also mapped onto them: trace `userId` = Actor (and `sessionId` = Actor, so the Sessions page lists every trace of one Actor), `version` = model; team stays a tag used as the dashboard-level filter. The dashboards' per-Actor and per-model widgets read those.
+4. Collects **evidence** from the full tool results (the Actor runs the agent triggered with run ids, status, dataset ids and the input the agent built; tool calls; dataset items fetched from the Apify API, capped at 1000; an optional reference run of the subject Actor for fresh ground truth; for Bash-enabled scenarios also every shell command the agent ran, Actor run ids found in its output, and a snapshot of the files it left in its working directory, capped at 300 files with small text files inline). On every surface, Actor runs come from MCP results, from Console and API run URLs and run objects in Bash and WebFetch output, and, for raw HTTP, from the session marker that each session's curl puts in its user agent (runs that `run-sync-get-dataset-items` started print no run id). The input of each run is read from its `INPUT` record, so `apify.input` checks work on every surface and runs the scenario's deterministic checks against it (`contract/src/checks.ts`). Writes one `check.<id>` score per check onto the experiment item, plus `check.all` and `check.infra`, freezes the evidence and check results as `evidence-<traceId>.json` in `eval-artifacts`, and links `call-actor` observations to the Console run and dataset.
 5. Starts the [Eval Judge](../judge/README.md) (`Actor.call`, env `JUDGE_ACTOR`) on the new run and merges its summary into OUTPUT: `resultsUrl` (compare view), `passRate`, `foundRate`, `worksRate`, `fixAreas`, `scoreboard`, `judgeRunUrl`.
 
 A broken harness fails the item loudly; an agent that ran out of turns or hit the timeout is a scored result, not an error (spec D13/D14).
@@ -117,11 +125,11 @@ Local checks verified authenticated MCP calls, the event format, and shell/write
 
 ### Run health and exit codes
 
-The run status reports system health, never scenario results (spec D14). Exit 0: ran and judged. 10: fewer than `healthThreshold` of the sessions completed. 11: the judge Actor failed. 12: no scenario matched the filters. 13: telemetry flush failed. 14: preflight failed (MCP server returned no tools or the LLM proxy did not answer). 15: the run would start more sessions than `maxSessions`. Schedules and tasks get Apify's failure notifications for free.
+The run status reports system health, never scenario results (spec D14). Exit 0: ran and judged. 10: fewer than `healthThreshold` of the sessions completed. 11: the judge Actor failed. 12: no scenario matched the filters. 13: telemetry flush failed. 14: preflight failed (the MCP server returned no tools, the API rejected the token, or the LLM proxy did not answer). 15: the run would start more sessions than `maxSessions`. Schedules and tasks get Apify's failure notifications for free.
 
 ### Secrets and permissions
 
-Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for another Langfuse project, and when any is set the runner passes the resolved set to the judge so both Actors use the same project. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
+Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; API sessions get the same token as `APIFY_TOKEN` in their environment, and every filled secret is redacted from stored stderr; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for another Langfuse project, and when any is set the runner passes the resolved set to the judge so both Actors use the same project. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
 
 Both Actors must run with **full permissions** (Actor settings → Permissions, or `apify api PUT actors/<id> -d '{"actorPermissionLevel":"FULL_PERMISSIONS"}'`). A new Actor defaults to limited permissions, and a limited run token cannot start other Actors or create tasks, so every MCP call the agent makes fails with `insufficient-permissions` and the runner cannot open the named store. It is a one-time setting per Actor; it survives every `apify push`.
 
