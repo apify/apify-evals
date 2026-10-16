@@ -19,7 +19,7 @@ import {
 } from '@apify-evals/contract';
 import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing';
 import { trace } from '@opentelemetry/api';
-import { log } from 'apify';
+import { Actor, log } from 'apify';
 
 import { runCodex } from './adapters/codex.js';
 import {
@@ -36,7 +36,7 @@ import {
     snapshotWorkspace,
     type WorkspaceFile,
 } from './adapters/shared.js';
-import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
+import type { ArtifactStore, SnapshotCache } from './artifacts.js';
 import {
     enrichFromApify,
     extractFromTools,
@@ -45,6 +45,7 @@ import {
     type RawToolResult,
     type ReferenceRunner,
 } from './evidence.js';
+import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -68,8 +69,11 @@ export interface SessionContext {
     item: { id?: string; input?: unknown; metadata?: DatasetItemMetadata | null };
     datasetName: string;
     harness: HarnessConfig;
+    /** Apify MCP server for items whose profile names no other server. */
     mcpUrl: string;
     apifyToken: string;
+    /** Values for `${VAR}` placeholders in the item's MCP server config. */
+    mcpEnv: Record<string, string | undefined>;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
@@ -313,6 +317,8 @@ function buildClaudeArgs(opts: {
     meta: DatasetItemMetadata;
     harness: HarnessConfig;
     mcpConfigPath: string | null;
+    /** `--allowedTools` patterns for the MCP server's tools (see mcp.ts). */
+    allowedMcpTools?: string[];
 }): string[] {
     const { prompt, meta, harness, mcpConfigPath } = opts;
     const allowedTools: string[] = [];
@@ -329,9 +335,12 @@ function buildClaudeArgs(opts: {
         '--model',
         harness.model,
     ];
+    // Strict always: without an item MCP config the agent gets no MCP server at
+    // all, never the developer's own (or claude.ai connector) servers.
+    args.push('--strict-mcp-config');
     if (mcpConfigPath) {
-        args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-        allowedTools.push('mcp__apify__*');
+        args.push('--mcp-config', mcpConfigPath);
+        allowedTools.push(...(opts.allowedMcpTools ?? []));
     }
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(' '));
     return args;
@@ -408,7 +417,7 @@ function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
 ): Promise<AdapterResult> {
-    const { prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
+    const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
         const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
@@ -418,27 +427,25 @@ function runClaudeCodeOnce(
         mkdirSync(work);
         const meta = item.metadata ?? {};
 
-        // All filesystem effects live here: session dir, then the token-bearing
-        // MCP config when the item restricts tools.
+        // All filesystem effects live here: session dir, then the secret-bearing
+        // MCP config when the item has tools.
+        const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
-        if (Array.isArray(meta.tools) && meta.tools.length > 0) {
+        if (mcp) {
             mcpConfigPath = join(home, 'mcp.json');
-            writeFileSync(
-                mcpConfigPath,
-                JSON.stringify({
-                    mcpServers: {
-                        apify: {
-                            type: 'http',
-                            // Same URL builder as the schema snapshot, by construction.
-                            url: toolsUrl(mcpUrl, meta.tools),
-                            headers: { Authorization: `Bearer ${apifyToken}` },
-                        },
-                    },
-                }),
-            );
+            // Same resolved spec as the schema snapshot, by construction.
+            writeFileSync(mcpConfigPath, JSON.stringify(claudeMcpConfig(mcp)), { mode: 0o600 });
         }
+        const secrets = [apifyToken, ...(mcp?.secrets ?? [])].filter(Boolean);
+        const redact = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, '[REDACTED]'), text);
 
-        const args = buildClaudeArgs({ prompt, meta, harness, mcpConfigPath });
+        const args = buildClaudeArgs({
+            prompt,
+            meta,
+            harness,
+            mcpConfigPath,
+            allowedMcpTools: mcp?.allowedTools,
+        });
         const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy });
 
         // detached: the child leads its own process group, so the timeout kill
@@ -547,9 +554,10 @@ function runClaudeCodeOnce(
                     mcpServers,
                     mcpToolCount,
                     mcpToolsMissing,
+                    ...(mcp ? { mcpServer: mcp.name } : {}),
                 },
                 harnessBroke,
-                stderr: (spawnError ?? errOut).slice(0, STDERR_CAP),
+                stderr: redact(spawnError ?? errOut).slice(0, STDERR_CAP),
             });
         };
 
@@ -665,9 +673,26 @@ async function collectEvidence(
             ...(typeof m.mcpToolCount === 'number' ? { mcpToolCount: m.mcpToolCount } : {}),
             mcpExpected: Boolean(m.mcpExpected),
             mcpRestarts: m.mcpRestarts ?? 0,
+            ...(results.some((res) => RUN_LIMIT_RE.test(res.content)) ? { runLimitHit: true } : {}),
         },
     };
 }
+
+/** Abort the agent's Actor runs that are still running after its session ended. */
+async function abortLeftoverRuns(evidence: Evidence): Promise<void> {
+    for (const run of evidence.actorRuns) {
+        if (!run.runId || !(run.status === 'RUNNING' || run.status === 'READY')) continue;
+        try {
+            await Actor.apifyClient.run(run.runId).abort();
+            log.info(`aborted run ${run.runId} (${run.actor}) left running after the session`);
+        } catch (err) {
+            log.warning(`could not abort leftover run ${run.runId}: ${err}`);
+        }
+    }
+}
+
+/** What the platform answers when the account has no free run slot (API, CLI and MCP all relay it). */
+const RUN_LIMIT_RE = /exceed your limit of \d+ concurrent Actor runs/i;
 
 /**
  * Write check.<id> per check (not-applicable checks are skipped, not failed),
@@ -769,7 +794,7 @@ function emitTimeline(
             );
             gen.end(new Date(e.t));
             for (const tu of e.toolUses) {
-                const name = tu.name.replace(/^mcp__apify__/, '');
+                const name = tu.name.replace(/^mcp__[^_]+__/, '');
                 pending.set(tu.id, { obs: start(name, { input: tu.input }, 'tool', e.t), name });
             }
             pendingResults = [];
@@ -860,11 +885,14 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 } else {
                     log.warning('no active experiment span; check scores not written');
                 }
+                // The evidence is frozen: Actor runs the agent left running only
+                // cost money and hold run slots other sessions need.
+                await abortLeftoverRuns(evidence);
 
-                const tools = item.metadata?.tools;
+                const mcp = resolveMcp(meta, { mcpUrl: ctx.mcpUrl, env: ctx.mcpEnv });
                 let snapshotRef = null;
-                if (Array.isArray(tools) && tools.length > 0) {
-                    snapshotRef = await ctx.snapshots.get(tools).catch((err) => {
+                if (mcp) {
+                    snapshotRef = await ctx.snapshots.get(mcp).catch((err) => {
                         log.warning(`tool-schema snapshot failed (judge will mark schema-validity n/a): ${err}`);
                         return null;
                     });
@@ -881,6 +909,8 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                     harness: harness.kind,
                     model: harness.model,
                     harnessBroke: r.harnessBroke,
+                    // Session setup: the eval variables beyond the model.
+                    ...(mcp ? { mcpServer: mcp.name } : {}),
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef

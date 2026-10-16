@@ -275,6 +275,35 @@ describe('runChecks', () => {
         expect(r.noFile.value).toBe(0);
     });
 
+    it('tool.called takes a name alternation and a max (call budget)', () => {
+        const ev: Evidence = {
+            ...evidence,
+            toolCalls: [
+                { tool: 'mcp__notion__API-post-search', input: { query: 'travel policy' } },
+                { tool: 'mcp__notion__API-retrieve-page-markdown', input: { page_id: 'x' } },
+                { tool: 'mcp__notion__API-retrieve-page-markdown', input: { page_id: 'y' } },
+            ],
+        };
+        const r = byId(
+            runChecks(
+                [
+                    { id: 'search', type: 'tool.called', name: 'notion-search|API-post-search' },
+                    { id: 'noWrite', type: 'tool.called', name: 'notion-create-pages|API-post-page', min: 0, max: 0 },
+                    { id: 'budget', type: 'tool.called', max: 6 },
+                    { id: 'tight', type: 'tool.called', max: 2 },
+                    // The alternation must not escape the anchors: "search" alone is not a tool name.
+                    { id: 'partial', type: 'tool.called', name: 'search|markdown' },
+                ],
+                ev,
+            ),
+        );
+        expect(r.search.value).toBe(1);
+        expect(r.noWrite.value).toBe(1);
+        expect(r.budget.value).toBe(1);
+        expect(r.tight.value).toBe(0);
+        expect(r.partial.value).toBe(0);
+    });
+
     it('workspace.file matches recursive globs', () => {
         const ev: Evidence = {
             ...evidence,
@@ -383,6 +412,11 @@ describe('infraStatus', () => {
         expect(r.reasons[0]).toContain('no tools');
         const ok = infraStatus({ ...evidence, session: { ...evidence.session, mcpExpected: true, mcpToolCount: 12 } });
         expect(ok.ok).toBe(true);
+    });
+    it('flags a run the account concurrent run limit refused', () => {
+        const r = infraStatus({ ...evidence, session: { ...evidence.session, runLimitHit: true } });
+        expect(r.ok).toBe(false);
+        expect(r.reasons).toEqual(['the account concurrent Actor run limit refused a run']);
     });
 });
 

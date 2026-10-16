@@ -68,6 +68,8 @@ export interface Evidence {
         mcpExpected?: boolean;
         /** Sessions restarted because the MCP tools did not load. */
         mcpRestarts?: number;
+        /** The account's concurrent Actor run limit refused a run the agent started. */
+        runLimitHit?: boolean;
     };
 }
 
@@ -104,6 +106,8 @@ export function infraStatus(evidence: Evidence): { ok: boolean; reasons: string[
         if (r.status && TERMINAL_BAD.has(r.status)) reasons.push(`Actor run ${r.runId} (${r.actor}) ${r.status}`);
     }
     if (evidence.reference?.error) reasons.push(`reference run failed: ${evidence.reference.error}`);
+    // Not the agent's fault and not the surface's: the account was out of run slots.
+    if (evidence.session.runLimitHit) reasons.push('the account concurrent Actor run limit refused a run');
     return { ok: reasons.length === 0, reasons };
 }
 
@@ -406,16 +410,22 @@ function grounded(check: AnyCheck, ev: Evidence): Partial {
 // tool.called / workspace.file: CLI and SDK suites.
 // ---------------------------------------------------------------------------
 
+/**
+ * `name` is a regex over the tool name without its `mcp__<server>__` prefix
+ * (alternatives allowed: `notion-search|API-post-search`); no `name` matches
+ * every tool call, which with `max` turns the check into a call budget.
+ */
 function toolCalled(check: AnyCheck, ev: Evidence): Partial {
-    const nameRe = typeof check.name === 'string' ? new RegExp(`^(mcp__[^_]+__)?${check.name}$`) : null;
+    const nameRe = typeof check.name === 'string' ? new RegExp(`^(mcp__[^_]+__)?(?:${check.name})$`) : null;
     const inputRe = typeof check.inputRegex === 'string' ? new RegExp(check.inputRegex) : null;
     const min = typeof check.min === 'number' ? check.min : 1;
+    const max = typeof check.max === 'number' ? check.max : Infinity;
     const hits = ev.toolCalls.filter(
         (c) => (!nameRe || nameRe.test(c.tool)) && (!inputRe || inputRe.test(JSON.stringify(c.input ?? ''))),
     );
-    return hits.length >= min
-        ? pass(`${hits.length} matching tool call(s)`)
-        : fail(`${hits.length} matching tool call(s), expected at least ${min}`);
+    if (hits.length < min) return fail(`${hits.length} matching tool call(s), expected at least ${min}`);
+    if (hits.length > max) return fail(`${hits.length} matching tool call(s), expected at most ${max}`);
+    return pass(`${hits.length} matching tool call(s)`);
 }
 
 /**

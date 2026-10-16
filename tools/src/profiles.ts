@@ -5,6 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { type McpServerSpec, validateDatasetItemMetadata } from '@apify-evals/contract';
 import YAML from 'yaml';
 
 export interface SkillConfig {
@@ -27,9 +28,13 @@ export interface Profile {
     name: string;
     subjectKind: 'actor' | 'mcp-tool' | 'cli-command' | 'sdk-feature' | 'agent';
     description?: string;
+    /** The MCP server the agent talks to; absent = the Apify MCP server. */
+    mcp?: McpServerSpec;
     skills: Record<string, SkillConfig>;
     wrongSubjectLabel: string;
     fixAreas: FixArea[];
+    /** Judge: which fix area a failed deterministic check forces, by check type. */
+    forcedFixAreas?: Record<string, string | { find: string; use: string }>;
     evidence: string[];
 }
 
@@ -49,6 +54,9 @@ export function loadProfile(rootDir: string, name: string): Profile {
         if (!Array.isArray(cfg.tools) || typeof cfg.maxTurns !== 'number' || !cfg.label) {
             throw new Error(`profiles/${name}.yaml: skill "${skill}" needs label, tools[] and maxTurns`);
         }
+    }
+    if (doc.mcp !== undefined && !validateDatasetItemMetadata({ mcp: doc.mcp })) {
+        throw new Error(`profiles/${name}.yaml: invalid "mcp": ${JSON.stringify(validateDatasetItemMetadata.errors)}`);
     }
     cache.set(key, doc);
     return doc;

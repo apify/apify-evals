@@ -143,6 +143,9 @@ export function loadSuite(rootDir: string, suite: string): SuiteFiles {
                     skill: s.skill,
                     tools: s.tools ?? skillCfg.tools,
                     maxTurns: s.maxTurns ?? skillCfg.maxTurns,
+                    // The runner reads only dataset items, so the suite's MCP
+                    // server travels on every item.
+                    ...(fileProfile.mcp ? { mcp: fileProfile.mcp } : {}),
                     checks,
                     ...((s.allowBash ?? skillCfg.allowBash) ? { allowBash: true } : {}),
                     ...(s.timeoutSecs ? { timeoutSecs: s.timeoutSecs } : {}),
