@@ -46,7 +46,12 @@ function model(observations: unknown[], days: string[]) {
             { id: 'discoverability', label: 'Store search / Actor selection', owner: 'store-search', description: 'd' },
             { id: 'output-format', label: 'Output format', owner: 'subject', description: 'o' },
         ],
-        expected: [task('a-find', 'x/a', 'find'), task('a-use', 'x/a', 'use'), task('b-find', 'x/b', 'find'), task('b-use', 'x/b', 'use')],
+        expected: [
+            task('a-find', 'x/a', 'find'),
+            task('a-use', 'x/a', 'use'),
+            task('b-find', 'x/b', 'find'),
+            task('b-use', 'x/b', 'use'),
+        ],
         observations,
     };
 }
@@ -75,14 +80,30 @@ describe('report v2 failure patterns', () => {
         const app = application(
             model(
                 [
-                    { ...obs('a-find', '2026-09-24', 'wrong-actor', 0), fixArea: 'discoverability', subjectCalled: 'other/thing' },
-                    { ...obs('a-find', '2026-09-25', 'wrong-actor', 0), fixArea: 'discoverability', subjectCalled: 'other/thing' },
+                    {
+                        ...obs('a-find', '2026-09-24', 'wrong-actor', 0),
+                        fixArea: 'discoverability',
+                        subjectCalled: 'other/thing',
+                    },
+                    {
+                        ...obs('a-find', '2026-09-25', 'wrong-actor', 0),
+                        fixArea: 'discoverability',
+                        subjectCalled: 'other/thing',
+                    },
                     // a named task never contributes an alternative, even when one is recorded
                     { ...obs('a-use', '2026-09-25', 'fail'), fixArea: 'output-format', subjectCalled: 'leak/named' },
                     // passes and infrastructure failures never count, whatever their fix area or alternative
-                    { ...obs('b-find', '2026-09-25', 'pass', 0), fixArea: 'output-format', subjectCalled: 'leak/passed' },
+                    {
+                        ...obs('b-find', '2026-09-25', 'pass', 0),
+                        fixArea: 'output-format',
+                        subjectCalled: 'leak/passed',
+                    },
                     { ...obs('b-use', '2026-09-25', 'fail', null, false), fixArea: 'error-messages' },
-                    { ...obs('b-find', '2026-09-23', 'wrong-actor', 0, false), fixArea: 'discoverability', subjectCalled: 'leak/infra' },
+                    {
+                        ...obs('b-find', '2026-09-23', 'wrong-actor', 0, false),
+                        fixArea: 'discoverability',
+                        subjectCalled: 'leak/infra',
+                    },
                     // a failed discovery with no Actor run and no diagnosis; and one where nothing was recorded (null)
                     { ...obs('b-find', '2026-09-24', 'fail', 0), fixArea: null, subjectCalled: 'none' },
                     { ...obs('b-find', '2026-09-22', 'fail', 0), fixArea: 'none', subjectCalled: null },
@@ -94,9 +115,13 @@ describe('report v2 failure patterns', () => {
         expect(html).not.toContain('Where failures land');
         const detail = (actor: string) => {
             const at = html.indexOf(`data-actor="${actor}"`);
-            return html.slice(html.indexOf('<div class="patterns-detail">', at), html.indexOf('<article class="evidence"', at));
+            return html.slice(
+                html.indexOf('<div class="patterns-detail">', at),
+                html.indexOf('<article class="evidence"', at),
+            );
         };
-        const a = detail('x/a'), b = detail('x/b');
+        const a = detail('x/a'),
+            b = detail('x/b');
         expect(a).toContain('3 failed attempts over');
         for (const leak of ['leak/named', 'leak/passed', 'leak/infra']) expect(a + b).not.toContain(leak);
         expect(a + b).not.toContain('Error messages');
@@ -124,7 +149,9 @@ describe('report v2 failure patterns', () => {
         m.expected.push({ ...task('c-find', 'y/c', 'find'), owner: 'video' });
         const app = application(m);
         const html = app.render(app.state('#team=google'));
-        expect(html).toContain('Top suggested fixes: Store search / Actor selection, Output format (1 each of 2 failures)');
+        expect(html).toContain(
+            'Top suggested fixes: Store search / Actor selection, Output format (1 each of 2 failures)',
+        );
         expect(html).toContain('y/c</a> <span class="ours">ours</span>');
     });
 });
@@ -147,10 +174,15 @@ describe('report v2 change markers', () => {
         const html = app.render(app.state('#mark=2026-09-24'));
         expect(html).toContain('Before vs after September 24, 2026');
         expect(html).toContain('Calendar: September 21 to 23, 2026 before, September 24 to 25, 2026 from the marker');
-        const block = html.slice(html.indexOf('<section class="comparison before-after"'), html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')));
-        expect(block).toMatch(/Discovery tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span><span class="muted">too few results on one side<\/span>/);
+        const block = html.slice(
+            html.indexOf('<section class="comparison before-after"'),
+            html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')),
+        );
+        expect(block).toMatch(
+            /Discovery tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span><span class="muted">too few results on one side<\/span>/,
+        );
         // the chart carries a dashed marker line and the per-Actor detail the same split
-        expect(html).toContain('change 2026-09-24</text>');
+        expect(html).toContain('Marker 09/24</text>');
         expect(html).toContain('<li><span>Named-Actor tasks passed</span><b>0/3 → 2/2</b></li>');
         // links keep the marker
         expect(html).toContain('href="#team=google&amp;range=7&amp;mark=2026-09-24"');
@@ -163,18 +195,31 @@ describe('report v2 change markers', () => {
     it('shows percentage points only when both sides have enough results', () => {
         const app = withMark();
         const html = app.render(app.state('#mark=2026-09-23'));
-        const block = html.slice(html.indexOf('<section class="comparison before-after"'), html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')));
-        expect(block).toMatch(/Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td>/);
+        const block = html.slice(
+            html.indexOf('<section class="comparison before-after"'),
+            html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')),
+        );
+        expect(block).toMatch(
+            /Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td>/,
+        );
         expect(block).toContain('too few results on one side');
         const app2 = application(
             model(
-                days.flatMap((day) => [obs('a-use', day, day < '2026-09-24' ? 'fail' : 'pass'), obs('b-use', day, 'pass')]),
+                days.flatMap((day) => [
+                    obs('a-use', day, day < '2026-09-24' ? 'fail' : 'pass'),
+                    obs('b-use', day, 'pass'),
+                ]),
                 days,
             ),
         );
         const html2 = app2.render(app2.state('#mark=2026-09-24'));
-        const block2 = html2.slice(html2.indexOf('<section class="comparison before-after"'), html2.indexOf('</table>', html2.indexOf('<section class="comparison before-after"')));
-        expect(block2).toMatch(/Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>3\/6(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>4\/4(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>\+50 pp/);
+        const block2 = html2.slice(
+            html2.indexOf('<section class="comparison before-after"'),
+            html2.indexOf('</table>', html2.indexOf('<section class="comparison before-after"')),
+        );
+        expect(block2).toMatch(
+            /Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>3\/6(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>4\/4(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>\+50 pp/,
+        );
     });
 
     it('rejects malformed dates and explains a marker outside the loaded data', () => {
@@ -202,8 +247,13 @@ describe('report v2 change markers', () => {
             ),
         );
         const html = app.render(app.state('#mark=2026-09-24'));
-        const block = html.slice(html.indexOf('<section class="comparison before-after"'), html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')));
-        expect(block).toMatch(/Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/1<small class="days">1 day<\/small><\/td><td><span[^>]*>[^<]*<\/span>1\/1<small class="days">1 day<\/small>/);
+        const block = html.slice(
+            html.indexOf('<section class="comparison before-after"'),
+            html.indexOf('</table>', html.indexOf('<section class="comparison before-after"')),
+        );
+        expect(block).toMatch(
+            /Named-Actor tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/1<small class="days">1 day<\/small><\/td><td><span[^>]*>[^<]*<\/span>1\/1<small class="days">1 day<\/small>/,
+        );
         // selection was never measured, so no eligible results and no day count
         expect(block).toMatch(/Expected Actor selected<\/th><td><span[^>]*>[^<]*<\/span>No eligible results<\/td>/);
         expect(html).toContain('<form class="marker-form" hidden>');
@@ -214,7 +264,11 @@ describe('report v2 marker picker', () => {
     it('is a native date input bounded by the loaded data, with no submit button', () => {
         const app = application(
             model(
-                [obs('a-use', '2026-09-21', 'fail'), obs('a-use', '2026-09-25', 'pass'), obs('a-use', '2026-09-30', 'pass')],
+                [
+                    obs('a-use', '2026-09-21', 'fail'),
+                    obs('a-use', '2026-09-25', 'pass'),
+                    obs('a-use', '2026-09-30', 'pass'),
+                ],
                 ['2026-09-21', '2026-09-25', '2026-09-30'],
             ),
         );

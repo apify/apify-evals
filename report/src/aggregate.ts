@@ -4,7 +4,7 @@
  * numbers are built from: full-scope runs (the daily schedule), not filtered
  * team reruns or repeat diagnostics, which are counted separately.
  */
-import type { ExpectedScenario, Observation, ReportData } from './collect.js';
+import { modelSlot, type ExpectedScenario, type Observation, type ReportData } from './collect.js';
 
 export interface SkillCell {
     attempts: number;
@@ -90,34 +90,33 @@ const LETTER: Record<Observation['verdict'], string> = {
 const SCHEDULED = (t: string | null) => (t ?? '').toLowerCase().startsWith('schedul');
 
 /**
- * One canonical result per task per day: the scheduled full-scope run, or,
- * on a day without one, the only full-scope single-repeat run. Extra full runs
- * on the same day (e.g. three concurrent manual runs) stay out of the counts
- * and are listed as excluded, so a day never carries more than one attempt
- * per task.
+ * One canonical result per task per day and model slot: the scheduled
+ * full-scope run, or, on a day without one, the only full-scope single-repeat
+ * run. Extra full runs on the same day and model (e.g. three concurrent manual
+ * runs) stay out of the counts and are listed as excluded, so a day never
+ * carries more than one attempt per task and model.
  */
 export function canonicalExperimentIds(observations: Observation[]): Set<string> {
     const byDay = new Map<string, Map<string, { first: Observation; count: number }>>();
     for (const o of observations) {
         if (o.fullScope !== true || (o.repeats ?? 1) > 1) continue;
-        const day = byDay.get(o.day) ?? new Map<string, { first: Observation; count: number }>();
+        const dayKey = `${o.day}|${modelSlot(o.model)}`;
+        const day = byDay.get(dayKey) ?? new Map<string, { first: Observation; count: number }>();
         const entry = day.get(o.experimentId);
         if (entry) entry.count++;
         else day.set(o.experimentId, { first: o, count: 1 });
-        byDay.set(o.day, day);
+        byDay.set(dayKey, day);
     }
     const out = new Set<string>();
     for (const runs of byDay.values()) {
         const list = [...runs.values()];
         const scheduled = list.filter((e) => SCHEDULED(e.first.trigger));
         if (scheduled.length > 0) {
-            // One canonical run per day. A platform migration restarts the
+            // One canonical run per day and model. A platform migration restarts the
             // scheduled Actor run and starts a second experiment (same run id,
             // later start), so prefer the most complete one; on a tie the later
             // start, which is the run that finished.
-            scheduled.sort(
-                (a, b) => b.count - a.count || b.first.startTime.localeCompare(a.first.startTime),
-            );
+            scheduled.sort((a, b) => b.count - a.count || b.first.startTime.localeCompare(a.first.startTime));
             out.add(scheduled[0].first.experimentId);
         } else if (list.length === 1) out.add(list[0].first.experimentId);
     }

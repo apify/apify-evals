@@ -27,6 +27,42 @@ export interface ScoreValue {
     stringValue: string | null;
     comment: string | null;
     timestamp: string;
+    /** Score metadata as written by the judge (version tuple, resolved model). */
+    metadata?: Record<string, unknown> | null;
+}
+
+/**
+ * The model slot an observation belongs to: the alias the run was configured
+ * with (e.g. `~anthropic/claude-haiku-latest`). The one legacy rule maps the
+ * pinned Haiku 4.5 runs from before the alias rollout into the Haiku slot so
+ * its history stays continuous; the pinned id is kept as the resolved model.
+ */
+export const LEGACY_MODEL_SLOTS: Record<string, string> = {
+    'anthropic/claude-haiku-4.5': '~anthropic/claude-haiku-latest',
+};
+
+export function modelSlot(model: string | null): string {
+    if (!model) return 'unknown';
+    return LEGACY_MODEL_SLOTS[model] ?? model;
+}
+
+/** Display label for a model slot: `~anthropic/claude-haiku-latest` -> `Haiku`,
+ * `~openai/gpt-luna-latest` -> `GPT Luna`; overrides come from the profile. */
+export function modelLabel(slot: string, overrides: Record<string, string> = {}): string {
+    if (overrides[slot]) return overrides[slot];
+    const bare = slot
+        .replace(/^~/, '')
+        .replace(/^[^/]+\//, '')
+        .replace(/-latest$/, '')
+        .replace(/^claude-/, '');
+    return bare
+        .split('-')
+        .filter(Boolean)
+        .map((w) =>
+            /^(gpt|glm)$/i.test(w) ? w.toUpperCase() : /^v?\d/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1),
+        )
+        .join(' ')
+        .replace(/^Deepseek/, 'DeepSeek');
 }
 
 export interface Observation {
@@ -34,8 +70,12 @@ export interface Observation {
     scenarioId: string;
     experimentId: string;
     experimentName: string;
-    /** From the experiment metadata the runner writes. */
+    /** Model slot: the configured alias (see modelSlot), from the experiment metadata the runner writes. */
     model: string | null;
+    /** The concrete model the proxy answered with for this run, when recorded. */
+    resolvedModel: string | null;
+    /** The judge model that wrote the verdict (resolved id when recorded), from score metadata. */
+    judgeModel: string | null;
     trigger: string | null;
     repeats: number | null;
     fullScope: boolean | null;
@@ -121,6 +161,7 @@ interface RawScore {
     comment?: string | null;
     timestamp?: string;
     createdAt?: string;
+    metadata?: Record<string, unknown> | null;
     traceId?: string | null;
     observationId?: string | null;
     /** scores-v3 nests the target under subject. */
@@ -203,6 +244,7 @@ export function latestScores(list: RawScore[] | undefined): Record<string, Score
             stringValue: str(s.stringValue) ?? (typeof s.value === 'string' ? s.value : null),
             comment: str(s.comment),
             timestamp: ts,
+            metadata: s.metadata ?? null,
         };
     }
     return out;
@@ -300,16 +342,20 @@ export async function collectReportData(langfuse: LangfuseClient, opts: CollectO
             itemCount: 0,
             trigger: str(em.trigger),
             fullScope: bool(em.fullScope),
-            model: str(em.model),
+            model: str(em.model) ? modelSlot(str(em.model)) : null,
         };
         exp.itemCount++;
         if (it.startTime < exp.startTime) exp.startTime = it.startTime;
         experiments.set(it.experimentId, exp);
+        const configured = str(em.model);
+        const judgeMeta = scores['judge.verdict']?.metadata ?? {};
         return {
             scenarioId: it.experimentItemId,
             experimentId: it.experimentId,
             experimentName: it.experimentName,
-            model: str(em.model),
+            model: configured ? modelSlot(configured) : null,
+            resolvedModel: str(em.resolvedModel) ?? (configured && LEGACY_MODEL_SLOTS[configured] ? configured : null),
+            judgeModel: str(judgeMeta.judgeModelResolved) ?? str(judgeMeta.judgeModel),
             trigger: str(em.trigger),
             repeats: numish(em.repeats),
             fullScope: bool(em.fullScope),
