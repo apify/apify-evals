@@ -15,7 +15,7 @@
         "model": {
             "title": "Model",
             "type": "string",
-            "description": "OpenRouter model id the agent runs on, through the Apify proxy (no API key needed). Any id OpenRouter serves works, including moving aliases such as ~anthropic/claude-haiku-latest, ~openai/gpt-luna-latest or ~deepseek/deepseek-flash-latest; the concrete model behind an alias is recorded on the experiment as resolvedModel. The harness override selects Claude Code (default) or Codex.",
+            "description": "OpenRouter model id the agent runs on, through the Apify proxy (no API key needed). Any id OpenRouter serves works, including moving aliases such as ~anthropic/claude-haiku-latest or ~openai/gpt-luna-latest; the concrete model behind an alias is recorded on the experiment as resolvedModel. The harness override selects Claude Code (default) or Codex.",
             "editor": "textfield",
             "default": "anthropic/claude-haiku-4.5",
             "prefill": "anthropic/claude-haiku-4.5"
