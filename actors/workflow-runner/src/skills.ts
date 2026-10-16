@@ -1,8 +1,10 @@
 /**
  * Agent skills as an eval variable.
  *
- * A skill is a directory `skills/<name>/SKILL.md` (Claude Code's format) in
- * this repo, copied into the image. A run names one or more *skill sets*; each
+ * A skill is a directory `<name>/SKILL.md` (Claude Code's format) in
+ * apify/agent-skills, downloaded once per run at a pinned commit
+ * (DEFAULT_SKILLS_REF) or at the run's `skillsRef`; this repo holds no copy.
+ * A run names one or more *skill sets*; each
  * set becomes its own experiment so the compare view answers "which skills
  * help": `none` (the bare harness), `a`, `a+b`, ... With `skillCombinations`
  * the runner enumerates every subset of the suite's `agentSkills`.
@@ -76,16 +78,6 @@ export function resolveSkillSets(
     });
 }
 
-/** Where the repo's `skills/` directory is: the image sets SKILLS_DIR; a local
- * run finds it two levels above the Actor directory. */
-export function skillsRoot(env: Record<string, string | undefined> = process.env, cwd = process.cwd()): string {
-    if (env.SKILLS_DIR) return resolve(env.SKILLS_DIR);
-    for (const candidate of [join(cwd, 'skills'), join(cwd, '..', '..', 'skills')]) {
-        if (existsSync(candidate)) return resolve(candidate);
-    }
-    return join(cwd, 'skills');
-}
-
 export function availableSkills(root: string): string[] {
     if (!existsSync(root)) return [];
     return readdirSync(root, { withFileTypes: true })
@@ -117,12 +109,48 @@ export function installSkills(home: string, set: string[], root: string): void {
     }
 }
 
+/**
+ * The skills a run injects when its `skillsRef` input is empty. A full commit,
+ * so every run gets the same files and no GitHub API call is needed. Change
+ * the commit to take a new version of the skills (see skills/README.md).
+ */
+export const DEFAULT_SKILLS_REF = 'apify/agent-skills#d522584df6d01746d76b0c674f375cc7d48a838f';
+
 export interface SkillsSource {
+    /** `owner/repo`, or `local` for SKILLS_DIR. */
     repo: string;
+    /** The ref asked for, or the directory for SKILLS_DIR. */
     ref: string;
+    /** The commit the skills came from, or `local` for SKILLS_DIR. */
     commit: string;
     /** The directory that holds the skills, ready to be used as the skills root. */
     root: string;
+}
+
+/**
+ * The skills a run uses, first match wins: the `skillsRef` input (test a skill
+ * branch), SKILLS_DIR (a local directory, to try a skill before it is pushed),
+ * DEFAULT_SKILLS_REF. A run with no skills in any set downloads nothing and
+ * gets null. Unknown skill names fail here, before any session starts.
+ */
+export async function loadRunSkills(
+    sets: string[][],
+    skillsRef: string | undefined,
+    env: Record<string, string | undefined> = process.env,
+    fetchRef: (spec: string) => Promise<SkillsSource> = fetchSkillsRef,
+): Promise<SkillsSource | null> {
+    if (sets.every((set) => set.length === 0)) return null;
+    let source: SkillsSource;
+    if (skillsRef?.trim()) {
+        source = await fetchRef(skillsRef.trim());
+    } else if (env.SKILLS_DIR) {
+        const root = resolve(env.SKILLS_DIR);
+        source = { repo: 'local', ref: root, commit: 'local', root };
+    } else {
+        source = await fetchRef(DEFAULT_SKILLS_REF);
+    }
+    assertSkillsExist(sets, source.root);
+    return source;
 }
 
 const SKILLS_REF_RE = /^([\w.-]+)\/([\w.-]+)#([\w./-]+?)(?::([\w./-]+))?$/;
@@ -134,23 +162,19 @@ export function parseSkillsRef(spec: string): { owner: string; repo: string; ref
     return { owner: m[1], repo: m[2], ref: m[3], path: m[4] ?? 'skills' };
 }
 
+const COMMIT_RE = /^[0-9a-f]{40}$/;
+
 /**
- * Download skills from a public GitHub ref once per run, so a skill author can
- * evaluate a branch without a new runner build. The ref is resolved to a
- * commit first, and the run records it.
+ * Download skills from a public GitHub ref once per run. A branch or tag is
+ * resolved to a commit first, and the run records it; a full commit skips
+ * that GitHub API call (60 unauthenticated calls per hour per IP).
  */
 export async function fetchSkillsRef(
     spec: string,
     dir = mkdtempSync(join(tmpdir(), 'skills-ref-')),
 ): Promise<SkillsSource> {
     const { owner, repo, ref, path } = parseSkillsRef(spec);
-    const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
-        headers: { Accept: 'application/vnd.github+json' },
-        signal: AbortSignal.timeout(30_000),
-    });
-    if (!commitRes.ok) throw new Error(`skillsRef ${spec}: GitHub returned HTTP ${commitRes.status} for the ref`);
-    const commit = ((await commitRes.json()) as { sha?: string }).sha;
-    if (!commit) throw new Error(`skillsRef ${spec}: no commit for the ref`);
+    const commit = COMMIT_RE.test(ref) ? ref : await resolveCommit(owner, repo, ref, spec);
     const tarball = await fetch(`https://codeload.github.com/${owner}/${repo}/tar.gz/${commit}`, {
         signal: AbortSignal.timeout(120_000),
     });
@@ -163,4 +187,15 @@ export async function fetchSkillsRef(
     const root = join(out, path);
     if (availableSkills(root).length === 0) throw new Error(`skillsRef ${spec}: no <name>/SKILL.md under ${path}`);
     return { repo: `${owner}/${repo}`, ref, commit, root };
+}
+
+async function resolveCommit(owner: string, repo: string, ref: string, spec: string): Promise<string> {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
+        headers: { Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`skillsRef ${spec}: GitHub returned HTTP ${res.status} for the ref`);
+    const commit = ((await res.json()) as { sha?: string }).sha;
+    if (!commit) throw new Error(`skillsRef ${spec}: no commit for the ref`);
+    return commit;
 }

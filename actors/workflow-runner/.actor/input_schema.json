@@ -87,7 +87,7 @@
         "skillSets": {
             "title": "Skill sets (optional)",
             "type": "array",
-            "description": "Agent skills to inject, one experiment per entry so the compare view shows which skills help. Each entry is 'none' or skill names joined with '+', e.g. none, notion-research-documentation, notion-knowledge-capture+notion-research-documentation. Skills live in skills/<name>/SKILL.md; the suite profile lists which apply (agentSkills). Empty = one run without skills.",
+            "description": "Agent skills to inject, one experiment per entry so the compare view shows which skills help. Each entry is 'none' or skill names joined with '+', e.g. none, notion-research-documentation, notion-knowledge-capture+notion-research-documentation. Skills come from apify/agent-skills at a pinned commit (or Skills from GitHub); the suite profile lists which apply (agentSkills). Empty = one run without skills.",
             "editor": "stringList",
             "default": []
         },
@@ -101,7 +101,7 @@
         "skillsRef": {
             "title": "Skills from GitHub (optional)",
             "type": "string",
-            "description": "Take the skills from a public GitHub ref instead of the ones in the image, to test a skill change before it is merged: owner/repo#ref or owner/repo#ref:path (path defaults to skills), e.g. apify/agent-skills#my-branch. The run records the resolved commit.",
+            "description": "Take the skills from a public GitHub ref instead of the pinned apify/agent-skills commit, to test a skill change before it is merged: owner/repo#ref or owner/repo#ref:path (path defaults to skills), e.g. apify/agent-skills#my-branch. The run records the resolved commit.",
             "editor": "textfield",
             "nullable": true
         },

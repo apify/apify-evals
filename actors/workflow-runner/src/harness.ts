@@ -91,7 +91,7 @@ export interface SessionContext {
     apifyToken: string;
     /** Values for `${VAR}` placeholders in the item's MCP server config. */
     mcpEnv: Record<string, string | undefined>;
-    /** Agent skills injected into this session (skills/<name>); [] = none. */
+    /** Agent skills injected into this session (names under skillsRoot); [] = none. */
     skillSet: string[];
     skillsRoot: string;
     /** How the agent reaches Apify (surfaces/<name>.yaml); absent = the item as is (MCP). */

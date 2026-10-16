@@ -113,7 +113,7 @@ describe('lintPrompt', () => {
 });
 
 describe('profile validation', () => {
-    it('rejects an agentSkills entry without a skills/<name>/SKILL.md', () => {
+    it('rejects an agentSkills entry that is not a skill name', () => {
         const dir = mkdtempSync(join(tmpdir(), 'profile-test-'));
         try {
             mkdirSync(join(dir, 'profiles'));
@@ -122,7 +122,7 @@ describe('profile validation', () => {
                 [
                     'name: with-skills',
                     'subjectKind: actor',
-                    'agentSkills: [missing-skill]',
+                    'agentSkills: [Not_A_Skill]',
                     'skills:',
                     '    find: { label: Found, tools: [search-actors], maxTurns: 4 }',
                     'wrongSubjectLabel: wrong-actor',
@@ -130,7 +130,7 @@ describe('profile validation', () => {
                     'evidence: []',
                 ].join('\n'),
             );
-            expect(() => loadProfile(dir, 'with-skills')).toThrow(/has no skills\/missing-skill\/SKILL.md/);
+            expect(() => loadProfile(dir, 'with-skills')).toThrow(/"Not_A_Skill" is not a skill name/);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

@@ -12,8 +12,10 @@ import {
     parseSkillSet,
     resolveSkillSets,
     skillSetLabel,
+    loadRunSkills,
     parseSkillsRef,
-    skillsRoot,
+    DEFAULT_SKILLS_REF,
+    type SkillsSource,
 } from '../src/skills.js';
 
 const root = mkdtempSync(join(tmpdir(), 'skills-test-'));
@@ -115,11 +117,6 @@ describe('skills on disk', () => {
             rmSync(home, { recursive: true, force: true });
         }
     });
-
-    it('resolves the repo skills directory from SKILLS_DIR first', () => {
-        expect(skillsRoot({ SKILLS_DIR: root })).toBe(root);
-        expect(skillsRoot({}, join(root, 'alpha'))).toBe(join(root, 'alpha', 'skills'));
-    });
 });
 
 describe('parseSkillsRef', () => {
@@ -145,9 +142,42 @@ describe('parseSkillsRef', () => {
     });
 });
 
-describe('the vendored Apify skills', () => {
-    it('are in this repo', () => {
-        const repoRoot = skillsRoot({}, join(import.meta.dirname, '..'));
-        expect(availableSkills(repoRoot)).toContain('apify-ultimate-scraper');
+describe('loadRunSkills', () => {
+    const fetched: string[] = [];
+    const fetchRef = async (spec: string): Promise<SkillsSource> => {
+        fetched.push(spec);
+        return { repo: 'apify/agent-skills', ref: spec.split('#')[1], commit: 'c'.repeat(40), root };
+    };
+
+    it('downloads nothing for a run without skills', async () => {
+        fetched.length = 0;
+        expect(await loadRunSkills([[]], 'apify/agent-skills#main', {}, fetchRef)).toBeNull();
+        expect(fetched).toEqual([]);
+    });
+
+    it('takes the pinned commit by default', async () => {
+        fetched.length = 0;
+        const source = await loadRunSkills([[], ['alpha']], undefined, {}, fetchRef);
+        expect(fetched).toEqual([DEFAULT_SKILLS_REF]);
+        expect(source?.root).toBe(root);
+    });
+
+    it('prefers skillsRef, then SKILLS_DIR', async () => {
+        fetched.length = 0;
+        await loadRunSkills([['alpha']], ' apify/agent-skills#my-branch ', { SKILLS_DIR: '/nowhere' }, fetchRef);
+        expect(fetched).toEqual(['apify/agent-skills#my-branch']);
+
+        fetched.length = 0;
+        const local = await loadRunSkills([['beta']], '', { SKILLS_DIR: root }, fetchRef);
+        expect(fetched).toEqual([]);
+        expect(local).toEqual({ repo: 'local', ref: root, commit: 'local', root });
+    });
+
+    it('fails on a skill the source does not have', async () => {
+        await expect(loadRunSkills([['gamma']], undefined, {}, fetchRef)).rejects.toThrow(/Unknown skill\(s\) gamma/);
+    });
+
+    it('pins a full commit, so the default needs no GitHub API call', () => {
+        expect(parseSkillsRef(DEFAULT_SKILLS_REF).ref).toMatch(/^[0-9a-f]{40}$/);
     });
 });

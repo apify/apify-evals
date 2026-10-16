@@ -160,7 +160,7 @@ const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artif
 const { ReferenceRunner } = await import('./evidence.js');
 const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
-const { assertSkillsExist, fetchSkillsRef, resolveSkillSets, skillSetLabel, skillsRoot } = await import('./skills.js');
+const { loadRunSkills, resolveSkillSets, skillSetLabel } = await import('./skills.js');
 const {
     closeMcpc,
     connectMcpc,
@@ -263,11 +263,12 @@ const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
 // The suite's injectable skills travel on the items (profile agentSkills).
 const suiteSkills = [...new Set(selected.flatMap((i) => (meta(i) as { agentSkills?: string[] }).agentSkills ?? []))];
 const skillSets = resolveSkillSets(input, suiteSkills);
-// Skills come from the image, or from a GitHub ref to test a skill change.
-const skillsSource = input.skillsRef?.trim() ? await fetchSkillsRef(input.skillsRef) : null;
+// Skills come from apify/agent-skills at the pinned commit, or from a GitHub
+// ref to test a skill change. A run without skills downloads nothing.
+const skillsSource = await loadRunSkills(skillSets, input.skillsRef);
 if (skillsSource) log.info(`skills from ${skillsSource.repo}#${skillsSource.ref} (${skillsSource.commit.slice(0, 7)})`);
-const skillsDir = skillsSource?.root ?? skillsRoot();
-assertSkillsExist(skillSets, skillsDir);
+else if (input.skillsRef?.trim()) log.warning(`skillsRef ${input.skillsRef} ignored: no skill set names a skill`);
+const skillsDir = skillsSource?.root ?? '';
 const skillsVaried = skillSets.length > 1 || skillSets[0].length > 0;
 
 // Surface variants: how the agent reaches Apify (MCP, CLI, API). Each surface

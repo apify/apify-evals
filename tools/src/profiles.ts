@@ -2,7 +2,7 @@
  * Suite profiles: what is under test, how the agent is set up per skill, and
  * which fix areas the judge may name. Loaded from `profiles/<name>.yaml`.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { type McpServerSpec, validateDatasetItemMetadata } from '@apify-evals/contract';
@@ -30,7 +30,7 @@ export interface Profile {
     description?: string;
     /** The MCP server the agent talks to; absent = the Apify MCP server. */
     mcp?: McpServerSpec;
-    /** Agent skills (skills/<name>/SKILL.md) a run of this suite may inject. */
+    /** Agent skills (names in apify/agent-skills) a run of this suite may inject. */
     agentSkills?: string[];
     skills: Record<string, SkillConfig>;
     wrongSubjectLabel: string;
@@ -60,9 +60,11 @@ export function loadProfile(rootDir: string, name: string): Profile {
     if (doc.mcp !== undefined && !validateDatasetItemMetadata({ mcp: doc.mcp })) {
         throw new Error(`profiles/${name}.yaml: invalid "mcp": ${JSON.stringify(validateDatasetItemMetadata.errors)}`);
     }
+    // The skills are downloaded at run time; the runner fails on a name the
+    // skills source does not have before any session starts.
     for (const skill of doc.agentSkills ?? []) {
-        if (!existsSync(join(rootDir, 'skills', skill, 'SKILL.md'))) {
-            throw new Error(`profiles/${name}.yaml: agentSkills "${skill}" has no skills/${skill}/SKILL.md`);
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+            throw new Error(`profiles/${name}.yaml: agentSkills "${skill}" is not a skill name`);
         }
     }
     cache.set(key, doc);

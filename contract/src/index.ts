@@ -264,7 +264,7 @@ export const datasetItemMetadataSchema = {
         // Harness setup for this scenario. `tools: ['*']` = every tool of the server.
         tools: { type: 'array', items: { type: 'string' } },
         mcp: mcpServerSchema,
-        // Agent skills (skills/<name>/SKILL.md) the suite may inject; the
+        // Agent skills (names in apify/agent-skills) the suite may inject; the
         // runner's skillSets input picks which of them a run gets.
         agentSkills: { type: 'array', items: { type: 'string' } },
         allowBash: { type: 'boolean' },

@@ -32,7 +32,8 @@ button.
   `tools/` syncs scenarios to Langfuse (`npm run scenarios:sync`) and
   validates them (`npm run scenarios:check`). See `scenarios/README.md`.
 - `surfaces/<name>.yaml` (how the agent reaches Apify: `mcp`, `cli`, `api`)
-  and `skills/<name>/` (injectable agent skills): the runner runs every
+  and agent skills (injectable; the runner downloads `apify/agent-skills` at
+  the commit pinned in `src/skills.ts`, see `skills/README.md`): the runner runs every
   model × surface × skill set as its own dataset run. Scenarios stay
   surface-agnostic. "Skill" alone means a scenario's `find` / `use`; the
   injectable ones are always "agent skills".

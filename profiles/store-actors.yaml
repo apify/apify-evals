@@ -4,7 +4,7 @@
 name: store-actors
 subjectKind: actor
 description: Apify-maintained Actors driven through any Apify surface (MCP server, CLI or API; see surfaces/).
-# Agent skills a run of this suite may inject (skills/<name>); the runner's
+# Agent skills a run of this suite may inject (names in apify/agent-skills); the runner's
 # skillSets input picks which, skillCombinations tries every subset.
 agentSkills: [apify-ultimate-scraper]
 skills:
