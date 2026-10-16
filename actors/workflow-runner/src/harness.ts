@@ -46,6 +46,7 @@ import {
     type ReferenceRunner,
 } from './evidence.js';
 import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
+import { installSkills, skillSetLabel } from './skills.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -74,6 +75,9 @@ export interface SessionContext {
     apifyToken: string;
     /** Values for `${VAR}` placeholders in the item's MCP server config. */
     mcpEnv: Record<string, string | undefined>;
+    /** Agent skills injected into this session (names under skillsRoot); [] = none. */
+    skillSet: string[];
+    skillsRoot: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
@@ -99,7 +103,7 @@ export interface SessionContext {
  * values) group by. `trigger:` and `repeats:` let the scheduled daily series be
  * told apart from team reruns and 3-repeat diagnostics. */
 export function buildTraceTags(
-    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats'>,
+    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats'> & { skillSet?: string[] },
     meta: Partial<DatasetItemMetadata> & { tags?: unknown },
 ): string[] {
     // The platform reports the scheduler origin as APIFY_META_ORIGIN=SCHEDULER, so
@@ -114,6 +118,7 @@ export function buildTraceTags(
         ...(meta.actor ? [`actor:${meta.actor}`] : []),
         ...(meta.team ? [`team:${meta.team}`] : []),
         ...(meta.skill ? [`skill:${meta.skill}`] : []),
+        `skills:${skillSetLabel(ctx.skillSet ?? [])}`,
         ...(Array.isArray(meta.tags) ? meta.tags.map(String) : []),
     ];
 }
@@ -162,6 +167,8 @@ interface ParsedSession {
     timeline: TimelineEvent[];
     mcpServers: { name: string; status: string }[] | null;
     mcpToolCount: number | null;
+    /** Skill names Claude Code reported at init (bundled ones included). */
+    skills: string[] | null;
     finalResult: string | null;
     subtype: string | null;
     isError: boolean;
@@ -183,6 +190,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     let numTurns: number | null = null;
     let mcpServers: ParsedSession['mcpServers'] = null;
     let mcpToolCount: number | null = null;
+    let skills: string[] | null = null;
     const lines = ndjson.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -198,6 +206,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
             const init = parseInitEvent(ev);
             mcpServers = init.mcpServers;
             mcpToolCount = init.mcpToolCount;
+            skills = init.skills;
             continue;
         }
         // Claude Code streams one assistant event per content block, sharing
@@ -269,6 +278,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
         timeline,
         mcpServers,
         mcpToolCount,
+        skills,
         finalResult,
         subtype,
         isError,
@@ -278,10 +288,11 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     };
 }
 
-/** The `system/init` event lists the MCP servers and every tool the agent has. */
-function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
+/** The `system/init` event lists the MCP servers, every tool and every skill the agent has. */
+function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown; skills?: unknown }): {
     mcpServers: { name: string; status: string }[];
     mcpToolCount: number;
+    skills: string[];
 } {
     const servers = Array.isArray(ev.mcp_servers)
         ? (ev.mcp_servers as { name?: unknown; status?: unknown }[]).map((s) => ({
@@ -290,7 +301,8 @@ function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
           }))
         : [];
     const tools = Array.isArray(ev.tools) ? (ev.tools as unknown[]).map(String) : [];
-    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length };
+    const skills = Array.isArray(ev.skills) ? (ev.skills as unknown[]).map(String) : [];
+    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length, skills };
 }
 
 /** True when the init line has arrived and shows an MCP server without any
@@ -334,6 +346,10 @@ function buildClaudeArgs(opts: {
         String(meta.maxTurns ?? harness.maxTurns),
         '--model',
         harness.model,
+        // Only the session directory's own `.claude/` counts: skills are an
+        // eval variable, so nothing from the developer's ~/.claude may leak in.
+        '--setting-sources',
+        'project',
     ];
     // Strict always: without an item MCP config the agent gets no MCP server at
     // all, never the developer's own (or claude.ai connector) servers.
@@ -417,7 +433,8 @@ function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
 ): Promise<AdapterResult> {
-    const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
+    const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, skillSet, skillsRoot, useOpenRouterProxy } = ctx;
+    const { perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
         const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
@@ -427,8 +444,10 @@ function runClaudeCodeOnce(
         mkdirSync(work);
         const meta = item.metadata ?? {};
 
-        // All filesystem effects live here: session dir, then the secret-bearing
-        // MCP config when the item has tools.
+        // All filesystem effects live here: the injected skills (project
+        // skills of the working directory, the only setting source), then the
+        // secret-bearing MCP config when the item has tools.
+        installSkills(work, skillSet, skillsRoot);
         const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
         if (mcp) {
@@ -516,6 +535,7 @@ function runClaudeCodeOnce(
                 timeline,
                 mcpServers,
                 mcpToolCount,
+                skills,
                 finalResult,
                 subtype,
                 isError,
@@ -555,6 +575,8 @@ function runClaudeCodeOnce(
                     mcpToolCount,
                     mcpToolsMissing,
                     ...(mcp ? { mcpServer: mcp.name } : {}),
+                    // Which of the injected skills Claude Code actually loaded.
+                    skillsLoaded: skills ? skills.filter((name) => skillSet.includes(name)) : [],
                 },
                 harnessBroke,
                 stderr: redact(spawnError ?? errOut).slice(0, STDERR_CAP),
@@ -911,6 +933,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                     harnessBroke: r.harnessBroke,
                     // Session setup: the eval variables beyond the model.
                     ...(mcp ? { mcpServer: mcp.name } : {}),
+                    agentSkills: ctx.skillSet,
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef
