@@ -1,4 +1,7 @@
 import { execFile as execFileCb } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
@@ -24,9 +27,10 @@ const OPENROUTER_PROXY_URL = 'https://openrouter.apify.actor/api';
  * Exit codes (spec D14: run status = system health, scores = results).
  * 0 ran and judged (scenario failures are results, not errors);
  * 10 health: too few sessions completed; 11 judge failed; 12 nothing
- * selected; 13 telemetry flush failed; 14 preflight failed (MCP or proxy).
+ * selected; 13 telemetry flush failed; 14 preflight failed (MCP, CLI, API or
+ * proxy); 15 the run would exceed maxSessions.
  */
-const EXIT = { ok: 0, health: 10, judge: 11, nothing: 12, flush: 13, preflight: 14 } as const;
+const EXIT = { ok: 0, health: 10, judge: 11, nothing: 12, flush: 13, preflight: 14, tooLarge: 15 } as const;
 
 interface Input {
     datasetName?: string;
@@ -44,6 +48,8 @@ interface Input {
     itemLimit?: number;
     /** Team-facing filters: subject ids (owner/name) and owners (teams). */
     subjects?: string[];
+    /** Scenario ids (dataset item ids) to run; applied with the other filters. */
+    scenarioIds?: string[];
     owners?: string[];
     /** Deprecated alias of subjects, matched against metadata.category (slug). */
     categories?: string[];
@@ -53,6 +59,22 @@ interface Input {
     /** Post the Slack digest for this run (scheduled runs post by default). */
     notify?: boolean;
     mcpUrl?: string;
+    /** Values for `${VAR}` placeholders in a suite's MCP server config; overrides the Actor env. */
+    mcpEnv?: Record<string, string>;
+    /** Skill variants: one experiment each ("none", "a", "a+b"). */
+    skillSets?: string[];
+    /** Expand the skills into every subset (incl. none). */
+    skillCombinations?: boolean;
+    /** Take the skills from a public GitHub ref instead of the image (owner/repo#ref[:path]). */
+    skillsRef?: string;
+    /** Surface variants (surfaces/<name>.yaml): one experiment each; default ["mcp"]. */
+    surfaces?: string[];
+    /** Apify CLI version for every CLI surface in the run (overrides the surface file). */
+    cliVersion?: string;
+    /** mcpc version for every surface that installs it (overrides the surface file). */
+    mcpcVersion?: string;
+    /** Refuse to start when models x surfaces x skill sets x scenarios x repeats exceeds this. */
+    maxSessions?: number;
     useOpenRouterProxy?: boolean;
     artifactStore?: string;
     langfuseBaseUrl?: string;
@@ -111,6 +133,7 @@ const {
     skipPreflight = false,
     mcpUrl = 'https://mcp.apify.com',
     useOpenRouterProxy = true,
+    maxSessions = 400,
 } = input;
 const healthThreshold = resolveHealthThreshold(healthThresholdInput);
 // Artifact store: the resource-picker grant when given, else the store id
@@ -135,7 +158,24 @@ const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harne
 const { CODEX_PROVIDER } = await import('./adapters/codex.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
+const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
+const { loadRunSkills, resolveSkillSets, skillSetLabel } = await import('./skills.js');
+const {
+    closeMcpc,
+    connectMcpc,
+    installCli,
+    installCliShim,
+    installMcpc,
+    isolatedCliEnv,
+    loadSurface,
+    loginCli,
+    logoutCli,
+    resolveSurface,
+    resolveSurfaceNames,
+    surfacesRoot,
+} = await import('./surfaces.js');
+const { surfaceApplies } = await import('@apify-evals/contract');
 
 // `model` / `models` are the team-facing inputs; the `harness` object stays
 // accepted for older callers. Merge partial harness input over defaults.
@@ -162,11 +202,15 @@ if (!apifyToken) {
 }
 if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for artifacts, MCP, and the OpenRouter proxy)');
 
+// Secrets for the suite's MCP server config: the run's own token for Apify
+// MCP, anything else (e.g. NOTION_TOKEN) from the Actor env or the mcpEnv input.
+const mcpEnv: Record<string, string | undefined> = { ...process.env, APIFY_TOKEN: apifyToken, ...(input.mcpEnv ?? {}) };
+
 const otel = new NodeSDK({ spanProcessors: [new LangfuseSpanProcessor()] });
 otel.start();
 const langfuse = new LangfuseClient();
 const artifactStore = await ArtifactStore.open(artifactStoreId);
-const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
+const snapshots = new SnapshotCache(artifactStore);
 const references = new ReferenceRunner();
 const writeScore = async (score: {
     traceId: string;
@@ -197,6 +241,7 @@ const ownerOf = (m: Meta) => m.owner ?? m.team ?? '';
 const slugOf = (s: string) => s.split('/').pop() ?? s;
 const wantSubjects = new Set([...subjects, ...categories].map((s) => s.trim()).filter(Boolean));
 const wantOwners = new Set(owners.map((o) => o.trim()).filter(Boolean));
+const wantIds = new Set((input.scenarioIds ?? []).map((s) => s.trim()).filter(Boolean));
 
 const filtered = dataset.items
     .filter((i) => i.status !== 'ARCHIVED')
@@ -209,13 +254,76 @@ const filtered = dataset.items
             wantSubjects.has(slugOf(subject)) ||
             wantSubjects.has(m.category ?? '');
         const byOwner = wantOwners.size === 0 || wantOwners.has(ownerOf(m));
-        return bySubject && byOwner;
+        const byId = wantIds.size === 0 || wantIds.has(String(i.id));
+        return bySubject && byOwner && byId;
     });
 const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
+
+// Skill variants: every set becomes its own experiment (model x skill set).
+// The suite's injectable skills travel on the items (profile agentSkills).
+const suiteSkills = [...new Set(selected.flatMap((i) => (meta(i) as { agentSkills?: string[] }).agentSkills ?? []))];
+const skillSets = resolveSkillSets(input, suiteSkills);
+// Skills come from apify/agent-skills at the pinned commit, or from a GitHub
+// ref to test a skill change. A run without skills downloads nothing.
+const skillsSource = await loadRunSkills(skillSets, input.skillsRef);
+if (skillsSource) log.info(`skills from ${skillsSource.repo}#${skillsSource.ref} (${skillsSource.commit.slice(0, 7)})`);
+else if (input.skillsRef?.trim()) log.warning(`skillsRef ${input.skillsRef} ignored: no skill set names a skill`);
+const skillsDir = skillsSource?.root ?? '';
+const skillsVaried = skillSets.length > 1 || skillSets[0].length > 0;
+
+// Surface variants: how the agent reaches Apify (MCP, CLI, API). Each surface
+// is its own experiment too: model x surface x skill set.
+const surfacesDir = surfacesRoot();
+const surfaces = resolveSurfaceNames(input.surfaces).map((name) =>
+    resolveSurface(loadSurface(surfacesDir, name), {
+        env: mcpEnv,
+        cliVersion: input.cliVersion,
+        mcpcVersion: input.mcpcVersion,
+    }),
+);
+// Failed CLI commands echo their arguments (`apify login --token ...`).
+const redactSecrets = (text: string) =>
+    surfaces.flatMap((x) => x.secrets).reduce((acc, secret) => acc.replaceAll(secret, '[REDACTED]'), text);
+const surfacesVaried = surfaces.length > 1 || surfaces[0].name !== 'mcp';
+const multiVariant = skillsVaried || surfacesVaried;
+const itemsFor = (surface: (typeof surfaces)[number]) =>
+    selected.filter((i) => surfaceApplies(meta(i).surfaces, surface));
+
+// Fail fast on an MCP server config the environment cannot satisfy (missing
+// NOTION_TOKEN and the like), before any session is paid for.
+const mcpProblems = [
+    ...new Set(
+        selected
+            .map((i) => {
+                try {
+                    resolveMcp(meta(i), { mcpUrl, env: mcpEnv });
+                    return null;
+                } catch (err) {
+                    return String((err as Error).message ?? err);
+                }
+            })
+            .filter((p): p is string => p !== null),
+    ),
+];
+if (mcpProblems.length > 0) throw new Error(mcpProblems.join('\n'));
+if (baseHarness.kind === 'codex') {
+    if (skillSets.some((set) => set.length > 0)) throw new Error('Codex harness does not support skill sets');
+    if (selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify')) {
+        throw new Error('Codex harness supports only the Apify MCP server');
+    }
+    if (surfaces.some((surface) => surface.kind !== 'mcp')) {
+        throw new Error('Codex harness supports only MCP surfaces (its shell tools are off)');
+    }
+}
 const safeRepeats = Math.max(1, Math.min(10, Math.floor(repeats)));
 // Repeats: each repeat is its own experiment item, so every average (compare
 // view, dashboards) already accounts for it and flaky scenarios show as x/N.
-const items = Array.from({ length: safeRepeats }, () => selected).flat();
+// The items themselves are built per surface in the variant loop.
+const plannedSessions =
+    models.length *
+    skillSets.length *
+    surfaces.reduce((acc, surface) => acc + itemsFor(surface).length, 0) *
+    safeRepeats;
 
 // Scope: what this run covers. Full-scope runs feed the OKR trend; filtered
 // runs (a team checking their own Actors) are compared in the compare view
@@ -223,20 +331,48 @@ const items = Array.from({ length: safeRepeats }, () => selected).flat();
 const scopeParts: string[] = [];
 if (wantOwners.size > 0) scopeParts.push(`owner:${[...wantOwners].join(',')}`);
 if (wantSubjects.size > 0) scopeParts.push(`subject:${[...wantSubjects].map(slugOf).join(',')}`);
+if (wantIds.size > 0) scopeParts.push(`scenarios:${wantIds.size}`);
 if (itemLimit > 0) scopeParts.push(`limit:${itemLimit}`);
 const scope = scopeParts.length === 0 ? 'all' : scopeParts.join(' ');
 const fullScope = scope === 'all';
 const trigger = resolveTrigger(input.trigger, process.env.APIFY_META_ORIGIN);
 
 log.info(
-    `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, scope ${scope}, models ${models.join(', ')}, concurrency ${concurrency}, trigger ${trigger}`,
+    `Dataset "${datasetName}": ${selected.length} scenarios x${safeRepeats}, scope ${scope}, models ${models.join(', ')}, surfaces ${surfaces.map((x) => x.name).join(' | ')}, skill sets ${skillSets.map(skillSetLabel).join(' | ')}, ${plannedSessions} sessions, concurrency ${concurrency}, trigger ${trigger}`,
 );
-if (items.length === 0) {
+if (plannedSessions === 0) {
     log.error(
-        `No scenarios selected (subjects=${JSON.stringify(subjects)}, owners=${JSON.stringify(owners)}, categories=${JSON.stringify(categories)})`,
+        `No scenarios selected for any surface (subjects=${JSON.stringify(subjects)}, owners=${JSON.stringify(owners)}, categories=${JSON.stringify(categories)})`,
     );
     await Actor.setValue('OUTPUT', { error: 'no scenarios selected', scope, datasetName });
     await Actor.exit({ exitCode: EXIT.nothing, statusMessage: 'No scenarios matched the filters' });
+}
+if (plannedSessions > maxSessions) {
+    const message = `${plannedSessions} sessions planned (models x surfaces x skill sets x scenarios x repeats), more than maxSessions ${maxSessions}`;
+    log.error(message);
+    await Actor.setValue('OUTPUT', { error: 'too many sessions', plannedSessions, maxSessions, scope, datasetName });
+    await Actor.exit({ exitCode: EXIT.tooLarge, statusMessage: message });
+}
+
+// Every CLI tool version the surfaces need, once per run, before any session.
+for (const surface of surfaces) {
+    if (!surface.cli && !surface.mcpc) continue;
+    try {
+        if (surface.cli) {
+            await installCli(surface, { preinstalledRoot: process.env.CLI_ROOT });
+            await loginCli(surface);
+            log.info(`surface ${surface.name}: ${surface.cli.package} ${surface.cliVersion}, logged in`);
+        }
+        if (surface.mcpc) {
+            await installMcpc(surface, { preinstalledRoot: process.env.CLI_ROOT });
+            log.info(`surface ${surface.name}: ${surface.mcpc.package} ${surface.mcpcVersion}`);
+        }
+    } catch (err) {
+        const message = `surface ${surface.name}: installing the CLI tools failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 300)}`;
+        log.error(message);
+        await Actor.setValue('OUTPUT', { error: 'preflight failed', problems: [message], scope, datasetName });
+        await Actor.exit({ exitCode: EXIT.preflight, statusMessage: message });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,12 +381,85 @@ if (items.length === 0) {
 
 if (!skipPreflight) {
     const problems: string[] = [];
-    const firstTools = (meta(selected[0]).tools ?? ['fetch-actor-details']) as string[];
+    const firstMeta = meta(selected[0]);
+    // One MCP probe per distinct MCP URL among the surfaces that use MCP.
+    const mcpUrls = [...new Set(surfaces.filter((x) => x.spec.mcp).map((x) => x.spec.mcpUrl ?? mcpUrl))];
+    for (const url of mcpUrls) {
+        const firstMcp = resolveMcp(
+            { ...firstMeta, tools: firstMeta.tools ?? ['fetch-actor-details'] },
+            { mcpUrl: url, env: mcpEnv },
+        );
+        if (!firstMcp) continue;
+        const where = firstMcp.spec.transport === 'http' ? (firstMcp.spec.url as string) : `${firstMcp.name} (stdio)`;
+        try {
+            const schemas = await fetchToolSchemas(firstMcp, AbortSignal.timeout(60_000));
+            if (schemas.length === 0)
+                problems.push(`MCP server ${where} returned no tools for ${firstMcp.tools.join(',')}`);
+            else log.info(`preflight: MCP server ${firstMcp.name} lists ${schemas.length} tool(s)`);
+        } catch (err) {
+            problems.push(`MCP server ${where} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
+        }
+    }
+    // CLI surfaces: the installed CLI must reach the API with the surface's token.
+    for (const surface of surfaces.filter((x) => x.cliBinDir)) {
+        try {
+            await execFile(`${surface.cliBinDir}/apify`, ['info'], {
+                timeout: 30_000,
+                env: isolatedCliEnv(surface.env, surface.cliLoginHome),
+            });
+        } catch (err) {
+            problems.push(
+                `surface ${surface.name}: \`apify info\` failed: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 200)}`,
+            );
+        }
+    }
+    // mcpc: connect to the MCP server the way a session will, then close.
+    for (const surface of surfaces.filter((x) => x.mcpcBinDir)) {
+        const probeHome = mkdtempSync(join(tmpdir(), 'mcpc-preflight-'));
+        try {
+            installCliShim(probeHome, surface);
+            await connectMcpc(probeHome, surface, surface.spec.mcpUrl ?? mcpUrl);
+        } catch (err) {
+            problems.push(
+                `surface ${surface.name}: mcpc could not connect: ${redactSecrets(String((err as Error).message ?? err)).slice(0, 200)}`,
+            );
+        } finally {
+            await closeMcpc(probeHome);
+            rmSync(probeHome, { recursive: true, force: true });
+        }
+    }
+    // Each session may start Actor runs; this run holds one slot of the account's
+    // concurrent run limit. Too many parallel sessions get runs refused (the
+    // sessions then count as inconclusive), so say so before paying for them.
     try {
-        const schemas = await fetchToolSchemas(mcpUrl, firstTools, apifyToken);
-        if (schemas.length === 0) problems.push(`MCP server ${mcpUrl} returned no tools for ${firstTools.join(',')}`);
-    } catch (err) {
-        problems.push(`MCP server ${mcpUrl} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
+        const limits = (await (
+            await fetch('https://api.apify.com/v2/users/me/limits', {
+                headers: { Authorization: `Bearer ${apifyToken}` },
+                signal: AbortSignal.timeout(20_000),
+            })
+        ).json()) as { data?: { limits?: { maxConcurrentActorJobs?: number } } };
+        const max = limits.data?.limits?.maxConcurrentActorJobs;
+        if (typeof max === 'number' && concurrency + 1 > max) {
+            log.warning(
+                `concurrency ${concurrency} + this run exceeds the account's ${max} concurrent Actor runs: agents' runs will be refused and those sessions marked inconclusive. Use concurrency ${Math.max(1, Math.floor((max - 1) / 2))} on this account.`,
+            );
+        }
+    } catch {
+        /* the limit is a hint; the run goes on without it */
+    }
+    // API surfaces: the token must be accepted.
+    for (const surface of surfaces.filter((x) => x.kind === 'api')) {
+        try {
+            const res = await fetch('https://api.apify.com/v2/users/me', {
+                headers: { Authorization: `Bearer ${surface.env.APIFY_TOKEN ?? apifyToken}` },
+                signal: AbortSignal.timeout(20_000),
+            });
+            if (!res.ok) problems.push(`surface ${surface.name}: GET /v2/users/me returned HTTP ${res.status}`);
+        } catch (err) {
+            problems.push(
+                `surface ${surface.name}: Apify API unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`,
+            );
+        }
     }
     if (useOpenRouterProxy) {
         try {
@@ -281,11 +490,13 @@ if (!skipPreflight) {
         await Actor.setValue('OUTPUT', { error: 'preflight failed', problems, scope, datasetName });
         await Actor.exit({ exitCode: EXIT.preflight, statusMessage: `Preflight failed: ${problems[0]}` });
     }
-    log.info('preflight ok: MCP tools listed, LLM proxy answered');
+    log.info(`preflight ok: every surface answered${useOpenRouterProxy ? ', LLM proxy answered' : ''}`);
 }
 
 // ---------------------------------------------------------------------------
-// One experiment per model (spec D6), sequential so pass rates stay comparable.
+// One experiment per model x skill set (spec D6), sequential so pass rates
+// stay comparable. Skill sets are the "which skills help" axis: each set is
+// its own dataset run, so the compare view puts them side by side.
 // ---------------------------------------------------------------------------
 
 const actorRunId = process.env.ACTOR_RUN_ID ?? null;
@@ -294,6 +505,11 @@ const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
 interface ModelRunSummary {
     model: string;
+    /** Surface variant (surfaces/<name>.yaml). */
+    surface: string;
+    /** Skill variant label: `none` or `a+b`. */
+    skillSet: string;
+    agentSkills: string[];
     resultsUrl: string | null;
     datasetRunId: string | null;
     datasetRunName: string | null;
@@ -311,11 +527,22 @@ interface ModelRunSummary {
 const summaries: ModelRunSummary[] = [];
 let flushFailed = false;
 
-for (const model of models) {
+const variants = models.flatMap((model) =>
+    surfaces.flatMap((surface) => skillSets.map((skillSet) => ({ model, surface, skillSet }))),
+);
+for (const { model, surface, skillSet } of variants) {
     const harness = { ...baseHarness, model };
+    const skillLabel = skillSetLabel(skillSet);
+    const variantItems = Array.from({ length: safeRepeats }, () => itemsFor(surface)).flat();
+    if (variantItems.length === 0) {
+        log.warning(`Surface ${surface.name}: no selected scenario applies to it (scenario \`surfaces\`); skipped`);
+        continue;
+    }
     const shortModel = model.replace(/^[^/]+\//, '');
     const nameParts = [datasetName, shortModel];
     if (harness.kind !== 'claude-code') nameParts.push(harness.kind);
+    if (surfacesVaried) nameParts.push(`surface:${surface.name}`);
+    if (skillsVaried) nameParts.push(`skills:${skillLabel}`);
     if (!fullScope) nameParts.push(scope);
     if (safeRepeats > 1) nameParts.push(`×${safeRepeats}`);
     nameParts.push(stamp);
@@ -334,6 +561,8 @@ for (const model of models) {
             runName: effectiveRunName,
             description: [
                 `Runner: ${harness.kind} / ${model}`,
+                `Surface: ${surface.name}${surface.cliVersion ? ` (CLI ${surface.cliVersion})` : ''}${surface.mcpcVersion ? ` (mcpc ${surface.mcpcVersion})` : ''}`,
+                `Skills: ${skillLabel}${skillsSource ? ` from ${skillsSource.repo}@${skillsSource.commit.slice(0, 7)}` : ''}`,
                 `Scope: ${scope}`,
                 judge ? `Judge: ${judgeModel}` : 'Not judged',
                 consoleRunUrl,
@@ -343,7 +572,15 @@ for (const model of models) {
             metadata: {
                 harness: harness.kind,
                 model,
-                surface: 'mcp',
+                skillSet: skillLabel,
+                agentSkills: skillSet,
+                ...(skillsSource
+                    ? { skillsSource: { repo: skillsSource.repo, ref: skillsSource.ref, commit: skillsSource.commit } }
+                    : {}),
+                surface: surface.name,
+                surfaceKind: surface.kind,
+                ...(surface.cliVersion ? { cliVersion: surface.cliVersion } : {}),
+                ...(surface.mcpcVersion ? { mcpcVersion: surface.mcpcVersion } : {}),
                 runner: 'workflow-runner',
                 actorRunId,
                 repeats: safeRepeats,
@@ -354,7 +591,7 @@ for (const model of models) {
                 models,
                 environment: actorRunId ? 'apify' : 'local',
             },
-            data: items,
+            data: variantItems,
             maxConcurrency: concurrency,
             task: async (item) => {
                 const r = await runSession({
@@ -363,8 +600,12 @@ for (const model of models) {
                     trigger,
                     repeats: safeRepeats,
                     harness,
-                    mcpUrl,
+                    mcpUrl: surface.spec.mcpUrl ?? mcpUrl,
                     apifyToken,
+                    mcpEnv,
+                    surface,
+                    skillSet,
+                    skillsRoot: skillsDir,
                     useOpenRouterProxy,
                     perItemTimeoutSecs,
                     artifactStore,
@@ -443,6 +684,8 @@ for (const model of models) {
     await Actor.pushData(
         result.itemResults.map((r) => ({
             model,
+            surface: surface.name,
+            skillSet: skillLabel,
             input: r.input,
             output: typeof r.output === 'string' ? r.output.slice(0, OUTPUT_PREVIEW_CAP) : r.output,
             expectedOutput: r.expectedOutput ?? null,
@@ -452,11 +695,14 @@ for (const model of models) {
 
     summaries.push({
         model,
+        surface: surface.name,
+        skillSet: skillLabel,
+        agentSkills: skillSet,
         resultsUrl,
         datasetRunId,
         datasetRunName: result.runName ?? null,
         datasetRunUrl,
-        items: items.length,
+        items: variantItems.length,
         // itemResults excludes items whose task threw (broken harness); the gap
         // between items and completed is the health signal (spec D13).
         completed: result.itemResults.length,
@@ -467,8 +713,13 @@ for (const model of models) {
         judgeDatasetId,
         projectBase: urlParts ? `${urlParts[1]}/project/${urlParts[2]}` : null,
     });
-    log.info(`Model ${model}: ${result.itemResults.length}/${items.length} sessions completed; results ${resultsUrl}`);
+    log.info(
+        `Model ${model}, surface ${surface.name}, skills ${skillLabel}: ${result.itemResults.length}/${variantItems.length} sessions completed; results ${resultsUrl}`,
+    );
 }
+
+// The CLI logins hold the token in a file; they are not needed after the sessions.
+for (const surface of surfaces) logoutCli(surface);
 
 try {
     await otel.shutdown();
@@ -485,6 +736,33 @@ const totalItems = summaries.reduce((a, s) => a + s.items, 0);
 const totalCompleted = summaries.reduce((a, s) => a + s.completed, 0);
 const completedRatio = totalItems === 0 ? 1 : totalCompleted / totalItems;
 const judgeFailed = judge && summaries.some((s) => s.judgeError !== null);
+
+// The configurations compared in one table: every (model, surface, skill set)
+// with its rates, best first. Equal pass rates are broken by checks, then fewer skills.
+const rate = (x: number | null | undefined) => (typeof x === 'number' ? x : null);
+const variantRows = summaries
+    .map((s) => ({
+        model: s.model,
+        surface: s.surface,
+        skillSet: s.skillSet,
+        agentSkills: s.agentSkills,
+        passRate: rate(s.judge?.passRate),
+        foundRate: rate(s.judge?.foundRate),
+        worksRate: rate(s.judge?.worksRate),
+        checksPassRate: s.judge?.checksTotal
+            ? Number(((s.judge.checksPassed ?? 0) / s.judge.checksTotal).toFixed(3))
+            : null,
+        inconclusive: s.judge?.inconclusive ?? null,
+        completed: s.completed,
+        items: s.items,
+        resultsUrl: s.resultsUrl,
+    }))
+    .sort(
+        (a, b) =>
+            (b.passRate ?? -1) - (a.passRate ?? -1) ||
+            (b.checksPassRate ?? -1) - (a.checksPassRate ?? -1) ||
+            a.agentSkills.length - b.agentSkills.length,
+    );
 
 const summary = {
     resultsUrl: first.resultsUrl,
@@ -517,6 +795,12 @@ const summary = {
     harness: baseHarness.kind,
     model: first.model,
     models,
+    surfaces: surfaces.map((x) => x.name),
+    skillSets: skillSets.map(skillSetLabel),
+    skillsSource: skillsSource ? { repo: skillsSource.repo, ref: skillsSource.ref, commit: skillsSource.commit } : null,
+    // One row per (model, surface, skill set), best pass rate first; null when not judged.
+    variants: variantRows,
+    bestVariant: variantRows[0]?.passRate !== null ? variantRows[0] : null,
     judgeModel: judge ? judgeModel : null,
     health: { completedRatio: Number(completedRatio.toFixed(3)), threshold: healthThreshold, judgeFailed, flushFailed },
     // One entry per model when `models` was given; the top-level fields mirror the first.
@@ -527,7 +811,17 @@ await Actor.setValue('OUTPUT', summary);
 if (summary.passRate !== null) {
     log.info(`Pass rate ${Math.round(summary.passRate * 100)}% (${summary.passed}/${summary.judged} scenarios)`);
 }
-for (const s of summaries) log.info(`Results (${s.model}): ${s.resultsUrl}`);
+for (const s of summaries) log.info(`Results (${s.model}, ${s.surface}, skills ${s.skillSet}): ${s.resultsUrl}`);
+if (multiVariant && variantRows.some((v) => v.passRate !== null)) {
+    log.info(
+        `Variants by pass rate:\n${variantRows
+            .map(
+                (v) =>
+                    `  ${`${v.surface} · skills:${v.skillSet}`.padEnd(60)} ${v.passRate === null ? 'n/a' : `${Math.round(v.passRate * 100)}%`} (${v.model})`,
+            )
+            .join('\n')}`,
+    );
+}
 
 // Slack digest: scheduled runs post by default, manual runs only when asked.
 // Per-scenario rows come from the judge's dataset; the previous pass rate
@@ -568,7 +862,11 @@ if (shouldNotify(input.notify, trigger)) {
             }
             const sent = await postDigest({
                 suite: datasetName,
-                model: s.model,
+                model: [
+                    s.model,
+                    ...(surfacesVaried ? [`surface:${s.surface}`] : []),
+                    ...(skillsVaried ? [`skills:${s.skillSet}`] : []),
+                ].join(' · '),
                 scope,
                 fullScope,
                 trigger,

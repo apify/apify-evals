@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,12 +15,13 @@ import {
     type Evidence,
     infraStatus,
     runChecks,
+    surfacesUsed,
     validateAgentSpanMetadata,
     validateAgentSpanOutput,
 } from '@apify-evals/contract';
 import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing';
 import { trace } from '@opentelemetry/api';
-import { log } from 'apify';
+import { Actor, log } from 'apify';
 
 import { runCodex } from './adapters/codex.js';
 import {
@@ -36,15 +38,31 @@ import {
     snapshotWorkspace,
     type WorkspaceFile,
 } from './adapters/shared.js';
-import { toolsUrl, type ArtifactStore, type SnapshotCache } from './artifacts.js';
+import type { ArtifactStore, SnapshotCache } from './artifacts.js';
 import {
     enrichFromApify,
     extractFromTools,
+    findMarkedRuns,
+    runsFromDatasets,
+    type SessionWindow,
     summarizeRuns,
     type RawToolCall,
     type RawToolResult,
     type ReferenceRunner,
 } from './evidence.js';
+import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
+import { installSkills, skillSetLabel } from './skills.js';
+import {
+    closeMcpc,
+    connectMcpc,
+    curlrc,
+    installCliShim,
+    surfaceAllowedTools,
+    surfaceItemMetadata,
+    surfacePrompt,
+    sessionPath,
+    type ResolvedSurface,
+} from './surfaces.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -68,8 +86,18 @@ export interface SessionContext {
     item: { id?: string; input?: unknown; metadata?: DatasetItemMetadata | null };
     datasetName: string;
     harness: HarnessConfig;
+    /** Apify MCP server for items whose profile names no other server. */
     mcpUrl: string;
     apifyToken: string;
+    /** Values for `${VAR}` placeholders in the item's MCP server config. */
+    mcpEnv: Record<string, string | undefined>;
+    /** Agent skills injected into this session (names under skillsRoot); [] = none. */
+    skillSet: string[];
+    skillsRoot: string;
+    /** How the agent reaches Apify (surfaces/<name>.yaml); absent = the item as is (MCP). */
+    surface?: ResolvedSurface;
+    /** Per-session marker in the curl user agent, for finding API-started runs (set by runSession). */
+    runMarker?: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
@@ -91,11 +119,16 @@ export interface SessionContext {
     }) => Promise<void>;
 }
 
+/** The trace `version` dashboards slice by: the model, plus the surface when it is not the default. */
+export function traceVersion(model: string, surface: Pick<ResolvedSurface, 'name'> | undefined): string {
+    return !surface || surface.name === 'mcp' ? model : `${model} · ${surface.name}`;
+}
+
 /** Trace tags are what Langfuse dashboards can filter and (for low-cardinality
  * values) group by. `trigger:` and `repeats:` let the scheduled daily series be
  * told apart from team reruns and 3-repeat diagnostics. */
 export function buildTraceTags(
-    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats'>,
+    ctx: Pick<SessionContext, 'datasetName' | 'harness' | 'trigger' | 'repeats' | 'surface'> & { skillSet?: string[] },
     meta: Partial<DatasetItemMetadata> & { tags?: unknown },
 ): string[] {
     // The platform reports the scheduler origin as APIFY_META_ORIGIN=SCHEDULER, so
@@ -110,6 +143,8 @@ export function buildTraceTags(
         ...(meta.actor ? [`actor:${meta.actor}`] : []),
         ...(meta.team ? [`team:${meta.team}`] : []),
         ...(meta.skill ? [`skill:${meta.skill}`] : []),
+        `skills:${skillSetLabel(ctx.skillSet ?? [])}`,
+        `surface:${ctx.surface?.name ?? 'mcp'}`,
         ...(Array.isArray(meta.tags) ? meta.tags.map(String) : []),
     ];
 }
@@ -158,6 +193,8 @@ interface ParsedSession {
     timeline: TimelineEvent[];
     mcpServers: { name: string; status: string }[] | null;
     mcpToolCount: number | null;
+    /** Skill names Claude Code reported at init (bundled ones included). */
+    skills: string[] | null;
     finalResult: string | null;
     subtype: string | null;
     isError: boolean;
@@ -179,6 +216,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     let numTurns: number | null = null;
     let mcpServers: ParsedSession['mcpServers'] = null;
     let mcpToolCount: number | null = null;
+    let skills: string[] | null = null;
     const lines = ndjson.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -194,6 +232,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
             const init = parseInitEvent(ev);
             mcpServers = init.mcpServers;
             mcpToolCount = init.mcpToolCount;
+            skills = init.skills;
             continue;
         }
         // Claude Code streams one assistant event per content block, sharing
@@ -265,6 +304,7 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
         timeline,
         mcpServers,
         mcpToolCount,
+        skills,
         finalResult,
         subtype,
         isError,
@@ -274,10 +314,11 @@ function parseSessionOutput(ndjson: string, lineTimes: number[] = [], fallbackTi
     };
 }
 
-/** The `system/init` event lists the MCP servers and every tool the agent has. */
-function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
+/** The `system/init` event lists the MCP servers, every tool and every skill the agent has. */
+function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown; skills?: unknown }): {
     mcpServers: { name: string; status: string }[];
     mcpToolCount: number;
+    skills: string[];
 } {
     const servers = Array.isArray(ev.mcp_servers)
         ? (ev.mcp_servers as { name?: unknown; status?: unknown }[]).map((s) => ({
@@ -286,7 +327,8 @@ function parseInitEvent(ev: { mcp_servers?: unknown; tools?: unknown }): {
           }))
         : [];
     const tools = Array.isArray(ev.tools) ? (ev.tools as unknown[]).map(String) : [];
-    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length };
+    const skills = Array.isArray(ev.skills) ? (ev.skills as unknown[]).map(String) : [];
+    return { mcpServers: servers, mcpToolCount: tools.filter((t) => t.startsWith('mcp__')).length, skills };
 }
 
 /** True when the init line has arrived and shows an MCP server without any
@@ -308,15 +350,20 @@ function lastAssistantText(conversation: ConversationEntry[]): string {
     return conversation.findLast((c) => c.role === 'assistant' && c.type === 'text')?.text ?? '';
 }
 
-function buildClaudeArgs(opts: {
+export function buildClaudeArgs(opts: {
     prompt: string;
     meta: DatasetItemMetadata;
     harness: HarnessConfig;
     mcpConfigPath: string | null;
+    /** `--allowedTools` patterns for the MCP server's tools (see mcp.ts). */
+    allowedMcpTools?: string[];
+    /** Built-in tools the surface adds (WebFetch for the API surface). */
+    extraAllowedTools?: string[];
 }): string[] {
     const { prompt, meta, harness, mcpConfigPath } = opts;
     const allowedTools: string[] = [];
     if (meta.allowBash) allowedTools.push('Bash');
+    allowedTools.push(...(opts.extraAllowedTools ?? []));
 
     const args = [
         '-p',
@@ -328,24 +375,39 @@ function buildClaudeArgs(opts: {
         String(meta.maxTurns ?? harness.maxTurns),
         '--model',
         harness.model,
+        // Only the session directory's own `.claude/` counts: skills are an
+        // eval variable, so nothing from the developer's ~/.claude may leak in.
+        '--setting-sources',
+        'project',
     ];
+    // Strict always: without an item MCP config the agent gets no MCP server at
+    // all, never the developer's own (or claude.ai connector) servers.
+    args.push('--strict-mcp-config');
     if (mcpConfigPath) {
-        args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-        allowedTools.push('mcp__apify__*');
+        args.push('--mcp-config', mcpConfigPath);
+        allowedTools.push(...(opts.allowedMcpTools ?? []));
     }
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(' '));
     return args;
 }
 
-function buildClaudeEnv(opts: {
+export function buildClaudeEnv(opts: {
     home: string;
     harness: HarnessConfig;
     apifyToken: string;
     useOpenRouterProxy: boolean;
+    surface?: ResolvedSurface;
+    /** The session's `apify` shim directory (surfaces.ts `installCliShim`), first on PATH. */
+    shimDir?: string;
 }): Record<string, string | undefined> {
-    const { home, harness, apifyToken, useOpenRouterProxy } = opts;
+    const { home, harness, apifyToken, useOpenRouterProxy, surface, shimDir } = opts;
     return {
-        PATH: process.env.PATH,
+        // The surface first, so it cannot override the harness settings below.
+        ...(surface?.env ?? {}),
+        ...(surface ? { APIFY_CLI_SKIP_UPDATE_CHECK: '1', APIFY_CLI_DISABLE_TELEMETRY: '1' } : {}),
+        PATH: sessionPath(process.env.PATH, shimDir),
+        // curl reads $CURL_HOME/.curlrc (the session marker) in both HOME modes.
+        CURL_HOME: home,
         // USER/LOGNAME/TMPDIR: required for macOS Keychain auth lookup in local
         // dev mode; harmless in the container.
         USER: process.env.USER,
@@ -404,42 +466,71 @@ export function sessionTimeoutSecs(meta: DatasetItemMetadata | Record<string, un
     return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : fallback;
 }
 
-function runClaudeCodeOnce(
+/**
+ * One session in its own throwaway directory. The surface's command wrappers
+ * go in first, and its mcpc session is connected before the agent starts;
+ * afterwards every mcpc session is closed (each holds a bridge process) and
+ * the directory is removed.
+ */
+async function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
 ): Promise<AdapterResult> {
-    const { prompt, item, harness, mcpUrl, apifyToken, useOpenRouterProxy, perItemTimeoutSecs } = ctx;
+    const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
+    try {
+        const shimDir = ctx.surface ? installCliShim(home, ctx.surface, ctx.runMarker) : undefined;
+        if (ctx.surface?.mcpcBinDir) await connectMcpc(home, ctx.surface, ctx.mcpUrl);
+        return await runClaudeCodeIn(ctx, abortOnMissingMcp, home, shimDir);
+    } finally {
+        await closeMcpc(home);
+        try {
+            rmSync(home, { recursive: true, force: true });
+        } catch {
+            /* best effort */
+        }
+    }
+}
+
+function runClaudeCodeIn(
+    ctx: SessionContext & { prompt: string },
+    abortOnMissingMcp: boolean,
+    home: string,
+    shimDir: string | undefined,
+): Promise<AdapterResult> {
+    const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, skillSet, skillsRoot, useOpenRouterProxy } = ctx;
+    const { perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
-        const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
         // The agent works in a clean subdirectory, not in its HOME: what it leaves
         // there is the workspace evidence (CLI / SDK / Actor-building suites).
         const work = join(home, 'work');
         mkdirSync(work);
         const meta = item.metadata ?? {};
 
-        // All filesystem effects live here: session dir, then the token-bearing
-        // MCP config when the item restricts tools.
+        // All filesystem effects live here: the injected skills (project
+        // skills of the working directory, the only setting source), the curl
+        // marker, then the secret-bearing MCP config when the item has tools.
+        installSkills(work, skillSet, skillsRoot);
+        if (ctx.runMarker) writeFileSync(join(home, '.curlrc'), curlrc(ctx.runMarker));
+        const mcp: ResolvedMcp | null = resolveMcp(meta, { mcpUrl, env: mcpEnv });
         let mcpConfigPath: string | null = null;
-        if (Array.isArray(meta.tools) && meta.tools.length > 0) {
+        if (mcp) {
             mcpConfigPath = join(home, 'mcp.json');
-            writeFileSync(
-                mcpConfigPath,
-                JSON.stringify({
-                    mcpServers: {
-                        apify: {
-                            type: 'http',
-                            // Same URL builder as the schema snapshot, by construction.
-                            url: toolsUrl(mcpUrl, meta.tools),
-                            headers: { Authorization: `Bearer ${apifyToken}` },
-                        },
-                    },
-                }),
-            );
+            // Same resolved spec as the schema snapshot, by construction.
+            writeFileSync(mcpConfigPath, JSON.stringify(claudeMcpConfig(mcp)), { mode: 0o600 });
         }
+        const secrets = [apifyToken, ...(mcp?.secrets ?? []), ...(ctx.surface?.secrets ?? [])].filter(Boolean);
+        const redact = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, '[REDACTED]'), text);
 
-        const args = buildClaudeArgs({ prompt, meta, harness, mcpConfigPath });
-        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy });
+        const args = buildClaudeArgs({
+            prompt,
+            meta,
+            harness,
+            mcpConfigPath,
+            allowedMcpTools: mcp?.allowedTools,
+            extraAllowedTools: surfaceAllowedTools(ctx.surface),
+        });
+        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy, surface: ctx.surface, shimDir });
 
         // detached: the child leads its own process group, so the timeout kill
         // reaches grandchildren (Bash tool shells) that share the stdio pipes.
@@ -498,17 +589,13 @@ function runClaudeCodeOnce(
             if (graceTimer) clearTimeout(graceTimer);
             if (rssTimer) clearInterval(rssTimer);
             const workspaceFiles = meta.allowBash ? snapshotWorkspace(work) : undefined;
-            try {
-                rmSync(home, { recursive: true, force: true });
-            } catch {
-                /* best effort */
-            }
 
             const {
                 conversation,
                 timeline,
                 mcpServers,
                 mcpToolCount,
+                skills,
                 finalResult,
                 subtype,
                 isError,
@@ -547,9 +634,12 @@ function runClaudeCodeOnce(
                     mcpServers,
                     mcpToolCount,
                     mcpToolsMissing,
+                    ...(mcp ? { mcpServer: mcp.name } : {}),
+                    // Which of the injected skills Claude Code actually loaded.
+                    skillsLoaded: skills ? skills.filter((name) => skillSet.includes(name)) : [],
                 },
                 harnessBroke,
-                stderr: (spawnError ?? errOut).slice(0, STDERR_CAP),
+                stderr: redact(spawnError ?? errOut).slice(0, STDERR_CAP),
             });
         };
 
@@ -620,7 +710,23 @@ async function collectEvidence(
         else results.push({ toolUseId: e.toolUseId, content: e.content, isError: e.isError });
     }
     const extracted = extractFromTools(calls, results);
-    const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead);
+    const used = surfacesUsed(extracted.toolCalls);
+    const window: SessionWindow = {
+        from: r.startedAt,
+        to: r.startedAt + Number((r.metrics as { durationMs?: number }).durationMs ?? 0),
+        ...(ctx.runMarker ? { marker: ctx.runMarker } : {}),
+    };
+    // Runs no output named (run-sync endpoints, `apify call -s`): curl and the
+    // session's CLI mark their requests, so look them up by the marker.
+    if (ctx.surface?.kind !== 'mcp' || used.includes('api') || used.includes('cli')) {
+        const known = new Set(extracted.actorRuns.map((run) => run.runId));
+        extracted.actorRuns.push(...(await findMarkedRuns(window, known)));
+    }
+    if (extracted.datasetHints.length > 0) {
+        const known = new Set(extracted.actorRuns.map((run) => run.runId));
+        extracted.actorRuns.push(...(await runsFromDatasets(extracted.datasetHints, known)));
+    }
+    const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead, window);
 
     let reference = null;
     const refSpec = meta.reference as
@@ -655,7 +761,9 @@ async function collectEvidence(
         datasets: enriched.datasets,
         reference,
         ...(r.workspaceFiles ? { workspaceFiles: r.workspaceFiles } : {}),
+        surfacesUsed: used,
         session: {
+            surface: { name: ctx.surface?.name ?? 'mcp', kind: ctx.surface?.kind ?? 'mcp' },
             timedOut: Boolean(m.timedOut),
             stdoutTruncated: Boolean(m.stdoutTruncated),
             harnessBroke: r.harnessBroke,
@@ -665,9 +773,26 @@ async function collectEvidence(
             ...(typeof m.mcpToolCount === 'number' ? { mcpToolCount: m.mcpToolCount } : {}),
             mcpExpected: Boolean(m.mcpExpected),
             mcpRestarts: m.mcpRestarts ?? 0,
+            ...(results.some((res) => RUN_LIMIT_RE.test(res.content)) ? { runLimitHit: true } : {}),
         },
     };
 }
+
+/** Abort the agent's Actor runs that are still running after its session ended. */
+async function abortLeftoverRuns(evidence: Evidence): Promise<void> {
+    for (const run of evidence.actorRuns) {
+        if (!run.runId || !(run.status === 'RUNNING' || run.status === 'READY')) continue;
+        try {
+            await Actor.apifyClient.run(run.runId).abort();
+            log.info(`aborted run ${run.runId} (${run.actor}) left running after the session`);
+        } catch (err) {
+            log.warning(`could not abort leftover run ${run.runId}: ${err}`);
+        }
+    }
+}
+
+/** What the platform answers when the account has no free run slot (API, CLI and MCP all relay it). */
+const RUN_LIMIT_RE = /exceed your limit of \d+ concurrent Actor runs/i;
 
 /**
  * Write check.<id> per check (not-applicable checks are skipped, not failed),
@@ -769,7 +894,7 @@ function emitTimeline(
             );
             gen.end(new Date(e.t));
             for (const tu of e.toolUses) {
-                const name = tu.name.replace(/^mcp__apify__/, '');
+                const name = tu.name.replace(/^mcp__[^_]+__/, '');
                 pending.set(tu.id, { obs: start(name, { input: tu.input }, 'tool', e.t), name });
             }
             pendingResults = [];
@@ -813,7 +938,17 @@ function emitTimeline(
  * trace. Emits the v1 contract: validated output + metadata, full log and
  * tool-schema snapshot in the named artifact store, pointers on the span.
  */
-export async function runSession(ctx: SessionContext): Promise<{ output: string }> {
+export async function runSession(sessionCtx: SessionContext): Promise<{ output: string }> {
+    // The surface decides the session setup: from here on, everything sees the
+    // item as the surface runs it (no MCP tools for CLI / API, Bash on).
+    const ctx: SessionContext = {
+        ...sessionCtx,
+        item: {
+            ...sessionCtx.item,
+            metadata: surfaceItemMetadata(sessionCtx.item.metadata ?? {}, sessionCtx.surface),
+        },
+        runMarker: `apify-evals/${randomBytes(8).toString('hex')}`,
+    };
     const { item, harness } = ctx;
     const input = item.input as { prompt?: string; query?: string } | string | undefined;
     // TEMPORARY: `query` is what the mcp-server-evals datasets call the prompt,
@@ -821,7 +956,10 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     // dataset from being handed `{"query":"..."}` as its literal prompt. The
     // real fix is one key across every dataset (apify/ai-team#327); drop the
     // `query` fallback once they are normalised.
-    const prompt = typeof input === 'string' ? input : (input?.prompt ?? input?.query ?? JSON.stringify(input));
+    const prompt = surfacePrompt(
+        typeof input === 'string' ? input : (input?.prompt ?? input?.query ?? JSON.stringify(input)),
+        ctx.surface,
+    );
     const adapter = ADAPTERS[harness.kind];
 
     // Trace tags are what Langfuse dashboards can group by, so this is where
@@ -860,11 +998,14 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                 } else {
                     log.warning('no active experiment span; check scores not written');
                 }
+                // The evidence is frozen: Actor runs the agent left running only
+                // cost money and hold run slots other sessions need.
+                await abortLeftoverRuns(evidence);
 
-                const tools = item.metadata?.tools;
+                const mcp = resolveMcp(meta, { mcpUrl: ctx.mcpUrl, env: ctx.mcpEnv });
                 let snapshotRef = null;
-                if (Array.isArray(tools) && tools.length > 0) {
-                    snapshotRef = await ctx.snapshots.get(tools).catch((err) => {
+                if (mcp) {
+                    snapshotRef = await ctx.snapshots.get(mcp).catch((err) => {
                         log.warning(`tool-schema snapshot failed (judge will mark schema-validity n/a): ${err}`);
                         return null;
                     });
@@ -881,6 +1022,14 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
                     harness: harness.kind,
                     model: harness.model,
                     harnessBroke: r.harnessBroke,
+                    // Session setup: the eval variables beyond the model.
+                    ...(mcp ? { mcpServer: mcp.name } : {}),
+                    agentSkills: ctx.skillSet,
+                    surface: ctx.surface?.name ?? 'mcp',
+                    surfaceKind: ctx.surface?.kind ?? 'mcp',
+                    surfacesUsed: evidence.surfacesUsed ?? [],
+                    ...(ctx.surface?.cliVersion ? { cliVersion: ctx.surface.cliVersion } : {}),
+                    ...(ctx.surface?.mcpcVersion ? { mcpcVersion: ctx.surface.mcpcVersion } : {}),
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef
@@ -935,7 +1084,9 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
     return propagateAttributes(
         {
             tags,
-            version: harness.model,
+            // version = model on the default surface, so the existing per-model
+            // dashboards keep their series; other surfaces get their own.
+            version: traceVersion(harness.model, ctx.surface),
             ...(meta.actor ? { sessionId: String(meta.actor), userId: String(meta.actor) } : {}),
             ...(typeof meta.title === 'string' && meta.title ? { traceName: meta.title } : {}),
         },

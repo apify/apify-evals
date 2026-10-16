@@ -21,7 +21,9 @@ const STORE_FIX_AREAS = [
     { id: 'readme-docs', owner: 'subject', description: 'The agent misunderstood what the Actor does or which mode or sibling to use, although it read the Actor details.' },
     { id: 'output-format', owner: 'subject', description: 'The Actor returned data but the agent could not find or use the right fields.' },
     { id: 'error-messages', owner: 'subject', description: 'The Actor failed or returned an error the agent could not act on.' },
-    { id: 'discoverability', owner: 'store-search', description: 'The agent could not find, or picked the wrong, Actor in store search.' },
+    { id: 'discoverability', owner: 'store-search', description: 'The agent could not find, or picked the wrong, Actor in store search (through any surface).' },
+    { id: 'surface', owner: 'surface', description: 'The surface itself blocked the agent although the Actor was fine (a missing or confusing CLI command or flag, an unclear API error, MCP tool behaviour, or docs that sent it the wrong way).' },
+    { id: 'skill-instructions', owner: 'skills', description: 'An injected agent skill sent the agent down the wrong path (commands or tools it does not have on this surface, a workflow that does not fit the task).' },
     { id: 'agent-or-model', owner: 'none', description: 'The Actor did its part; the failure is the agent’s reasoning or the model.' },
 ];
 
@@ -49,6 +51,7 @@ const GENERIC_PROFILE: JudgeProfile = {
         'apify.items': 'tool-output',
         reference: 'tool-output',
         'apify.run': 'error-messages',
+        'surface.used': 'agent-or-model',
     },
 };
 
@@ -68,22 +71,32 @@ export function loadJudgeProfile(name: string | undefined): JudgeProfile {
                 name: string;
                 wrongSubjectLabel?: string;
                 fixAreas?: { id: string; owner: string; description: string }[];
+                forcedFixAreas?: Record<string, string | { find: string; use: string }>;
             };
             const fixAreas = doc.fixAreas ?? STORE_FIX_AREAS;
+            const ids = new Set(fixAreas.map((f) => f.id));
+            for (const [type, area] of Object.entries(doc.forcedFixAreas ?? {})) {
+                for (const id of typeof area === 'string' ? [area] : [area.find, area.use]) {
+                    if (!ids.has(id)) throw new Error(`forcedFixAreas.${type} names unknown fix area "${id}"`);
+                }
+            }
             profile = {
                 name: doc.name,
                 fixAreas,
                 wrongSubjectLabel: doc.wrongSubjectLabel ?? 'wrong-subject',
                 fixAreaIds: [...fixAreas.map((f) => f.id), 'none'],
-                // Forced mappings are the store defaults remapped onto this
-                // profile's ids when they exist, else the closest generic id.
-                forcedFixAreas: Object.fromEntries(
-                    Object.entries(STORE_PROFILE_FOR_VERDICT.forcedFixAreas).map(([type, area]) => {
-                        const ids = new Set(fixAreas.map((f) => f.id));
-                        const pick = (a: string) => (ids.has(a) ? a : ids.has('agent-or-model') ? 'agent-or-model' : fixAreas[0]?.id ?? 'none');
-                        return [type, typeof area === 'string' ? pick(area) : { find: pick(area.find), use: pick(area.use) }];
-                    }),
-                ),
+                // Forced mappings: the profile's own `forcedFixAreas` win; the
+                // rest are the store defaults remapped onto this profile's ids
+                // when they exist, else the closest generic id.
+                forcedFixAreas: {
+                    ...Object.fromEntries(
+                        Object.entries(STORE_PROFILE_FOR_VERDICT.forcedFixAreas).map(([type, area]) => {
+                            const pick = (a: string) => (ids.has(a) ? a : ids.has('agent-or-model') ? 'agent-or-model' : fixAreas[0]?.id ?? 'none');
+                            return [type, typeof area === 'string' ? pick(area) : { find: pick(area.find), use: pick(area.use) }];
+                        }),
+                    ),
+                    ...(doc.forcedFixAreas ?? {}),
+                },
             };
         } catch (err) {
             log.warning(`profile ${key} unreadable, using store defaults: ${err}`);

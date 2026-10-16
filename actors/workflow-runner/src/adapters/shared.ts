@@ -71,6 +71,8 @@ const WORKSPACE_SKIP_DIRS = new Set([
     'dist',
     'storage',
     'apify_storage',
+    // Injected skills and Claude Code's own project state, not the agent's work.
+    '.claude',
 ]);
 
 /** Snapshot the files under `dir` (relative paths, sorted), skipping dependency

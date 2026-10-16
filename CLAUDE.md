@@ -20,7 +20,8 @@ button.
   scenario's deterministic checks, then calls the judge. `src/main.ts`
   (inputs, scope, preflight, exit codes), `src/harness.ts` (session, trace,
   evidence), `src/evidence.ts` (extraction, Apify API, reference runs),
-  `src/notify.ts` (Slack digest), `src/artifacts.ts` (eval-artifacts store).
+  `src/notify.ts` (Slack digest), `src/artifacts.ts` (eval-artifacts store),
+  `src/surfaces.ts` and `src/skills.ts` (the variant axes, below).
 - `actors/judge/` — the **judge**: reads the evidence artifact and the full
   session log, asks the model for the rubric, merges deterministic checks and
   model into one verdict (`src/verdict.ts`, tested), writes scores, a trace
@@ -30,6 +31,12 @@ button.
   `profiles/<suite>.yaml` — what a suite tests, tools per skill, fix areas.
   `tools/` syncs scenarios to Langfuse (`npm run scenarios:sync`) and
   validates them (`npm run scenarios:check`). See `scenarios/README.md`.
+- `surfaces/<name>.yaml` (how the agent reaches Apify: `mcp`, `cli`, `api`)
+  and agent skills (injectable; the runner downloads `apify/agent-skills` at
+  the commit pinned in `src/skills.ts`, see `skills/README.md`): the runner runs every
+  model × surface × skill set as its own dataset run. Scenarios stay
+  surface-agnostic. "Skill" alone means a scenario's `find` / `use`; the
+  injectable ones are always "agent skills".
 - `actors/runner/`, `shared/`, `docs/`, `spikes/`, `scenarios/*.md` — the
   legacy markdown-scenario runner (Czech docs). Not part of the live system.
 
@@ -52,7 +59,8 @@ button.
   use structural checks, stable facts or a `reference` run.
 - Langfuse dashboards can only slice scores by `userId`, `traceVersion`,
   `traceName`, `name` and categorical `stringValue`; the runner maps
-  subject → `userId`, model → `version`, scenario title → `traceName`.
+  subject → `userId`, model → `version` (`<model> · <surface>` off the
+  default `mcp` surface), scenario title → `traceName`.
 
 ## Score vocabulary
 

@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -65,6 +65,8 @@ describe('incomplete scenarios', () => {
         join(import.meta.dirname, '..', '..', 'profiles', 'store-actors.yaml'),
         join(root, 'profiles', 'store-actors.yaml'),
     );
+    // The profile names injectable skills; the loader checks they exist.
+    cpSync(join(import.meta.dirname, '..', '..', 'skills'), join(root, 'skills'), { recursive: true });
     writeFileSync(
         join(root, 'scenarios', 'store-actors', 'socials', 'bad.yaml'),
         [
@@ -107,5 +109,30 @@ describe('lintPrompt', () => {
     it('flags unbounded and time-anchored prompts', () => {
         expect(lintPrompt('Get all posts from the page today')).toHaveLength(3);
         expect(lintPrompt('Get the 5 most recent posts in the last month')).toEqual([]);
+    });
+});
+
+describe('profile validation', () => {
+    it('rejects an agentSkills entry that is not a skill name', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'profile-test-'));
+        try {
+            mkdirSync(join(dir, 'profiles'));
+            writeFileSync(
+                join(dir, 'profiles', 'with-skills.yaml'),
+                [
+                    'name: with-skills',
+                    'subjectKind: actor',
+                    'agentSkills: [Not_A_Skill]',
+                    'skills:',
+                    '    find: { label: Found, tools: [search-actors], maxTurns: 4 }',
+                    'wrongSubjectLabel: wrong-actor',
+                    'fixAreas: [{ id: agent-or-model, owner: none, description: x }]',
+                    'evidence: []',
+                ].join('\n'),
+            );
+            expect(() => loadProfile(dir, 'with-skills')).toThrow(/"Not_A_Skill" is not a skill name/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
