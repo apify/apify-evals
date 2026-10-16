@@ -182,7 +182,7 @@ describe('report v2 change markers', () => {
             /Discovery tasks passed<\/th><td><span[^>]*>[^<]*<\/span>0\/3(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span>2\/2(?:<small[^>]*>[^<]*<\/small>)?<\/td><td><span[^>]*>[^<]*<\/span><span class="muted">too few results on one side<\/span>/,
         );
         // the chart carries a dashed marker line and the per-Actor detail the same split
-        expect(html).toContain('change 2026-09-24</text>');
+        expect(html).toContain('marker 09/24</text>');
         expect(html).toContain('<li><span>Named-Actor tasks passed</span><b>0/3 → 2/2</b></li>');
         // links keep the marker
         expect(html).toContain('href="#team=google&amp;range=7&amp;mark=2026-09-24"');

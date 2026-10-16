@@ -117,10 +117,20 @@ function application(raw) {
       });
     }
     const step=data.length>1?480/(data.length-1):0;
-    const vline=(day,label,stroke)=>{const i=ds.indexOf(day); if(i<0)return ''; const mx=i>0?x(i)-step/2:x(0)-10, anchor=i===0?'start':i===data.length-1?'end':'middle'; return `<line x1="${mx}" y1="22" x2="${mx}" y2="170" stroke="${stroke}" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${mx}" y="14" text-anchor="${anchor}" fill="${stroke}">${esc(label)}</text>`;};
+    // Vertical markers: model moves (grey) and the reader's change marker (red). Labels sit in
+    // two rows; a label that would overlap the previous one drops to the second row.
     const byDay=new Map(); for(const mv of moves(ds,s)) byDay.set(mv.day,[...(byDay.get(mv.day)||[]),mv.who]);
-    for(const [day,who] of byDay) svg+=vline(day,`${who.join(', ')} updated ${day.slice(5).replace('-','/')}`,'#607086');
-    if(s.mark) svg+=vline(s.mark,`change ${s.mark}`,'#a63d27');
+    const md=d=>d.slice(5).replace('-','/');
+    const markers=[...byDay].map(([day,who])=>{const names=who.map(w=>w==='Judge'?'judge':w); const txt=names.length===1?`${names[0]} model changed ${md(day)}`:`${names.slice(0,-1).join(', ')} and ${names.at(-1)} models changed ${md(day)}`; return {day,label:txt,stroke:'#607086'};});
+    if(s.mark) markers.push({day:s.mark,label:`marker ${md(s.mark)}`,stroke:'#a63d27'});
+    let prev=null;
+    for(const mk of markers.map(m=>({...m,i:ds.indexOf(m.day)})).filter(m=>m.i>=0).sort((a,b)=>a.i-b.i)){
+      const mx=mk.i>0?x(mk.i)-step/2:x(0)-10, anchor=mk.i===0?'start':mk.i===data.length-1?'end':'middle', w=mk.label.length*5.6;
+      const left=anchor==='start'?mx:anchor==='end'?mx-w:mx-w/2, right=left+w;
+      const row=prev&&prev.row===0&&left<prev.right+8?1:0; prev={row,right};
+      const ty=row?20:9;
+      svg+=`<line x1="${mx}" y1="${ty+4}" x2="${mx}" y2="170" stroke="${mk.stroke}" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${mx}" y="${ty}" text-anchor="${anchor}" fill="${mk.stroke}">${esc(mk.label)}</text>`;
+    }
     data.forEach((d,i)=>{
       const width=Math.min(36,400/data.length);
       svg+=`<rect x="${x(i)-width/2}" y="164" width="${width}" height="6" rx="2" fill="#e1e5eb"/><rect x="${x(i)-width/2}" y="164" width="${d.total?width*d.n/d.total:0}" height="6" rx="2" fill="${color}"/>`;
@@ -340,7 +350,10 @@ function application(raw) {
 function reportBoot(){
   var reportRaw=JSON.parse(document.getElementById('report-data').textContent); var reportApp=application(reportRaw); var main=document.getElementById('report');
   function enableForms(){var fs=document.querySelectorAll('form.marker-form');for(var i=0;i<fs.length;i++)fs[i].hidden=false;}
-  function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);enableForms();var el=s.actor&&s.task?document.getElementById('evidence-'+s.task):s.how?document.getElementById('how-measured'):null;if(el&&el.scrollIntoView)el.scrollIntoView({block:'start'});}
+  var scrolledTo='';
+  function draw(){var s=reportApp.state(location.hash);main.innerHTML=reportApp.render(s);enableForms();var id=s.actor&&s.task?'evidence-'+s.task:s.how?'how-measured':'';var el=id?document.getElementById(id):null;
+    // Scroll only when the target is new: a re-render for a filter or marker change keeps the reader where they are.
+    if(el&&el.scrollIntoView&&id!==scrolledTo)el.scrollIntoView({block:'start'});scrolledTo=id;}
   if(location.hash)draw(); else enableForms(); window.addEventListener('hashchange',draw);
   function hashOf(s){var o={};for(var k in s)o[k]=s[k];if(o.model){var m=reportApp.slots.filter(function(x){return x.id===o.model;})[0];o.model=m?m.key:'';}return '#'+new URLSearchParams(Object.entries(o).filter(function(kv){return kv[1]!==null&&kv[1]!==undefined&&kv[1]!=='';}));}
   function applyMarker(f){var s=reportApp.state(location.hash);s.mark=f.elements.mark.value||'';location.hash=hashOf(s);}
