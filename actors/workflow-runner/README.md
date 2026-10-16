@@ -38,13 +38,13 @@ Each scenario can declare checks that are decided by code, not by the judge: whi
 
 Scenarios live in this repo under `scenarios/store-actors/<team>/<actor>.yaml`,
 two per Actor: discovery (the prompt does not name the Actor) and usage (it
-does). Open a pull request; CI lints it; a maintainer syncs merged files into
-the Langfuse dataset. Edits in the Langfuse UI are overwritten by the next
-sync.
+does). Open a pull request; CI runs the scenario check; a maintainer syncs
+merged files into the Langfuse dataset. Edits made in the Langfuse UI are
+overwritten by the next sync.
 
 Format, prompt rules and check types: [scenarios/README.md](../../scenarios/README.md).
-The `evals-scenario` skill in `apify/agent-skills-internal` writes a file that
-passes the lint.
+The `use-apify-evals` skill in `apify/agent-skills-internal` writes a file that
+passes the check.
 
 ### Langfuse access
 
@@ -57,9 +57,11 @@ Apify Google account and ask the evals maintainers to add you to the
 
 The daily run uses OpenRouter aliases: `~anthropic/claude-haiku-latest` and
 `~openai/gpt-luna-latest` for the agent, `~anthropic/claude-sonnet-latest` for
-the judge. When a provider moves an alias, the report shows the day and the
-model before and after. Curves can shift on that day without any Actor change.
-Manual runs accept any OpenRouter id. Compare runs on the same model.
+the judge. An alias always points at the provider's current model of that
+class, so when a new Haiku ships the alias follows without anyone changing the
+input. The report shows the day that happened and the model before and after;
+the curves can shift on that day without any Actor change. Manual runs accept
+any OpenRouter id. Compare runs on the same model.
 
 ### Reading the numbers honestly
 
