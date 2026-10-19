@@ -77,6 +77,12 @@ const judgeModel = input.judgeModel ?? (mode === 'online' ? DEFAULT_ONLINE_JUDGE
 
 const apifyToken = process.env.APIFY_TOKEN;
 if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for the judge LLM and artifact reads)');
+// Aliases such as ~anthropic/claude-sonnet-latest move on their own; resolve once
+// per batch so every score carries the concrete model and a move is never
+// mistaken for "already judged".
+const { resolveModelAlias } = await import('./llm.js');
+const judgeModelResolved = await resolveModelAlias({ apifyToken, model: judgeModel });
+if (judgeModelResolved !== judgeModel) log.info(`Judge model ${judgeModel} resolves to ${judgeModelResolved}`);
 
 if (mode === 'online') {
     const { actorCheckpointStore, DEFAULT_ENVIRONMENT, langfuseObservationFetcher, selectTraces } =
@@ -321,6 +327,7 @@ const promptClient = await resolveOrSeedPrompt(langfuse, {
 const version = {
     rubricVersion: RUBRIC_VERSION,
     judgeModel,
+    judgeModelResolved,
     promptVersion: promptClient.version,
     judgeImplVersion: JUDGE_IMPL_VERSION,
 };
@@ -343,7 +350,7 @@ const judgedTraceIds = await loadJudgedTraceIds(
     items.map((i) => i.traceId),
 );
 log.info(
-    `Judging dataset run ${datasetRunId}: ${items.length} items, model ${judgeModel}, prompt v${promptClient.version}`,
+    `Judging dataset run ${datasetRunId}: ${items.length} items, model ${judgeModelResolved}, prompt v${promptClient.version}`,
 );
 
 /** Judge LLM call as an `evaluator` observation under the experiment item. */
@@ -444,7 +451,10 @@ async function profileNameFor(traceId: string): Promise<string | undefined> {
             data?: { metadata?: unknown }[];
         };
         const meta = res.data?.[0]?.metadata;
-        const parsed = typeof meta === 'string' ? (JSON.parse(meta) as Record<string, unknown>) : (meta as Record<string, unknown> | undefined);
+        const parsed =
+            typeof meta === 'string'
+                ? (JSON.parse(meta) as Record<string, unknown>)
+                : (meta as Record<string, unknown> | undefined);
         // Explicit profile first. Repo store scenarios carry an actor or skill
         // but no profile; anything else (foreign datasets) is judged generically.
         name =

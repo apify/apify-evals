@@ -60,7 +60,10 @@ import {
 
 export interface HarnessConfig {
     kind: string;
+    /** The configured id, possibly a moving alias; the agent is launched with it. */
     model: string;
+    /** The concrete model the proxy answered the preflight with; generations carry it so Langfuse prices by the real id. */
+    resolvedModel?: string;
     maxTurns: number;
 }
 
@@ -838,7 +841,7 @@ export async function runSession(ctx: SessionContext): Promise<{ output: string 
             'agent',
             async (span) => {
                 const r = await adapter({ ...ctx, prompt });
-                emitTimeline(span, r.timeline, r.startedAt, prompt, harness.model);
+                emitTimeline(span, r.timeline, r.startedAt, prompt, harness.resolvedModel ?? harness.model);
 
                 const traceId = span.otelSpan.spanContext().traceId;
                 const logRef = await ctx.artifactStore.putLog(traceId, r.rawStdout);

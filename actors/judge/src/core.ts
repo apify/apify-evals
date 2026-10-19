@@ -104,10 +104,17 @@ export interface JudgeItemResult {
 
 export interface VersionTuple {
     rubricVersion: string;
+    /** The configured judge model, possibly a moving alias. */
     judgeModel: string;
+    /** The concrete model behind it, resolved once per batch; equals judgeModel for pinned ids. */
+    judgeModelResolved?: string;
     promptVersion: string | number;
     judgeImplVersion: string;
 }
+
+/** The model that actually judged: the resolved id when recorded, else the configured one. */
+export const effectiveJudgeModel = (v: Partial<VersionTuple>): string | undefined =>
+    v.judgeModelResolved ?? v.judgeModel;
 
 /** List all items of one dataset run (experiment). fromStartTime is required
  * by the API; 2000-01-01 keeps historical backfill runs (#242) fully visible.
@@ -140,10 +147,13 @@ export async function loadRunItems(langfuse: LangfuseClient, datasetRunId: strin
     return items;
 }
 
-function tuplesMatch(m: Partial<ScoreMetadata>, v: VersionTuple): boolean {
+/** Same rubric, prompt, implementation and, decisively, the same concrete judge
+ * model: when an alias moves, the resolved id changes and the item is judged
+ * again rather than skipped as already done. */
+export function tuplesMatch(m: Partial<ScoreMetadata>, v: VersionTuple): boolean {
     return (
         m.rubricVersion === v.rubricVersion &&
-        m.judgeModel === v.judgeModel &&
+        effectiveJudgeModel(m as Partial<VersionTuple>) === effectiveJudgeModel(v) &&
         String(m.promptVersion) === String(v.promptVersion) &&
         m.judgeImplVersion === v.judgeImplVersion
     );
@@ -551,6 +561,9 @@ export async function judgeOne(opts: JudgeOneOptions): Promise<JudgeItemResult> 
     });
     const call = await judgeLlmCall({ apifyToken, model: judgeModel, prompt, schema: JUDGE_REPLY_SCHEMA });
     const reply = call.json as LlmJudgeReply;
+    const expectedModel = effectiveJudgeModel(version);
+    if (call.model && expectedModel && call.model !== expectedModel)
+        log.warning(`judge model answered as ${call.model}, batch resolved ${expectedModel} (alias moved mid-batch?)`);
 
     const results = {} as Record<Dimension, { evidence: string; verdict: Verdict }>;
     for (const dim of DIMENSIONS) {

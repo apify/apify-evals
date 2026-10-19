@@ -207,6 +207,8 @@ export const scoreMetadataSchema = {
     properties: {
         rubricVersion: { type: 'string' },
         judgeModel: { type: 'string' },
+        /** The concrete model the proxy answered with when judgeModel is a moving alias. */
+        judgeModelResolved: { type: 'string' },
         promptVersion: { type: ['string', 'integer'] },
         judgeImplVersion: { type: 'string' },
         contractVersion: { type: 'string' },

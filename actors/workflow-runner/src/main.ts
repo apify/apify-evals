@@ -135,6 +135,7 @@ const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harne
 const { CODEX_PROVIDER } = await import('./adapters/codex.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
+const { preflightModels } = await import('./preflight.js');
 const { postDigest } = await import('./notify.js');
 
 // `model` / `models` are the team-facing inputs; the `harness` object stays
@@ -243,6 +244,8 @@ if (items.length === 0) {
 // Preflight: fail in seconds, not after 18 sessions fail the same way.
 // ---------------------------------------------------------------------------
 
+/** Concrete model behind each configured id, from the preflight reply; null when unknown. */
+let resolvedModels: Record<string, string | null> = {};
 if (!skipPreflight) {
     const problems: string[] = [];
     const firstTools = (meta(selected[0]).tools ?? ['fetch-actor-details']) as string[];
@@ -253,28 +256,17 @@ if (!skipPreflight) {
         problems.push(`MCP server ${mcpUrl} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
     }
     if (useOpenRouterProxy) {
-        try {
-            const codex = baseHarness.kind === 'codex';
-            const res = await fetch(
-                codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
-                {
-                    method: 'POST',
-                    headers: { Authorization: `Bearer ${apifyToken}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify(
-                        codex
-                            ? { model: models[0], input: 'ping', max_output_tokens: 16 }
-                            : { model: models[0], max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] },
-                    ),
-                    signal: AbortSignal.timeout(20_000),
-                },
-            );
-            if (!res.ok)
-                problems.push(
-                    `LLM proxy HTTP ${res.status} for model ${models[0]}: ${(await res.text()).slice(0, 200)}`,
-                );
-        } catch (err) {
-            problems.push(`LLM proxy unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
-        }
+        // Every model in the matrix, not only the first: a bad second id would
+        // otherwise surface after the first model's full run.
+        const codex = baseHarness.kind === 'codex';
+        const pre = await preflightModels(models, {
+            url: codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
+            apifyToken,
+            codex,
+        });
+        problems.push(...pre.problems);
+        resolvedModels = pre.resolved;
+        for (const [m, r] of Object.entries(pre.resolved)) if (r && r !== m) log.info(`Model ${m} resolves to ${r}`);
     }
     if (problems.length > 0) {
         for (const p of problems) log.error(`preflight: ${p}`);
@@ -312,7 +304,11 @@ const summaries: ModelRunSummary[] = [];
 let flushFailed = false;
 
 for (const model of models) {
-    const harness = { ...baseHarness, model };
+    const harness = {
+        ...baseHarness,
+        model,
+        ...(resolvedModels[model] ? { resolvedModel: resolvedModels[model] } : {}),
+    };
     const shortModel = model.replace(/^[^/]+\//, '');
     const nameParts = [datasetName, shortModel];
     if (harness.kind !== 'claude-code') nameParts.push(harness.kind);
@@ -343,6 +339,7 @@ for (const model of models) {
             metadata: {
                 harness: harness.kind,
                 model,
+                resolvedModel: resolvedModels[model] ?? null,
                 surface: 'mcp',
                 runner: 'workflow-runner',
                 actorRunId,
@@ -419,7 +416,7 @@ for (const model of models) {
                     judgeModel,
                     writeRunScores: fullScope,
                     ...(artifactStoreId ? { artifactStore: artifactStoreId } : {}),
-                    ...judgeLangfuseInput(input, process.env),
+                    ...judgeLangfuseInput(process.env),
                 },
                 { memory: 1024, timeout: 1800 },
             );
@@ -517,6 +514,7 @@ const summary = {
     harness: baseHarness.kind,
     model: first.model,
     models,
+    resolvedModels,
     judgeModel: judge ? judgeModel : null,
     health: { completedRatio: Number(completedRatio.toFixed(3)), threshold: healthThreshold, judgeFailed, flushFailed },
     // One entry per model when `models` was given; the top-level fields mirror the first.
