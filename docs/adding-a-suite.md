@@ -95,21 +95,21 @@ Langfuse UI are overwritten by the next sync.
 
 ## 3. Langfuse project
 
-Three projects, pick by how long the results should live:
+Results go to a Langfuse project. Use one project per thing under test, so a
+team's dashboards and access stay separate from everyone else's.
 
-- **Generic Evals**: one-off and exploratory runs. Everyone in the org can be
-  a member; the keys are in 1Password ("Langfuse Generic Evals"). Data stays
-  until someone deletes it, and nobody reads it on your behalf.
-- **Your own project**: anything recurring, scheduled, or with owners and a
-  report. Sign in at https://langfuse.apify.dev with Google, create the
-  project and an API key pair, and keep the keys in 1Password.
-- **Store Actors Evals**: the `store-actors` suite only. The AI team adds
-  members.
+1. Request access to the Langfuse organization in #apify-request-access, then
+   sign in at https://langfuse.apify.dev with your Apify Google account.
+2. Create a project for your suite, or use one your team already owns.
+3. Create an API key pair under the project's settings and keep it in 1Password.
 
-The Actors use the Store project unless you pass keys. For any other project,
-set the task inputs `langfusePublicKey` and `langfuseSecretKey` (secret
-fields); the runner passes them on to the judge. The judge creates its grading
-prompt (`workflow-judge`) in a new project on its first run.
+Pass the keys on every run as the task inputs `langfusePublicKey` and
+`langfuseSecretKey` (secret fields, encrypted on the run). The runner passes
+them on to the judge, so both write to the same project. The judge creates its
+grading prompt (`workflow-judge`) in a new project on its first run.
+
+For a one-off run that nobody needs to keep, the Generic Evals project exists
+as a sandbox; its keys are in 1Password ("Langfuse Generic Evals").
 
 Sync copies scenarios into the project the keys belong to:
 
@@ -121,7 +121,7 @@ LANGFUSE_BASE_URL=https://langfuse.apify.dev LANGFUSE_PUBLIC_KEY=... LANGFUSE_SE
 `--dry-run` shows what would change. Sync matches scenarios by `id` and
 archives items whose file is gone, so never rename an id. For a suite on
 `main`, the AI team runs the sync after merge. For a one-off run, sync from
-your branch with the Generic Evals keys.
+your branch with the sandbox keys.
 
 ## 4. Run it
 
@@ -170,9 +170,32 @@ work too. Keep the judge model fixed across runs you want to compare.
 
 ## 5. Results
 
-- **Report**: `https://api.apify.com/v2/key-value-stores/QEr12X3OJMj34ZRnb/records/report-<suite>-latest.html`.
-  The judge regenerates it after every run over the whole suite (not after a
-  filtered one). No login. The labels come from your profile.
+### The report
+
+After every run over the whole suite, the judge builds an HTML report from the
+experiment data in Langfuse and writes it to a public Apify key-value store:
+
+```
+https://api.apify.com/v2/key-value-stores/QEr12X3OJMj34ZRnb/records/report-<suite>-latest.html
+```
+
+`<suite>` is your dataset name. The judge also keeps a dated copy next to it
+(`report-<suite>-<YYYY-MM-DD>.html`) and the JSON it was rendered from. Nobody
+needs a login to open the link, which is what makes it the page to share with
+the people who fix things.
+
+What decides whether the report exists and what it shows:
+
+- Only a full run regenerates it. A run with `itemLimit`, `subjects` or `owners`
+  set is a filtered run and leaves the report alone.
+- It covers the last 28 days of full runs, one result per scenario and day.
+- The labels (what `find` and `use` are called, the fix areas) come from your
+  profile. A dataset without a profile gets the generic ones.
+- The store belongs to the org judge. A judge deployed elsewhere writes to its
+  own `REPORT_STORE_ID`, or skips the report with a warning when that is unset.
+
+### Compare view and Slack
+
 - **Compare view**: the results link in OUTPUT opens Langfuse with one row per
   scenario and its pass or fail. Pick an older run as the baseline to see
   which rows changed. Needs a Langfuse login and membership in the project.

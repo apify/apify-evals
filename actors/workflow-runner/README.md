@@ -36,11 +36,12 @@ Each scenario can declare checks that are decided by code, not by the judge: whi
 
 ### Add or change a scenario
 
-Scenarios live in this repo under `scenarios/store-actors/<team>/<actor>.yaml`,
+Store scenarios live in this repo under `scenarios/store-actors/<team>/<actor>.yaml`,
 two per Actor: discovery (the prompt does not name the Actor) and usage (it
 does). Open a pull request; CI runs the scenario check; the AI team syncs
 merged files into the Langfuse dataset. Edits made in the Langfuse UI are
-overwritten by the next sync.
+overwritten by the next sync. Other suites follow the same shape under their
+own folder; see [docs/adding-a-suite.md](../../docs/adding-a-suite.md).
 
 Format, prompt rules and check types: [scenarios/README.md](../../scenarios/README.md).
 The `use-apify-evals` skill in `apify/agent-skills-internal` writes a file that
@@ -48,9 +49,10 @@ passes the check.
 
 ### Langfuse access
 
-The daily report needs no login. Trace links, the compare view and the team
-dashboards are in Langfuse. To sign, request access to the Langfuse org,
-then login in at https://langfuse.apify.dev with your Apify Google account.
+Each suite has its own HTML report, and reports need no login. Trace links,
+the compare view and the dashboards are in Langfuse. Request access to the
+Langfuse organization in #apify-request-access, then sign in at
+https://langfuse.apify.dev with your Apify Google account.
 
 ### Models
 

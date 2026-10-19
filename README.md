@@ -4,8 +4,9 @@ A harness for testing how AI agents handle tools, APIs and services. You
 write a task an agent should be able to do, for example "find 10 coffee shops
 in Prague with their phone numbers". A real agent (Claude Code or Codex) gets
 the task and the tools for it, works through it and answers. Code checks what
-happened, a second model reads the session and grades it, and the result lands
-in a report that opens without a login.
+happened, a second model reads the session and grades it. After a full run the
+judge writes an HTML report per suite to a public store, so the people who fix
+things can open it without a login.
 
 Tasks are grouped into suites. A suite says what is under test, which tools
 the agent gets, and which categories a failure can fall into. The first suite,
