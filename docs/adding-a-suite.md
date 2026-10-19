@@ -183,7 +183,7 @@ work too. Keep the judge model fixed across runs you want to compare.
 
 ## What needs the AI team
 
-- Membership in the Store Langfuse project, Slack webhooks, Actor environment
+- Membership in the Langfuse organization, Slack webhooks, Actor environment
   variables.
 - Sync of merged scenarios.
 - Engine changes: new check types, another MCP server, agent skills in

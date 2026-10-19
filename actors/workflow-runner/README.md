@@ -49,9 +49,8 @@ passes the check.
 ### Langfuse access
 
 The daily report needs no login. Trace links, the compare view and the team
-dashboards are in Langfuse. Sign in at https://langfuse.apify.dev with your
-Apify Google account (the only sign-in method) and ask the AI team to add you to the
-"Store Actors Evals" project.
+dashboards are in Langfuse. To sign, request access to the Langfuse org,
+then login in at https://langfuse.apify.dev with your Apify Google account.
 
 ### Models
 
