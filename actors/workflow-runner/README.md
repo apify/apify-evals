@@ -23,6 +23,40 @@ and its own page for the Store teams is
 
 ## Results
 
+### What a run gives you
+
+The run's OUTPUT and its last log lines carry one results link per model: the
+Langfuse compare view, one row per scenario. Three scores tell the story of a
+row:
+
+- **Verdict** (`judge.verdict`): `pass`, `fail`, the suite's wrong-subject
+  label (for example `wrong-actor`), or `inconclusive` when the infrastructure
+  failed rather than the subject. `judge.overall` is the same as 1/0, and its
+  average is the pass rate.
+- **Find vs use**: every scenario is one of the two types. A `find` failure
+  means the subject was hard to find or presented itself badly; a `use`
+  failure means the subject itself was hard to drive. The profile names the
+  two for the report (`Found`/`Works` in the Store suite).
+- **Fix area** (`judge.fixArea`): the one thing the subject's owner should
+  change first, chosen from the profile's list, with a cited tool call.
+
+Click a row to see the session as it happened: one `turn N` per model call
+(text, tool calls, tokens), one step per tool call with its arguments and
+result (errors in red), and the judge's comment at the bottom listing what
+went wrong with evidence.
+
+### Check whether a change helped
+
+1. Run the suite with **Only these subjects** set to the subject you changed
+   and **Repeats** set to 3.
+2. In the compare view, pick the previous run of that subject as the baseline.
+   Rows that flipped are the story.
+3. With repeats the judge writes `eval.passAtN` (any repeat passed) and
+   `eval.consistency` per scenario, and OUTPUT lists `flaky` scenarios. A 2/3
+   to 3/3 move is real; a single 1/3 flip is probably a flaky run.
+4. A filtered run never writes run-level scores or the report, so it does not
+   move the suite's trend. Only full runs do.
+
 ### Deterministic checks and verdicts
 
 Each scenario can declare checks that are decided by code, not by the judge: which Actor was actually called, the input the agent built, how many items the run produced and which fields they have, whether the numbers in the answer exist in the Actor output, and comparisons against a fresh reference run. See [scenarios/README.md](../../scenarios/README.md). A failed check makes the verdict `fail` even if the judge liked the answer; an infrastructure failure (Actor run failed, MCP exposed no tools, timeout) makes it `inconclusive` and is not charged to anyone.
