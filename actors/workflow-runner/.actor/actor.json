@@ -2,7 +2,7 @@
     "actorSpecification": 1,
     "name": "eval-runner",
     "title": "Eval Workflow Runner",
-    "description": "Runner Actor for ai-team#238: consumes a Langfuse dataset, runs one isolated agent session per item in parallel inside one Actor run, emits contract-conformant traces (judge-ready conversation, durable artifact pointers), returns the dataset-run id for the Judge Actor.",
+    "description": "Runs every scenario of an eval suite through an AI agent, one isolated session per scenario, records what it did, scores the deterministic checks and starts the judge.",
     "version": "0.2",
     "buildTag": "latest",
     "input": "./input_schema.json",

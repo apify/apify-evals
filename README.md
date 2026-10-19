@@ -29,7 +29,7 @@ How a run works:
 | You want to                                        | Read                                                                                                                    |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | See how the Store Actors are doing                 | the [daily report](https://api.apify.com/v2/key-value-stores/QEr12X3OJMj34ZRnb/records/report-store-actors-latest.html) |
-| Understand the numbers, check whether a fix helped | [Store Actor AI evals](actors/workflow-runner/README.md), "For store teams"                                             |
+| Understand the numbers, check whether a fix helped | [scenarios/store-actors/README.md](scenarios/store-actors/README.md), the Store suite's own page                        |
 | Add or change a scenario                           | [scenarios/README.md](scenarios/README.md) and the `use-apify-evals` skill in `apify/agent-skills-internal`             |
 | Add a suite for your own tool or service           | [docs/adding-a-suite.md](docs/adding-a-suite.md)                                                                        |
 | Query results from an agent                        | the [Langfuse skill](https://github.com/langfuse/skills)                                                                |
