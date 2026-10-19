@@ -9,6 +9,8 @@ import { killTrackedChildren } from './adapters/shared.js';
 import {
     LANGFUSE_CREDENTIALS,
     judgeLangfuseInput,
+    passLabel,
+    progressLine,
     resolveHealthThreshold,
     resolveTrigger,
     shouldNotify,
@@ -303,7 +305,11 @@ interface ModelRunSummary {
 const summaries: ModelRunSummary[] = [];
 let flushFailed = false;
 
-for (const model of models) {
+for (const [modelIndex, model] of models.entries()) {
+    const pass = passLabel(model, modelIndex, models.length);
+    log.info(`${pass}: ${items.length} sessions, concurrency ${concurrency}`);
+    let done = 0;
+    let running = 0;
     const harness = {
         ...baseHarness,
         model,
@@ -354,22 +360,47 @@ for (const model of models) {
             data: items,
             maxConcurrency: concurrency,
             task: async (item) => {
-                const r = await runSession({
-                    item: item as never,
-                    datasetName,
-                    trigger,
-                    repeats: safeRepeats,
-                    harness,
-                    mcpUrl,
-                    apifyToken,
-                    useOpenRouterProxy,
-                    perItemTimeoutSecs,
-                    artifactStore,
-                    snapshots,
-                    references,
-                    writeScore,
-                });
-                return r.output;
+                const startedAt = Date.now();
+                let failed = false;
+                running++;
+                try {
+                    const r = await runSession({
+                        item: item as never,
+                        datasetName,
+                        trigger,
+                        repeats: safeRepeats,
+                        harness,
+                        mcpUrl,
+                        apifyToken,
+                        useOpenRouterProxy,
+                        perItemTimeoutSecs,
+                        artifactStore,
+                        snapshots,
+                        references,
+                        writeScore,
+                    });
+                    return r.output;
+                } catch (err) {
+                    failed = true;
+                    throw err;
+                } finally {
+                    running--;
+                    done++;
+                    const itemId = String((item as { id?: string }).id ?? '?');
+                    log.info(
+                        progressLine({
+                            pass,
+                            done,
+                            total: items.length,
+                            running,
+                            itemId,
+                            ms: Date.now() - startedAt,
+                            failed,
+                        }),
+                    );
+                    // Best effort: the status message is a convenience, never a reason to fail a session.
+                    Actor.setStatusMessage(`${pass}: ${done}/${items.length} sessions`).catch(() => undefined);
+                }
             },
             // Deterministic checks are scored inside runSession (they need the
             // evidence); the LLM rubric belongs to the Judge Actor.

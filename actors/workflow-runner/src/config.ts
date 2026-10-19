@@ -39,6 +39,30 @@ export function shouldNotify(notify: boolean | undefined, trigger: string): bool
     return notify ?? trigger === 'schedule';
 }
 
+/** What a pass is called in the log and the status message: the model, with its position when there are several. */
+export function passLabel(model: string, modelIndex: number, modelCount: number): string {
+    return modelCount > 1 ? `Model ${modelIndex + 1}/${modelCount} ${model}` : `Model ${model}`;
+}
+
+/**
+ * One line per finished session. A pass of 60 sessions takes 15 to 20 minutes
+ * and the runner would otherwise log nothing until it ends, which reads as
+ * stuck. The same counter goes to the Actor status message, so the Console run
+ * list shows it without opening the log.
+ */
+export function progressLine(p: {
+    pass: string;
+    done: number;
+    total: number;
+    running: number;
+    itemId: string;
+    ms: number;
+    failed?: boolean;
+}): string {
+    const secs = Math.round(p.ms / 1000);
+    return `${p.pass}: ${p.done}/${p.total} sessions done, ${p.running} running · ${p.itemId}${p.failed ? ' · failed' : ''} · ${secs} s`;
+}
+
 /** Langfuse credential inputs and the env vars they override. */
 export const LANGFUSE_CREDENTIALS = [
     ['langfuseBaseUrl', 'LANGFUSE_BASE_URL'],

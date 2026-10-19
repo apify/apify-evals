@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_HEALTH_THRESHOLD,
     judgeLangfuseInput,
+    passLabel,
+    progressLine,
     resolveHealthThreshold,
     resolveTrigger,
     shouldNotify,
@@ -82,5 +84,31 @@ describe('judgeLangfuseInput', () => {
             langfuseSecretKey: 'sk',
         });
         expect(judgeLangfuseInput({})).toEqual({});
+    });
+});
+
+describe('progress lines', () => {
+    it('names the pass with its position only when there are several models', () => {
+        expect(passLabel('~anthropic/claude-haiku-latest', 0, 1)).toBe('Model ~anthropic/claude-haiku-latest');
+        expect(passLabel('~openai/gpt-luna-latest', 1, 2)).toBe('Model 2/2 ~openai/gpt-luna-latest');
+    });
+
+    it('reports the counter, the scenario and the duration, and marks a failed session', () => {
+        const pass = 'Model 2/2 ~openai/gpt-luna-latest';
+        expect(
+            progressLine({
+                pass,
+                done: 35,
+                total: 61,
+                running: 6,
+                itemId: 'zillow-zip-search-usage-scottsdale',
+                ms: 93_400,
+            }),
+        ).toBe(
+            'Model 2/2 ~openai/gpt-luna-latest: 35/61 sessions done, 6 running · zillow-zip-search-usage-scottsdale · 93 s',
+        );
+        expect(progressLine({ pass, done: 1, total: 61, running: 5, itemId: 'x', ms: 500, failed: true })).toBe(
+            'Model 2/2 ~openai/gpt-luna-latest: 1/61 sessions done, 5 running · x · failed · 1 s',
+        );
     });
 });
