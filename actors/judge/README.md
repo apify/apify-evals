@@ -2,7 +2,7 @@
 
 Grades finished eval runs from their Langfuse traces and writes the grades
 back. **You normally never run this yourself**: the
-[Store Actor AI evals](../workflow-runner/README.md) runner starts it after
+[eval runner](../workflow-runner/README.md) starts it after
 every run. Run it directly only to re-grade an old run with a new judge model
 or prompt version. It never starts the evaluated agent, which is what makes
 re-grading history free.

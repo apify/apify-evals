@@ -1,6 +1,6 @@
 {
     "title": "Agent evals runner",
-    "description": "Runs every scenario of a suite through an AI agent, judges the results and returns a Langfuse results link. Defaults run the whole store-actors suite; filter by your Actors or your team to run only yours.",
+    "description": "Runs every scenario of a suite through an AI agent, judges the results and returns a Langfuse results link per model. Defaults run the whole suite named in datasetName; filter by subject or owner for a quick check.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
@@ -21,23 +21,23 @@
             "prefill": "anthropic/claude-haiku-4.5"
         },
         "subjects": {
-            "title": "Only these Actors (optional)",
+            "title": "Only these subjects",
             "type": "array",
-            "description": "Actor ids like compass/crawler-google-places, or just the name (crawler-google-places). Empty = every scenario in the suite. A filtered run is compared in the compare view but does not move the OKR trend.",
+            "description": "Subject ids, or just the last part. In the Store suite that is an Actor: compass/crawler-google-places or crawler-google-places. Empty = every scenario in the suite. A filtered run never writes run-level scores or the report.",
             "editor": "stringList",
             "default": []
         },
         "owners": {
-            "title": "Only this team (optional)",
+            "title": "Only these owners",
             "type": "array",
-            "description": "Team names as in the scenario folders: google, socials, video, universe.",
+            "description": "Owner names as in the scenario folders. In the Store suite these are the teams: google, socials, video, universe.",
             "editor": "stringList",
             "default": []
         },
         "repeats": {
             "title": "Repeats per scenario",
             "type": "integer",
-            "description": "Run each scenario this many times. Use 3 when checking whether a change to your Actor helped; a single run can flip on a flaky scrape. The judge writes pass@N and consistency per scenario.",
+            "description": "Run each scenario this many times. Use 3 when checking whether a change to your subject helped; a single run can flip on a flaky scrape. The judge writes pass@N and consistency per scenario.",
             "default": 1,
             "minimum": 1,
             "maximum": 10
@@ -67,7 +67,7 @@
         "runName": {
             "title": "Run name (optional)",
             "type": "string",
-            "description": "Defaults to \"<suite> \u00b7 <model> \u00b7 <scope> \u00b7 <date time> \u00b7 <trigger>\".",
+            "description": "Defaults to \"<suite> · <model> · <scope> · <date time> · <trigger>\".",
             "editor": "textfield",
             "nullable": true
         },
@@ -103,7 +103,7 @@
         "categories": {
             "title": "Category filter (deprecated)",
             "type": "array",
-            "description": "Older alias of \"Only these Actors\" matching the scenario's category slug.",
+            "description": "Older alias of \"Only these subjects\" matching the scenario's category slug.",
             "editor": "stringList",
             "default": []
         },
@@ -154,37 +154,32 @@
             "description": "Named key-value store for full agent logs, evidence snapshots and tool-schema snapshots. Leave empty to use the store from the Actor environment (ARTIFACT_STORE_ID).",
             "editor": "resourcePicker",
             "resourceType": "keyValueStore",
-            "resourcePermissions": [
-                "READ",
-                "WRITE"
-            ],
+            "resourcePermissions": ["READ", "WRITE"],
             "nullable": true
         },
         "langfuseBaseUrl": {
             "title": "Langfuse base URL override",
             "type": "string",
-            "description": "Normally set by the Actor's environment.",
+            "description": "Langfuse base URL. Defaults to the Actor's environment (https://langfuse.apify.dev).",
             "editor": "textfield",
             "nullable": true
         },
         "langfusePublicKey": {
-            "title": "Langfuse public key override",
+            "title": "Langfuse public key",
             "type": "string",
-            "description": "Normally set by the Actor's environment.",
+            "description": "Key of the Langfuse project the suite lives in. Pass it on every run; it is forwarded to the judge. Without it the Actor's own environment keys are used.",
             "editor": "textfield",
             "isSecret": true,
             "nullable": true
         },
         "langfuseSecretKey": {
-            "title": "Langfuse secret key override",
+            "title": "Langfuse secret key",
             "type": "string",
-            "description": "Normally set by the Actor's environment.",
+            "description": "Key of the Langfuse project the suite lives in. Pass it on every run; it is forwarded to the judge. Without it the Actor's own environment keys are used.",
             "editor": "textfield",
             "isSecret": true,
             "nullable": true
         }
     },
-    "required": [
-        "datasetName"
-    ]
+    "required": ["datasetName"]
 }
