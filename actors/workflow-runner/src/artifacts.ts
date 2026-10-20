@@ -1,7 +1,7 @@
 import { sha256 } from '@apify-evals/contract';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Actor, type KeyValueStore } from 'apify';
+
+import { filterTools, listTools, type ResolvedMcp, type ToolSchema } from './mcp.js';
 
 /**
  * Durable eval artifacts (design decision 8): full session logs and tool-schema
@@ -17,19 +17,7 @@ export interface ArtifactRef {
     hash: string;
 }
 
-export interface ToolSchema {
-    name: string;
-    inputSchema: unknown;
-}
-
-/** THE per-item tool config URL. Single source of truth: the agent's MCP
- * config and the schema snapshot must be built from the same URL, or the
- * snapshot stops describing what the agent actually saw. */
-export function toolsUrl(mcpUrl: string, tools: string[]): string {
-    const url = new URL(mcpUrl);
-    url.searchParams.set('tools', tools.join(','));
-    return url.toString();
-}
+export { toolsUrl, type ToolSchema } from './mcp.js';
 
 export class ArtifactStore {
     private constructor(private readonly store: KeyValueStore) {}
@@ -84,45 +72,35 @@ export class ArtifactStore {
     }
 }
 
-/** Fetch the tool schemas an agent session will actually see (per-item ?tools= config). */
-export async function fetchToolSchemas(mcpUrl: string, tools: string[], apifyToken: string): Promise<ToolSchema[]> {
-    const url = new URL(toolsUrl(mcpUrl, tools));
-    const client = new Client({ name: 'workflow-runner', version: '0.2.0' });
-    const transport = new StreamableHTTPClientTransport(url, {
-        requestInit: { headers: { Authorization: `Bearer ${apifyToken}` } },
-    });
-    await client.connect(transport);
-    try {
-        const { tools: toolList } = await client.listTools();
-        return toolList
-            .map((t) => ({ name: t.name, inputSchema: t.inputSchema }))
-            .sort((a, b) => a.name.localeCompare(b.name));
-    } finally {
-        await client.close();
-    }
+/** Fetch the tool schemas an agent session will actually see: the server as
+ * configured for the item, narrowed to the item's tool list. */
+export async function fetchToolSchemas(mcp: ResolvedMcp, signal?: AbortSignal): Promise<ToolSchema[]> {
+    const all = await listTools(mcp, signal);
+    const allowed = new Set(
+        filterTools(
+            mcp,
+            all.map((t) => t.name),
+        ),
+    );
+    return all.filter((t) => allowed.has(t.name));
 }
 
 /**
- * Lazily snapshots each unique tool config once per run. Returns null (with a
- * warning upstream) when snapshotting fails: a missing snapshot degrades the
- * judge's schema-validity check to not_applicable, it does not fail the item.
+ * Lazily snapshots each unique server + tool config once per run. Returns null
+ * (with a warning upstream) when snapshotting fails: a missing snapshot
+ * degrades the judge's schema-validity check to not_applicable, it does not
+ * fail the item.
  */
 export class SnapshotCache {
     private readonly cache = new Map<string, Promise<ArtifactRef>>();
 
-    constructor(
-        private readonly store: ArtifactStore,
-        private readonly mcpUrl: string,
-        private readonly apifyToken: string,
-    ) {}
+    constructor(private readonly store: ArtifactStore) {}
 
-    get(tools: string[]): Promise<ArtifactRef> {
-        const key = [...tools].sort().join(',');
+    get(mcp: ResolvedMcp): Promise<ArtifactRef> {
+        const { key } = mcp;
         let ref = this.cache.get(key);
         if (!ref) {
-            ref = fetchToolSchemas(this.mcpUrl, tools, this.apifyToken).then((schemas) =>
-                this.store.putToolSchemaSnapshot(schemas),
-            );
+            ref = fetchToolSchemas(mcp).then((schemas) => this.store.putToolSchemaSnapshot(schemas));
             // Evict rejections so one transient MCP failure does not poison
             // this tool config for the rest of the run.
             ref.catch(() => this.cache.delete(key));

@@ -45,6 +45,8 @@ interface Input {
     itemLimit?: number;
     /** Team-facing filters: subject ids (owner/name) and owners (teams). */
     subjects?: string[];
+    /** Scenario ids (dataset item ids) to run; applied with the other filters. */
+    scenarioIds?: string[];
     owners?: string[];
     /** Deprecated alias of subjects, matched against metadata.category (slug). */
     categories?: string[];
@@ -54,6 +56,8 @@ interface Input {
     /** Post the Slack digest for this run (scheduled runs post by default). */
     notify?: boolean;
     mcpUrl?: string;
+    /** Values for `${VAR}` placeholders in a suite's MCP server config; overrides the Actor env. */
+    mcpEnv?: Record<string, string>;
     useOpenRouterProxy?: boolean;
     artifactStore?: string;
     langfuseBaseUrl?: string;
@@ -137,6 +141,7 @@ const { CODEX_PROVIDER } = await import('./adapters/codex.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
 const { preflightModels } = await import('./preflight.js');
+const { resolveMcp } = await import('./mcp.js');
 const { postDigest } = await import('./notify.js');
 
 // `model` / `models` are the team-facing inputs; the `harness` object stays
@@ -165,11 +170,15 @@ if (!apifyToken) {
 }
 if (!apifyToken) throw new Error('No APIFY_TOKEN available (needed for artifacts, MCP, and the OpenRouter proxy)');
 
+// Secrets for the suite's MCP server config: the run's own token for Apify
+// MCP, anything else (e.g. NOTION_TOKEN) from the Actor env or the mcpEnv input.
+const mcpEnv: Record<string, string | undefined> = { ...process.env, APIFY_TOKEN: apifyToken, ...(input.mcpEnv ?? {}) };
+
 const otel = new NodeSDK({ spanProcessors: [new LangfuseSpanProcessor()] });
 otel.start();
 const langfuse = new LangfuseClient();
 const artifactStore = await ArtifactStore.open(artifactStoreId);
-const snapshots = new SnapshotCache(artifactStore, mcpUrl, apifyToken);
+const snapshots = new SnapshotCache(artifactStore);
 const references = new ReferenceRunner();
 const writeScore = async (score: {
     traceId: string;
@@ -200,6 +209,7 @@ const ownerOf = (m: Meta) => m.owner ?? m.team ?? '';
 const slugOf = (s: string) => s.split('/').pop() ?? s;
 const wantSubjects = new Set([...subjects, ...categories].map((s) => s.trim()).filter(Boolean));
 const wantOwners = new Set(owners.map((o) => o.trim()).filter(Boolean));
+const wantIds = new Set((input.scenarioIds ?? []).map((s) => s.trim()).filter(Boolean));
 
 const filtered = dataset.items
     .filter((i) => i.status !== 'ARCHIVED')
@@ -212,9 +222,31 @@ const filtered = dataset.items
             wantSubjects.has(slugOf(subject)) ||
             wantSubjects.has(m.category ?? '');
         const byOwner = wantOwners.size === 0 || wantOwners.has(ownerOf(m));
-        return bySubject && byOwner;
+        const byId = wantIds.size === 0 || wantIds.has(String(i.id));
+        return bySubject && byOwner && byId;
     });
 const selected = itemLimit > 0 ? filtered.slice(0, itemLimit) : filtered;
+
+// Fail fast on an MCP server config the environment cannot satisfy (missing
+// NOTION_TOKEN and the like), before any session is paid for.
+const mcpProblems = [
+    ...new Set(
+        selected
+            .map((i) => {
+                try {
+                    resolveMcp(meta(i), { mcpUrl, env: mcpEnv });
+                    return null;
+                } catch (err) {
+                    return String((err as Error).message ?? err);
+                }
+            })
+            .filter((p): p is string => p !== null),
+    ),
+];
+if (mcpProblems.length > 0) throw new Error(mcpProblems.join('\n'));
+if (baseHarness.kind === 'codex' && selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify')) {
+    throw new Error('Codex harness supports only the Apify MCP server');
+}
 const safeRepeats = Math.max(1, Math.min(10, Math.floor(repeats)));
 // Repeats: each repeat is its own experiment item, so every average (compare
 // view, dashboards) already accounts for it and flaky scenarios show as x/N.
@@ -226,6 +258,7 @@ const items = Array.from({ length: safeRepeats }, () => selected).flat();
 const scopeParts: string[] = [];
 if (wantOwners.size > 0) scopeParts.push(`owner:${[...wantOwners].join(',')}`);
 if (wantSubjects.size > 0) scopeParts.push(`subject:${[...wantSubjects].map(slugOf).join(',')}`);
+if (wantIds.size > 0) scopeParts.push(`scenarios:${wantIds.size}`);
 if (itemLimit > 0) scopeParts.push(`limit:${itemLimit}`);
 const scope = scopeParts.length === 0 ? 'all' : scopeParts.join(' ');
 const fullScope = scope === 'all';
@@ -250,12 +283,40 @@ if (items.length === 0) {
 let resolvedModels: Record<string, string | null> = {};
 if (!skipPreflight) {
     const problems: string[] = [];
-    const firstTools = (meta(selected[0]).tools ?? ['fetch-actor-details']) as string[];
+    const firstMeta = meta(selected[0]);
+    const firstMcp = resolveMcp(
+        { ...firstMeta, tools: firstMeta.tools ?? ['fetch-actor-details'] },
+        { mcpUrl, env: mcpEnv },
+    );
+    if (firstMcp) {
+        const where = firstMcp.spec.transport === 'http' ? (firstMcp.spec.url as string) : `${firstMcp.name} (stdio)`;
+        try {
+            const schemas = await fetchToolSchemas(firstMcp, AbortSignal.timeout(60_000));
+            if (schemas.length === 0)
+                problems.push(`MCP server ${where} returned no tools for ${firstMcp.tools.join(',')}`);
+            else log.info(`preflight: MCP server ${firstMcp.name} lists ${schemas.length} tool(s)`);
+        } catch (err) {
+            problems.push(`MCP server ${where} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
+        }
+    }
+    // Each session may start Actor runs; this run holds one slot of the account's
+    // concurrent run limit. Too many parallel sessions get runs refused (the
+    // sessions then count as inconclusive), so say so before paying for them.
     try {
-        const schemas = await fetchToolSchemas(mcpUrl, firstTools, apifyToken);
-        if (schemas.length === 0) problems.push(`MCP server ${mcpUrl} returned no tools for ${firstTools.join(',')}`);
-    } catch (err) {
-        problems.push(`MCP server ${mcpUrl} unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`);
+        const limits = (await (
+            await fetch('https://api.apify.com/v2/users/me/limits', {
+                headers: { Authorization: `Bearer ${apifyToken}` },
+                signal: AbortSignal.timeout(20_000),
+            })
+        ).json()) as { data?: { limits?: { maxConcurrentActorJobs?: number } } };
+        const max = limits.data?.limits?.maxConcurrentActorJobs;
+        if (typeof max === 'number' && concurrency + 1 > max) {
+            log.warning(
+                `concurrency ${concurrency} + this run exceeds the account's ${max} concurrent Actor runs: agents' runs will be refused and those sessions marked inconclusive. Use concurrency ${Math.max(1, Math.floor((max - 1) / 2))} on this account.`,
+            );
+        }
+    } catch {
+        /* the limit is a hint; the run goes on without it */
     }
     if (useOpenRouterProxy) {
         // Every model in the matrix, not only the first: a bad second id would
@@ -370,6 +431,7 @@ for (const entry of entries) {
                     harness,
                     mcpUrl,
                     apifyToken,
+                    mcpEnv,
                     useOpenRouterProxy,
                     perItemTimeoutSecs,
                     artifactStore,
