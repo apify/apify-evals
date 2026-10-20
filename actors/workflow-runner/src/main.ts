@@ -520,7 +520,7 @@ const summary = {
     items: first.items,
     completed: first.completed,
     suiteMs: first.suiteMs,
-    harness: baseHarness.kind,
+    harness: first.harness,
     model: first.model,
     models,
     resolvedModels,

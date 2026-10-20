@@ -63,8 +63,8 @@ export function resolveModelEntries(
     const raw = entries && entries.length > 0 ? entries : [base.model];
     const out: ModelEntry[] = [];
     for (const e of raw) {
-        const model = typeof e === 'string' ? e : e.model;
-        const kind = typeof e === 'string' ? base.kind : (e.harness ?? base.kind);
+        const model = typeof e === 'string' ? e : e?.model;
+        const kind = typeof e === 'string' ? base.kind : (e?.harness ?? base.kind);
         if (typeof model !== 'string' || model.length === 0) {
             throw new Error(`models: entry without a model id: ${JSON.stringify(e)}`);
         }

@@ -112,5 +112,6 @@ describe('resolveModelEntries', () => {
             /unknown harness "cursor"/,
         );
         expect(() => resolveModelEntries([{ harness: 'codex' }], base)).toThrow(/without a model id/);
+        expect(() => resolveModelEntries([null as never], base)).toThrow(/without a model id/);
     });
 });

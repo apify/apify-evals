@@ -55,14 +55,7 @@
             "editor": "json",
             "default": [],
             "sectionCaption": "Advanced",
-            "sectionDescription": "Defaults are right for the daily run and for checking your own Actor.",
-            "prefill": [
-                "~anthropic/claude-haiku-latest",
-                {
-                    "model": "~openai/gpt-luna-latest",
-                    "harness": "codex"
-                }
-            ]
+            "sectionDescription": "Defaults are right for the daily run and for checking your own Actor."
         },
         "judgeModel": {
             "title": "Judge model",
