@@ -255,16 +255,30 @@ process.stdin.on('end', () => {
         expect(mcp.listTools).toHaveBeenCalledTimes(2);
     });
 
+    it('waits the retryAfter the MCP server asks for before the restart', async () => {
+        mcp.listTools.mockRejectedValueOnce(
+            new Error(
+                'Streamable HTTP error: Error POSTing to endpoint: {"jsonrpc":"2.0","error":{"code":-32050,"message":"Rate limit exceeded","data":{"retryAfter":1}}}',
+            ),
+        );
+        stub('process.stdout.write(fixture);');
+        const t0 = Date.now();
+        const result = await runCodex(ctx);
+        expect(Date.now() - t0).toBeGreaterThanOrEqual(1000);
+        expect(result.metrics).toMatchObject({ mcpRestarts: 1, mcpToolsMissing: false });
+        expect(mcp.listTools).toHaveBeenCalledTimes(2);
+    });
+
     it('returns inconclusive MCP evidence after repeated initialization failure', async () => {
         mcp.connect.mockRejectedValue(new Error('connection failed'));
         const result = await runCodex(ctx);
         expect(result.harnessBroke).toBe(false);
         expect(result.metrics).toMatchObject({
-            mcpRestarts: 1,
+            mcpRestarts: 3,
             mcpToolCount: 0,
             mcpServers: [{ name: 'apify', status: 'failed' }],
         });
-        expect(mcp.close).toHaveBeenCalledTimes(2);
+        expect(mcp.close).toHaveBeenCalledTimes(4);
         expect(sessionInfra(result).ok).toBe(false);
     });
 
