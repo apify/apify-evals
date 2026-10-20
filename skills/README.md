@@ -9,7 +9,9 @@ run at the commit pinned in `actors/workflow-runner/src/skills.ts`
 A suite lists the skills it may use in `profiles/<suite>.yaml` under
 `agentSkills`; a run picks which of them each experiment gets with the
 `skillSets` input (`none`, `a`, `a+b`, ...) or enumerates every subset with
-`skillCombinations`. Each skill set is its own experiment per model.
+`skillCombinations`. Skill sets multiply with surfaces (`surfaces/`):
+`surfaces: [mcp, api]` and `skillSets: [none, apify-ultimate-scraper]` give
+four experiments per model.
 
 The runner copies the chosen skills into the session's working directory
 (`.claude/skills/`) and starts Claude Code with `--setting-sources project`, so
@@ -45,6 +47,6 @@ runner, then compare against a run on the old commit.
 profile).
 
 Note: `apify-ultimate-scraper` drives the Apify CLI (`apify actors search`,
-`apify actors call --json`). With the Apify MCP server and no Bash, the skill
-describes tools the agent does not have; that mismatch is part of what the
-skill sets measure.
+`apify actors call --json`). On the `mcp` surface the agent has no Bash, so
+the skill describes tools it does not have; that mismatch is part of what the
+surface x skill matrix measures (fix area `skill-instructions`).
