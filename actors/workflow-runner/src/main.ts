@@ -10,6 +10,7 @@ import {
     LANGFUSE_CREDENTIALS,
     judgeLangfuseInput,
     resolveHealthThreshold,
+    resolveModelEntries,
     resolveTrigger,
     shouldNotify,
 } from './config.js';
@@ -34,7 +35,7 @@ interface Input {
     experimentName?: string;
     runName?: string;
     model?: string;
-    models?: string[];
+    models?: (string | { model?: string; harness?: string })[];
     harness?: Partial<{ kind: string; model: string; maxTurns: number }>;
     repeats?: number;
     judge?: boolean;
@@ -148,7 +149,8 @@ const baseHarness = {
     ...(modelInput ? { model: modelInput } : {}),
 };
 validateHarness(baseHarness);
-const models = modelsInput && modelsInput.length > 0 ? [...new Set(modelsInput)] : [baseHarness.model];
+const entries = resolveModelEntries(modelsInput, baseHarness);
+const models = entries.map((e) => e.model);
 
 // APIFY token: injected on platform; via CLI when run locally. Always required
 // now: the named artifact store lives in the cloud even for local runs.
@@ -258,15 +260,18 @@ if (!skipPreflight) {
     if (useOpenRouterProxy) {
         // Every model in the matrix, not only the first: a bad second id would
         // otherwise surface after the first model's full run.
-        const codex = baseHarness.kind === 'codex';
-        const pre = await preflightModels(models, {
-            url: codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
-            apifyToken,
-            codex,
-        });
-        problems.push(...pre.problems);
-        resolvedModels = pre.resolved;
-        for (const [m, r] of Object.entries(pre.resolved)) if (r && r !== m) log.info(`Model ${m} resolves to ${r}`);
+        // Each entry pings through its own harness's endpoint.
+        for (const entry of entries) {
+            const codex = entry.kind === 'codex';
+            const pre = await preflightModels([entry.model], {
+                url: codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
+                apifyToken,
+                codex,
+            });
+            problems.push(...pre.problems);
+            Object.assign(resolvedModels, pre.resolved);
+        }
+        for (const [m, r] of Object.entries(resolvedModels)) if (r && r !== m) log.info(`Model ${m} resolves to ${r}`);
     }
     if (problems.length > 0) {
         for (const p of problems) log.error(`preflight: ${p}`);
@@ -286,6 +291,7 @@ const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
 interface ModelRunSummary {
     model: string;
+    harness: string;
     resultsUrl: string | null;
     datasetRunId: string | null;
     datasetRunName: string | null;
@@ -303,9 +309,11 @@ interface ModelRunSummary {
 const summaries: ModelRunSummary[] = [];
 let flushFailed = false;
 
-for (const model of models) {
+for (const entry of entries) {
+    const { model } = entry;
     const harness = {
         ...baseHarness,
+        kind: entry.kind,
         model,
         ...(resolvedModels[model] ? { resolvedModel: resolvedModels[model] } : {}),
     };
@@ -449,6 +457,7 @@ for (const model of models) {
 
     summaries.push({
         model,
+        harness: harness.kind,
         resultsUrl,
         datasetRunId,
         datasetRunName: result.runName ?? null,

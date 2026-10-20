@@ -39,6 +39,48 @@ export function shouldNotify(notify: boolean | undefined, trigger: string): bool
     return notify ?? trigger === 'schedule';
 }
 
+/** One pass of the model matrix: a model and the harness that runs it. */
+export interface ModelEntry {
+    model: string;
+    kind: string;
+}
+
+export const HARNESS_KINDS = ['claude-code', 'codex'] as const;
+
+/** OpenAI ids, pinned or alias (`openai/gpt-6-luna`, `~openai/gpt-luna-latest`). */
+export const isOpenAiModel = (model: string): boolean => /^~?openai\//.test(model);
+
+/**
+ * The model matrix as passes. An entry is a model id (run on the base harness)
+ * or `{ model, harness }`. OpenAI models are refused on Claude Code: through the
+ * Anthropic-to-OpenAI conversion in the proxy they send every tool call with an
+ * empty `input`, retry it and run out of turns, so the pass measures nothing.
+ */
+export function resolveModelEntries(
+    entries: (string | { model?: string; harness?: string })[] | undefined,
+    base: { kind: string; model: string },
+): ModelEntry[] {
+    const raw = entries && entries.length > 0 ? entries : [base.model];
+    const out: ModelEntry[] = [];
+    for (const e of raw) {
+        const model = typeof e === 'string' ? e : e.model;
+        const kind = typeof e === 'string' ? base.kind : (e.harness ?? base.kind);
+        if (typeof model !== 'string' || model.length === 0) {
+            throw new Error(`models: entry without a model id: ${JSON.stringify(e)}`);
+        }
+        if (!(HARNESS_KINDS as readonly string[]).includes(kind)) {
+            throw new Error(`models: unknown harness "${kind}" for ${model} (supported: ${HARNESS_KINDS.join(', ')})`);
+        }
+        if (kind === 'claude-code' && isOpenAiModel(model)) {
+            throw new Error(
+                `models: ${model} cannot run on the claude-code harness: OpenAI models send empty tool inputs through the Anthropic-format proxy (apify/apify-evals#44). Use {"model": "${model}", "harness": "codex"}.`,
+            );
+        }
+        if (!out.some((o) => o.model === model && o.kind === kind)) out.push({ model, kind });
+    }
+    return out;
+}
+
 /** Langfuse credential inputs and the env vars they override. */
 export const LANGFUSE_CREDENTIALS = [
     ['langfuseBaseUrl', 'LANGFUSE_BASE_URL'],

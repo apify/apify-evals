@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_HEALTH_THRESHOLD,
     judgeLangfuseInput,
+    resolveModelEntries,
     resolveHealthThreshold,
     resolveTrigger,
     shouldNotify,
@@ -82,5 +83,34 @@ describe('judgeLangfuseInput', () => {
             langfuseSecretKey: 'sk',
         });
         expect(judgeLangfuseInput({})).toEqual({});
+    });
+});
+
+describe('resolveModelEntries', () => {
+    const base = { kind: 'claude-code', model: 'anthropic/claude-haiku-4.5' };
+
+    it('runs plain ids on the base harness and objects on the harness they name', () => {
+        expect(
+            resolveModelEntries(
+                ['~anthropic/claude-haiku-latest', { model: '~openai/gpt-luna-latest', harness: 'codex' }],
+                base,
+            ),
+        ).toEqual([
+            { model: '~anthropic/claude-haiku-latest', kind: 'claude-code' },
+            { model: '~openai/gpt-luna-latest', kind: 'codex' },
+        ]);
+        expect(resolveModelEntries(undefined, base)).toEqual([{ model: base.model, kind: 'claude-code' }]);
+        expect(resolveModelEntries(['a', 'a', { model: 'a' }], base)).toEqual([{ model: 'a', kind: 'claude-code' }]);
+    });
+
+    it('refuses an OpenAI model on Claude Code and an unknown harness', () => {
+        expect(() => resolveModelEntries(['~openai/gpt-luna-latest'], base)).toThrow(
+            /cannot run on the claude-code harness/,
+        );
+        expect(() => resolveModelEntries(['openai/gpt-6-luna'], base)).toThrow(/apify-evals#44/);
+        expect(() => resolveModelEntries([{ model: 'x', harness: 'cursor' }], base)).toThrow(
+            /unknown harness "cursor"/,
+        );
+        expect(() => resolveModelEntries([{ harness: 'codex' }], base)).toThrow(/without a model id/);
     });
 });

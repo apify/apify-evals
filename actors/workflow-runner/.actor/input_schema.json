@@ -51,11 +51,18 @@
         "models": {
             "title": "Model matrix (optional)",
             "type": "array",
-            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set. Each id is preflighted and resolved before any session starts.",
-            "editor": "stringList",
+            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set. An entry is a model id, or {\"model\": \"...\", \"harness\": \"codex\"} to run that model on Codex instead of Claude Code. OpenAI models must use Codex. Each id is preflighted and resolved before any session starts.",
+            "editor": "json",
             "default": [],
             "sectionCaption": "Advanced",
-            "sectionDescription": "Defaults are right for the daily run and for checking your own Actor."
+            "sectionDescription": "Defaults are right for the daily run and for checking your own Actor.",
+            "prefill": [
+                "~anthropic/claude-haiku-latest",
+                {
+                    "model": "~openai/gpt-luna-latest",
+                    "harness": "codex"
+                }
+            ]
         },
         "judgeModel": {
             "title": "Judge model",
