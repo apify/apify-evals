@@ -274,11 +274,11 @@ process.stdin.on('end', () => {
         const result = await runCodex(ctx);
         expect(result.harnessBroke).toBe(false);
         expect(result.metrics).toMatchObject({
-            mcpRestarts: 1,
+            mcpRestarts: 3,
             mcpToolCount: 0,
             mcpServers: [{ name: 'apify', status: 'failed' }],
         });
-        expect(mcp.close).toHaveBeenCalledTimes(2);
+        expect(mcp.close).toHaveBeenCalledTimes(4);
         expect(sessionInfra(result).ok).toBe(false);
     });
 
