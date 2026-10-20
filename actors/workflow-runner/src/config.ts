@@ -65,6 +65,13 @@ export function resolveModelEntries(
     for (const e of raw) {
         const model = typeof e === 'string' ? e : e?.model;
         const kind = typeof e === 'string' ? base.kind : (e?.harness ?? base.kind);
+        const unknown =
+            typeof e === 'object' && e ? Object.keys(e).filter((k) => k !== 'model' && k !== 'harness') : [];
+        if (unknown.length > 0) {
+            throw new Error(
+                `models: entry ${JSON.stringify(e)} has unknown keys ${unknown.join(', ')} (allowed: model, harness)`,
+            );
+        }
         if (typeof model !== 'string' || model.length === 0) {
             throw new Error(`models: entry without a model id: ${JSON.stringify(e)}`);
         }

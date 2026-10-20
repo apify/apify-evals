@@ -113,5 +113,6 @@ describe('resolveModelEntries', () => {
         );
         expect(() => resolveModelEntries([{ harness: 'codex' }], base)).toThrow(/without a model id/);
         expect(() => resolveModelEntries([null as never], base)).toThrow(/without a model id/);
+        expect(() => resolveModelEntries([{ model: 'x', kind: 'codex' } as never], base)).toThrow(/unknown keys kind/);
     });
 });
