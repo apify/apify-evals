@@ -97,8 +97,11 @@ export const agentSpanMetadataSchema = {
         checksTotal: { type: 'integer' },
         infraOk: { type: 'boolean' },
         infraReasons: { type: 'array', items: { type: 'string' } },
-        // Session setup (contract 1.2): which MCP server the agent talked to.
+        // Session setup (contract 1.2): which MCP server the agent talked to and
+        // which agent skills were injected (and which of them Claude Code loaded).
         mcpServer: { type: 'string' },
+        agentSkills: { type: 'array', items: { type: 'string' } },
+        skillsLoaded: { type: 'array', items: { type: 'string' } },
     },
     required: ['harness', 'model', 'harnessBroke', 'fullLogUrl', 'fullLogHash'],
     additionalProperties: true,
@@ -207,6 +210,9 @@ export const datasetItemMetadataSchema = {
         // Harness setup for this scenario. `tools: ['*']` = every tool of the server.
         tools: { type: 'array', items: { type: 'string' } },
         mcp: mcpServerSchema,
+        // Agent skills (names in apify/agent-skills) the suite may inject; the
+        // runner's skillSets input picks which of them a run gets.
+        agentSkills: { type: 'array', items: { type: 'string' } },
         allowBash: { type: 'boolean' },
         maxTurns: { type: 'integer' },
         timeoutSecs: { type: 'integer' },

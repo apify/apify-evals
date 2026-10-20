@@ -20,7 +20,8 @@ button.
   scenario's deterministic checks, then calls the judge. `src/main.ts`
   (inputs, scope, preflight, exit codes), `src/harness.ts` (session, trace,
   evidence), `src/evidence.ts` (extraction, Apify API, reference runs),
-  `src/notify.ts` (Slack digest), `src/artifacts.ts` (eval-artifacts store).
+  `src/notify.ts` (Slack digest), `src/artifacts.ts` (eval-artifacts store),
+  `src/skills.ts` (the agent-skills axis, below).
 - `actors/judge/` — the **judge**: reads the evidence artifact and the full
   session log, asks the model for the rubric, merges deterministic checks and
   model into one verdict (`src/verdict.ts`, tested), writes scores, a trace
@@ -30,6 +31,10 @@ button.
   `profiles/<suite>.yaml` — what a suite tests, tools per skill, fix areas.
   `tools/` syncs scenarios to Langfuse (`npm run scenarios:sync`) and
   validates them (`npm run scenarios:check`). See `scenarios/README.md`.
+- Agent skills (injectable; the runner downloads `apify/agent-skills` at the
+  commit pinned in `src/skills.ts`, see `skills/README.md`): the runner runs
+  every model × skill set as its own dataset run. "Skill" alone means a
+  scenario's `find` / `use`; the injectable ones are always "agent skills".
 - `docs/adding-a-suite.md` — how a team adds a suite. The numbered files in
   `docs/`, plus `actors/runner/`, `shared/`, `spikes/`, `scenarios/*.md`, are
   the legacy markdown-scenario runner (Czech docs). Not part of the live system.
