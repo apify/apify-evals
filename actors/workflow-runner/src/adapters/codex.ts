@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -110,6 +111,13 @@ function buildConfig(ctx: CodexContext): string {
     return `${lines.join('\n')}\n`;
 }
 
+/** mcp.apify.com rate-limits initialization bursts and names the seconds to
+ * wait; an immediate restart only keeps the rate up and fails again. */
+function restartDelayMs(failure: string): number {
+    const m = /"retryAfter":\s*([\d.]+)/.exec(failure);
+    return (m ? Number(m[1]) : 1) * 1000;
+}
+
 export async function runCodex(ctx: CodexContext): Promise<AdapterResult> {
     const maxTurns = ctx.item.metadata?.maxTurns ?? ctx.harness.maxTurns;
     if (!Number.isInteger(maxTurns) || maxTurns < 1) throw new Error('Codex maxTurns must be a positive integer');
@@ -121,7 +129,11 @@ export async function runCodex(ctx: CodexContext): Promise<AdapterResult> {
         const result = await runCodexOnce(ctx, deadline, expected);
         if (result.metrics.mcpToolsMissing && restarts < MAX_MCP_RESTARTS && Date.now() < deadline) {
             restarts++;
-            log.warning(`Codex MCP startup failed; restarting session (${restarts}/${MAX_MCP_RESTARTS})`);
+            const waitMs = Math.min(restartDelayMs(result.stderr), deadline - Date.now());
+            log.warning(
+                `Codex MCP startup failed (${result.stderr.slice(0, 200)}); restarting session in ${waitMs} ms (${restarts}/${MAX_MCP_RESTARTS})`,
+            );
+            await sleep(waitMs);
             continue;
         }
         result.startedAt = startedAt;
