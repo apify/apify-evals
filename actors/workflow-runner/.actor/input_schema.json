@@ -27,6 +27,13 @@
             "editor": "stringList",
             "default": []
         },
+        "scenarioIds": {
+            "title": "Only these scenarios (optional)",
+            "type": "array",
+            "description": "Scenario ids (dataset item ids, e.g. google-search-scraper-usage-german-serp) to run. Combines with the other filters.",
+            "editor": "stringList",
+            "default": []
+        },
         "owners": {
             "title": "Only these owners",
             "type": "array",
@@ -110,7 +117,7 @@
         "mcpUrl": {
             "title": "MCP server URL",
             "type": "string",
-            "description": "Apify MCP server the agent uses. Each scenario narrows it with ?tools=.",
+            "description": "Apify MCP server used by suites whose profile names no other server. Each scenario narrows it with ?tools=.",
             "editor": "textfield",
             "default": "https://mcp.apify.com",
             "sectionCaption": "Maintainer",
@@ -127,6 +134,13 @@
             "type": "boolean",
             "description": "Skip the MCP tools/list and LLM proxy check that fails a broken environment in seconds.",
             "default": false
+        },
+        "mcpEnv": {
+            "title": "MCP server environment (JSON)",
+            "type": "object",
+            "description": "Values for ${VAR} placeholders in the suite's MCP server config (e.g. {\"NOTION_TOKEN\": \"ntn_...\"}). Overrides the Actor environment. Not encrypted: prefer Actor environment variables for real runs.",
+            "editor": "json",
+            "nullable": true
         },
         "trigger": {
             "title": "Trigger label",
