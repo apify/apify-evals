@@ -12,6 +12,7 @@ import {
     curlrc,
     installCliShim,
     loadSurface,
+    mcpcConnectUrl,
     parseCliVersion,
     resolveSurface,
     resolveSurfaceNames,
@@ -168,6 +169,30 @@ describe('the session a surface builds', () => {
 
     it('marks the curl user agent with the session marker', () => {
         expect(curlrc('apify-evals/abc')).toBe('user-agent = "apify-evals/abc curl"\n');
+    });
+});
+
+describe('mcpcConnectUrl', () => {
+    const mcpUrl = 'https://mcp.apify.com/?telemetry=false';
+
+    it('narrows the Apify MCP server to the scenario tools, as the mcp surface does', () => {
+        expect(mcpcConnectUrl({ tools: ['search-actors', 'call-actor'] }, mcpUrl)).toBe(
+            'https://mcp.apify.com/?telemetry=false&tools=search-actors%2Ccall-actor',
+        );
+    });
+
+    it('keeps the bare URL when the scenario has no tools or names another MCP server', () => {
+        expect(mcpcConnectUrl({}, mcpUrl)).toBe(mcpUrl);
+        expect(mcpcConnectUrl({ tools: [] }, mcpUrl)).toBe(mcpUrl);
+        expect(
+            mcpcConnectUrl(
+                {
+                    tools: ['notion-search'],
+                    mcp: { name: 'notion', transport: 'http', url: 'https://mcp.notion.com/mcp' },
+                },
+                mcpUrl,
+            ),
+        ).toBe(mcpUrl);
     });
 });
 
