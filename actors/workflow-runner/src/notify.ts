@@ -48,11 +48,11 @@ export interface PastExperiment {
 }
 
 /** Metadata values an experiment written before that axis existed stands for. */
-const VARIANT_DEFAULTS: Record<string, string> = { harness: 'claude-code', skillSet: 'none' };
+const VARIANT_DEFAULTS: Record<string, string> = { harness: 'claude-code', surface: 'mcp', skillSet: 'none' };
 
 /**
  * The digest's baseline: the newest `pass_rate` of an earlier full-scope run of
- * the same dataset and the same configuration (harness, model, skill set).
+ * the same dataset and the same configuration (harness, model, surface, skill set).
  * Another configuration's rate is not a "previous run", it is a comparison.
  * `experiments` come newest first; a run re-judged later has several
  * `pass_rate` scores and the newest counts.
