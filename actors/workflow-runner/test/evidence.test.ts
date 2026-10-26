@@ -141,6 +141,62 @@ describe('extractFromTools', () => {
         ]);
     });
 
+    it('finds a run when the curl command has an inline JSON body and the output is pretty-printed', () => {
+        const response = JSON.stringify(
+            {
+                data: {
+                    id: 'Run1234567890abcd',
+                    actId: 'nFJndFXA5zjCTuudP',
+                    status: 'READY',
+                    defaultDatasetId: 'Dataset890abcdefg',
+                    defaultKeyValueStoreId: 'Store1234567890ab',
+                },
+            },
+            null,
+            2,
+        );
+        const out = extractFromTools(
+            [
+                {
+                    id: 'c',
+                    name: 'Bash',
+                    input: {
+                        command:
+                            'curl -s -X POST "https://api.apify.com/v2/acts/apify~google-search-scraper/runs" -H "Authorization: Bearer $APIFY_TOKEN" -H "Content-Type: application/json" -d \'{"queries": "apify", "maxPagesPerQuery": 1}\' | jq .',
+                    },
+                },
+            ],
+            [{ toolUseId: 'c', content: response, isError: false }],
+        );
+        expect(out.actorRuns).toEqual([
+            expect.objectContaining({
+                actor: 'apify/google-search-scraper',
+                runId: 'Run1234567890abcd',
+                actorId: 'nFJndFXA5zjCTuudP',
+                datasetId: 'Dataset890abcdefg',
+                status: 'READY',
+                origin: 'api',
+            }),
+        ]);
+    });
+
+    it('finds a run URL in the command even when the output is not JSON', () => {
+        const out = extractFromTools(
+            [
+                {
+                    id: 'c',
+                    name: 'Bash',
+                    input: {
+                        command:
+                            'curl -s "https://api.apify.com/v2/actor-runs/Run1234567890abcd?token=$APIFY_TOKEN" -d \'{"x": 1}\'',
+                    },
+                },
+            ],
+            [{ toolUseId: 'c', content: 'curl: (6) Could not resolve host', isError: false }],
+        );
+        expect(out.actorRuns).toEqual([expect.objectContaining({ runId: 'Run1234567890abcd', origin: 'api' })]);
+    });
+
     it('finds nothing in a run-sync response, which carries items and no run', () => {
         const out = extractFromTools(
             [

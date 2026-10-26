@@ -120,8 +120,9 @@ export function extractFromTools(
             const command = String((call.name === 'Bash' ? input.command : input.url) ?? '');
             const origin = surfacesOfCall(call.name, call.input).includes('cli') ? 'cli' : 'api';
             const actor = cliActor(command) ?? apiActor(command);
-            const text = `${command}\n${res?.content ?? ''}`;
-            for (const found of runsInText(text)) {
+            // The output is parsed on its own: a request body in the command
+            // (`-d '{...}'`) would break JSON parsing of the two together.
+            for (const found of [...runsInText(res?.content ?? ''), ...runUrlsInText(command)]) {
                 const prev = runs.get(found.runId);
                 runs.set(found.runId, {
                     ...found,
@@ -160,16 +161,22 @@ const RUN_URL_RES = [
     /api\.apify\.com\/v2\/acts\/[^/\s]+\/runs\/([A-Za-z0-9]{17})\b/g,
 ];
 
+/** Runs named by a Console or API run URL in the text. */
+export function runUrlsInText(text: string): FoundRun[] {
+    const found = new Map<string, FoundRun>();
+    for (const re of RUN_URL_RES) {
+        for (const m of text.matchAll(re)) if (!found.has(m[1])) found.set(m[1], { runId: m[1] });
+    }
+    return [...found.values()];
+}
+
 /**
  * Runs named in free text: URLs, and run objects in JSON (a whole document,
  * one per line, or the first {...} block). A run object has `id` and `actId`
  * plus a default storage, which tells it apart from a build.
  */
 export function runsInText(text: string): FoundRun[] {
-    const found = new Map<string, FoundRun>();
-    for (const re of RUN_URL_RES) {
-        for (const m of text.matchAll(re)) if (!found.has(m[1])) found.set(m[1], { runId: m[1] });
-    }
+    const found = new Map(runUrlsInText(text).map((r) => [r.runId, r]));
     const docs: unknown[] = [];
     const whole = parseJson(text);
     if (whole) docs.push(whole);
