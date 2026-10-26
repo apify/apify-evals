@@ -46,7 +46,7 @@ scenarios:
       skill: use
       title: 'cheerio / use / foyles-manga-two-hops'
       notes: 'Usage: pinned Cheerio Scraper, link following with depth and page caps'
-      prompt: Run the apify/cheerio-scraper Actor on https://www.foyles.co.uk/category. From there follow
+      prompt: Run the apify/cheerio-scraper Actor on https://www.foyles.co.uk/category/fiction-poetry/graphic-novels-manga-comics/manga. From there follow
           the link to the manga category and get the books listed in it. Stop after 2 hops of following
           links and don't let it process more than 20 pages total. For each book page, get me the title
           and the price as a JSON object with title and price keys, and show me 5 of them.
