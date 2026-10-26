@@ -79,7 +79,7 @@ export interface Observation {
     trigger: string | null;
     repeats: number | null;
     fullScope: boolean | null;
-    /** One variant of a comparison run (several skill sets in one Actor run); never canonical. */
+    /** One variant of a comparison run (several surfaces or skill sets in one Actor run); never canonical. */
     comparison: boolean | null;
     startTime: string;
     /** Calendar day (UTC) of the attempt, for recurrence counting. */

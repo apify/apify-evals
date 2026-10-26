@@ -86,6 +86,18 @@ describe('previousPassRate', () => {
         ).toBeNull();
     });
 
+    it('compares surfaces too, reading a run without surface metadata as mcp', () => {
+        const experiments = [
+            exp('api', '2026-10-26T04:00:00Z', { model: haiku.model, surface: 'api' }, [['2026-10-26T04:30:00Z', 0.3]]),
+            exp('old', '2026-10-25T05:00:00Z', { model: haiku.model }, [['2026-10-25T05:30:00Z', 0.5]]),
+        ];
+        const variant = { ...haiku, surface: 'mcp' };
+        expect(previousPassRate(experiments, { datasetRunId: 'current', variant })).toBe(0.5);
+        expect(
+            previousPassRate(experiments, { datasetRunId: 'current', variant: { ...variant, surface: 'api' } }),
+        ).toBe(0.3);
+    });
+
     it('skips a matching run that has no pass_rate yet', () => {
         const experiments = [
             exp('unjudged', '2026-10-25T05:00:00Z', { model: haiku.model }, []),
