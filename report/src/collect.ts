@@ -79,6 +79,8 @@ export interface Observation {
     trigger: string | null;
     repeats: number | null;
     fullScope: boolean | null;
+    /** One variant of a comparison run (several skill sets in one Actor run); never canonical. */
+    comparison: boolean | null;
     startTime: string;
     /** Calendar day (UTC) of the attempt, for recurrence counting. */
     day: string;
@@ -208,7 +210,7 @@ interface RawExperiment {
 }
 
 /** Experiments of the dataset in the window, with the runner's metadata
- * (trigger, repeats, model, fullScope) when the API exposes it. */
+ * (trigger, repeats, model, fullScope, comparison) when the API exposes it. */
 async function loadExperiments(
     langfuse: LangfuseClient,
     datasetId: string,
@@ -359,6 +361,7 @@ export async function collectReportData(langfuse: LangfuseClient, opts: CollectO
             trigger: str(em.trigger),
             repeats: numish(em.repeats),
             fullScope: bool(em.fullScope),
+            comparison: bool(em.comparison),
             startTime: it.startTime,
             day: it.startTime.slice(0, 10),
             traceId: it.traceId,
