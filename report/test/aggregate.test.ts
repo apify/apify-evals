@@ -79,4 +79,21 @@ describe('canonicalExperimentIds', () => {
         ]);
         expect([...ids].sort()).toEqual(['flash', 'haiku', 'haiku-old', 'luna']);
     });
+
+    it('leaves comparison runs (several skill sets in one Actor run) out of the day', () => {
+        const comparison = (experimentId: string, day: string, startTime: string) => ({
+            ...obs(experimentId, 'a', day, startTime, 'cli'),
+            comparison: true,
+        });
+        const ids = canonicalExperimentIds([
+            // 1st: one manual full run and a two-variant comparison run, same model
+            obs('manual', 'a', '2026-10-01', '2026-10-01T09:00:00Z', 'cli'),
+            comparison('skills-none', '2026-10-01', '2026-10-01T10:00:00Z'),
+            comparison('skills-apify', '2026-10-01', '2026-10-01T10:20:00Z'),
+            // 2nd: only a comparison run, nothing canonical
+            comparison('only-none', '2026-10-02', '2026-10-02T10:00:00Z'),
+            comparison('only-apify', '2026-10-02', '2026-10-02T10:20:00Z'),
+        ]);
+        expect([...ids].sort()).toEqual(['manual']);
+    });
 });
