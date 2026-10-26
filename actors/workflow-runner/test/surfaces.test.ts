@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import { buildClaudeArgs, buildClaudeEnv } from '../src/harness.js';
 import {
     MARKER_PRELOAD,
     cliShim,
+    connectMcpc,
     curlrc,
     installCliShim,
     loadSurface,
@@ -193,6 +194,49 @@ describe('mcpcConnectUrl', () => {
                 mcpUrl,
             ),
         ).toBe(mcpUrl);
+    });
+});
+
+describe('connectMcpc', () => {
+    // A stub mcpc in the session's bin/ that fails its first `failures` calls.
+    function session(failures: number): string {
+        const home = mkdtempSync(join(tmpdir(), 'mcpc-connect-test-'));
+        mkdirSync(join(home, 'bin'));
+        const calls = join(home, 'calls');
+        writeFileSync(
+            join(home, 'bin', 'mcpc'),
+            `#!/bin/sh\necho "$*" >> ${calls}\n[ "$(grep -c ^connect ${calls})" -gt ${failures} ] || { echo "connect failed" >&2; exit 1; }\n`,
+        );
+        chmodSync(join(home, 'bin', 'mcpc'), 0o755);
+        return home;
+    }
+    const surface = { name: 'cli', mcpcBinDir: '/unused', env: { APIFY_TOKEN: 'test-token' } } as never;
+    const calls = (home: string) => readFileSync(join(home, 'calls'), 'utf8').trim().split('\n');
+
+    it('retries a failed connect', async () => {
+        const home = session(2);
+        try {
+            await connectMcpc(home, surface, 'https://mcp.invalid/?tools=a', 0);
+            const connects = calls(home).filter((c) => c.startsWith('connect'));
+            expect(connects).toHaveLength(3);
+            expect(connects[2]).toBe(
+                'connect https://mcp.invalid/?tools=a @apify --header Authorization: Bearer test-token',
+            );
+        } finally {
+            rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it('gives up after three attempts with the last error', async () => {
+        const home = session(10);
+        try {
+            const err = await connectMcpc(home, surface, 'https://mcp.invalid/', 0).catch((e: Error) => e);
+            expect(String(err)).toMatch(/failed after 3 attempts: connect failed/);
+            expect(String(err)).not.toContain('test-token');
+            expect(calls(home).filter((c) => c.startsWith('connect'))).toHaveLength(3);
+        } finally {
+            rmSync(home, { recursive: true, force: true });
+        }
     });
 });
 
