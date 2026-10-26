@@ -57,6 +57,7 @@ import {
     connectMcpc,
     curlrc,
     installCliShim,
+    mcpcConnectUrl,
     surfaceAllowedTools,
     surfaceItemMetadata,
     surfacePrompt,
@@ -101,6 +102,8 @@ export interface SessionContext {
     surface?: ResolvedSurface;
     /** Per-session marker in the curl user agent, for finding API-started runs (set by runSession). */
     runMarker?: string;
+    /** Where the surface's mcpc connects: the scenario's Apify tools (set by runSession, see mcpcConnectUrl). */
+    mcpcUrl?: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
@@ -482,7 +485,7 @@ async function runClaudeCodeOnce(
     const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
     try {
         const shimDir = ctx.surface ? installCliShim(home, ctx.surface, ctx.runMarker) : undefined;
-        if (ctx.surface?.mcpcBinDir) await connectMcpc(home, ctx.surface, ctx.mcpUrl);
+        if (ctx.surface?.mcpcBinDir) await connectMcpc(home, ctx.surface, ctx.mcpcUrl ?? ctx.mcpUrl);
         return await runClaudeCodeIn(ctx, abortOnMissingMcp, home, shimDir);
     } finally {
         await closeMcpc(home);
@@ -960,6 +963,7 @@ export async function runSession(sessionCtx: SessionContext): Promise<{ output: 
             metadata: surfaceItemMetadata(sessionCtx.item.metadata ?? {}, sessionCtx.surface),
         },
         runMarker: `apify-evals/${randomBytes(8).toString('hex')}`,
+        mcpcUrl: mcpcConnectUrl(sessionCtx.item.metadata ?? {}, sessionCtx.mcpUrl),
     };
     const { item, harness } = ctx;
     const input = item.input as { prompt?: string; query?: string } | string | undefined;

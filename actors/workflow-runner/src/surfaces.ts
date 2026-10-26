@@ -20,7 +20,7 @@ import { promisify } from 'node:util';
 import { type DatasetItemMetadata, type SurfaceSpec, validateSurface } from '@apify-evals/contract';
 import YAML from 'yaml';
 
-import { fillPlaceholders } from './mcp.js';
+import { fillPlaceholders, toolsUrl } from './mcp.js';
 
 const execFile = promisify(execFileCb);
 
@@ -286,6 +286,18 @@ const mcpcHome = (sessionHome: string) => join(sessionHome, 'mcpc');
 
 /** The mcpc session the agent finds already connected to the Apify MCP server. */
 export const MCPC_SESSION = '@apify';
+
+/**
+ * The URL mcpc connects to: the Apify MCP server narrowed to the scenario's
+ * tools, exactly as the mcp surface narrows it (mcp.ts `resolveMcp`), so an
+ * mcp vs cli comparison gives the agent the same tools. Read from the item
+ * before surfaceItemMetadata drops its tools. A scenario without tools, or
+ * with its own MCP server, gets the server's default tool set.
+ */
+export function mcpcConnectUrl(meta: Pick<DatasetItemMetadata, 'tools' | 'mcp'>, mcpUrl: string): string {
+    const tools = meta.tools ?? [];
+    return !meta.mcp && tools.length > 0 ? toolsUrl(mcpUrl, tools) : mcpUrl;
+}
 
 /**
  * Connect the session's mcpc to the Apify MCP server before the agent starts,
