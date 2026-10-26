@@ -63,6 +63,7 @@ The same scenarios can run with or without agent skills. Use this to see which s
 
 - **Skill sets** (`skillSets` input): `none`, `apify-ultimate-scraper`, or names joined with `+`. The runner downloads them from [apify/agent-skills](https://github.com/apify/agent-skills) at the commit pinned in `src/skills.ts` (`DEFAULT_SKILLS_REF`); `skillsRef` takes another ref. See [`skills/README.md`](../../skills/README.md). `skillCombinations` runs every subset of the suite's `agentSkills`.
 - Every model × skill set is its own experiment run, named for example `store-actors · haiku-4.5 · skills:apify-ultimate-scraper · …`. Open the compare view and put two of them side by side. OUTPUT `variants` lists every combination with its pass rate, best first.
+- A run with more than one skill set is a comparison run. Its experiments stay out of the suite's daily report, which tracks the suite's normal setup. The Slack digest compares each variant only with the previous run of the same model and skill set.
 
 To test a skill change before release, run `skillSets: ["none", "<skill>"]` with `skillsRef: "apify/agent-skills#<branch>"`.
 

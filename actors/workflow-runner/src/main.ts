@@ -463,6 +463,8 @@ for (const { entry, skillSet } of variants) {
                 repeats: safeRepeats,
                 scope,
                 fullScope,
+                // Several skill sets side by side: the report leaves these out.
+                comparison: skillSets.length > 1,
                 trigger,
                 scenarioCount: selected.length,
                 models,
