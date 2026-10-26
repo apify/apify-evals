@@ -46,12 +46,12 @@ scenarios:
       skill: use
       title: 'website-content / use / platform-section-html'
       notes: 'Usage: pinned Website Content Crawler, one section only with HTML saved'
-      prompt: Use the apify/website-content-crawler Actor to crawl only the platform section of the Apify
-          docs, https://docs.apify.com/platform, and nothing outside it. Cap it at 10 pages. I need the
+      prompt: Use the apify/website-content-crawler Actor to crawl only the account section of the Apify
+          docs, https://docs.apify.com/account, and nothing outside it. Cap it at 10 pages. I need the
           clean text of each page and also the full HTML of the pages you scraped. Report how many pages
           you got and confirm the HTML was saved.
-      expected: The agent uses apify/website-content-crawler with the platform URL as start, URL filtering
-          that keeps the crawl inside the platform section (include globs or equivalent), a 10-page cap,
+      expected: The agent uses apify/website-content-crawler with the account URL as start, URL filtering
+          that keeps the crawl inside the account section (include globs or equivalent), a 10-page cap,
           and HTML saving enabled, then reports a real page count from the run.
       checks:
           - id: rightActor
@@ -65,7 +65,7 @@ scenarios:
             type: apify.input
             path: startUrls[0].url
             op: regex
-            value: docs\.apify\.com/platform
+            value: docs\.apify\.com/account
           - id: pageCap
             type: apify.input
             path: maxCrawlPages
@@ -80,6 +80,12 @@ scenarios:
           - id: saveHtml
             type: apify.input
             path: saveHtml
+            op: equals
+            value: true
+            severity: info
+          - id: saveHtmlAsFile
+            type: apify.input
+            path: saveHtmlAsFile
             op: equals
             value: true
             severity: warn

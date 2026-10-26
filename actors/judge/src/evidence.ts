@@ -118,7 +118,8 @@ export function renderFacts(opts: {
     const tools = artifact?.evidence.toolCalls.map((c) => c.tool.replace(/^mcp__[^_]+__/, '')) ?? [];
     if (tools.length > 0) lines.push(`- Tool calls (${tools.length}): ${[...new Set(tools)].join(', ')}`);
     if (artifact) {
-        const applicable = artifact.checks.filter((c) => c.applicable);
+        // Info checks are records, not grades: keep them out of the judge's view.
+        const applicable = artifact.checks.filter((c) => c.applicable && c.severity !== 'info');
         if (applicable.length > 0) {
             lines.push('- Deterministic checks (already decided, do not re-judge them):');
             for (const c of applicable) lines.push(`    - ${c.id} (${c.type}${c.severity === 'warn' ? ', warn' : ''}): ${c.passed ? 'PASS' : 'FAIL'} — ${c.comment}`);

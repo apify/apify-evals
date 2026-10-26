@@ -74,7 +74,9 @@ mode, what a grounded answer contains. It is never grepped. Live values
 ## Checks
 
 Every check has an `id` (its score is `check.<id>`), a `type`, and optionally
-`severity: warn` (shown, never gates the verdict). A failed `fail`-severity
+`severity: warn` (shown, never gates the verdict) or `severity: info` (only
+recorded as the `info.<id>` score: not shown to the judge, not listed as a failed
+check in the report). A failed `fail`-severity
 check makes the verdict `fail` even when the judge liked the answer.
 
 | type              | asserts                                                                                                                                           | fields                                                                                                             |

@@ -108,7 +108,8 @@ export const agentSpanMetadataSchema = {
  * Deterministic check declared on a scenario. `type` picks the checker (see
  * checks.ts); the remaining fields are type-specific and validated there, so
  * new check types do not need a schema change. `id` names the score
- * (`check.<id>`); `severity: warn` never gates the verdict.
+ * (`check.<id>`); `severity: warn` never gates the verdict; `severity: info` only
+ * records the result (score `info.<id>`), never reported as a failure.
  */
 export const CHECK_TYPES = [
     // legacy aliases of answer.contains / answer.regex
@@ -134,7 +135,7 @@ const checkSchema = {
     properties: {
         id: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_-]{0,40}$' },
         type: { enum: [...CHECK_TYPES] },
-        severity: { enum: ['fail', 'warn'] },
+        severity: { enum: ['fail', 'warn', 'info'] },
         value: {},
     },
     required: ['type'],

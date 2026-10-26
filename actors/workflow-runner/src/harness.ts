@@ -698,7 +698,8 @@ async function abortLeftoverRuns(evidence: Evidence): Promise<void> {
 const RUN_LIMIT_RE = /exceed your limit of \d+ concurrent Actor runs/i;
 
 /**
- * Write check.<id> per check (not-applicable checks are skipped, not failed),
+ * Write check.<id> per check (not-applicable checks are skipped, not failed;
+ * info-severity checks go to info.<id> so nothing counts them as failures),
  * plus check.all (every fail-severity check passed) and check.infra (no
  * infrastructure failure: Actor runs finished, session did not time out).
  */
@@ -716,6 +717,10 @@ async function writeCheckScores(
     for (const c of checks) {
         if (!c.applicable) {
             log.info(`check.${c.id} not applicable: ${c.comment}`);
+            continue;
+        }
+        if (c.severity === 'info') {
+            await write(`info.${c.id}`, c.value, `INFO: ${c.comment}`);
             continue;
         }
         await write(
