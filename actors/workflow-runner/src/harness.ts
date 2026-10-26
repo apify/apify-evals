@@ -428,7 +428,7 @@ export function buildClaudeEnv(opts: {
  * scenario is lost for a reason that has nothing to do with the subject.
  * Detect it on the init line and restart the session once.
  */
-async function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<AdapterResult> {
+export async function runClaudeCode(ctx: SessionContext & { prompt: string }): Promise<AdapterResult> {
     const expectsMcp = Array.isArray(ctx.item.metadata?.tools) && ctx.item.metadata.tools.length > 0;
     let restarts = 0;
     for (;;) {
@@ -558,6 +558,10 @@ function runClaudeCodeOnce(
                 /* best effort */
             }
 
+            // The agent can print a secret from its env (`echo $APIFY_TOKEN`,
+            // `curl -v`). Redact before parsing, so the stored log, the tool
+            // observations and the evidence never carry it.
+            const stdout = redact(out);
             const {
                 conversation,
                 timeline,
@@ -570,7 +574,7 @@ function runClaudeCodeOnce(
                 usage,
                 costUsd,
                 numTurns,
-            } = parseSessionOutput(out, lineTimes);
+            } = parseSessionOutput(stdout, lineTimes);
 
             // Agent exhausted turns or hit our timeout: an eval result, not breakage.
             const ranOutOfTurns = subtype === 'error_max_turns';
@@ -584,7 +588,7 @@ function runClaudeCodeOnce(
                 conversation,
                 timeline,
                 startedAt: started,
-                rawStdout: out,
+                rawStdout: stdout,
                 metrics: {
                     harness: harness.kind,
                     model: harness.model,
