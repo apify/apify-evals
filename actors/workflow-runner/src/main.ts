@@ -14,6 +14,7 @@ import {
     resolveTrigger,
     shouldNotify,
 } from './config.js';
+import type { PastExperiment } from './notify.js';
 
 const execFile = promisify(execFileCb);
 
@@ -152,7 +153,7 @@ const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artif
 const { ReferenceRunner } = await import('./evidence.js');
 const { preflightModels } = await import('./preflight.js');
 const { resolveMcp } = await import('./mcp.js');
-const { postDigest } = await import('./notify.js');
+const { postDigest, previousPassRate: findPreviousPassRate } = await import('./notify.js');
 const { loadRunSkills, resolveSkillSets, skillSetLabel } = await import('./skills.js');
 
 // `model` / `models` are the team-facing inputs; the `harness` object stays
@@ -695,7 +696,8 @@ if (skillsVaried && variantRows.some((v) => v.passRate !== null)) {
 
 // Slack digest: scheduled runs post by default, manual runs only when asked.
 // Per-scenario rows come from the judge's dataset; the previous pass rate
-// from the last run-level pass_rate score that is not this run's.
+// from the last earlier full-scope experiment of this dataset with the same
+// configuration (see previousPassRate).
 if (shouldNotify(input.notify, trigger)) {
     for (const s of summaries) {
         if (!s.judge || !s.judgeDatasetId) continue;
@@ -717,15 +719,16 @@ if (shouldNotify(input.notify, trigger)) {
             let previousPassRate: number | null = null;
             if (fullScope) {
                 try {
-                    const page = (await langfuse.api.scoresV3.getManyV3({
-                        name: 'pass_rate',
-                        limit: 10,
-                        fields: 'subject',
-                    })) as unknown as {
-                        data?: { value?: unknown; subject?: { id?: string } }[];
-                    };
-                    const prev = (page.data ?? []).find((sc) => sc.subject?.id && sc.subject.id !== s.datasetRunId);
-                    previousPassRate = prev && typeof prev.value === 'number' ? prev.value : null;
+                    const page = (await langfuse.api.experiments.list({
+                        datasetId: dataset.id,
+                        fields: 'core,metadata,scores',
+                        fromStartTime: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+                        limit: 100,
+                    })) as unknown as { data?: PastExperiment[] };
+                    previousPassRate = findPreviousPassRate(page.data ?? [], {
+                        datasetRunId: s.datasetRunId,
+                        variant: { harness: s.harness, model: s.model, skillSet: s.skillSet },
+                    });
                 } catch (err) {
                     log.warning(`previous pass rate lookup failed: ${err}`);
                 }
