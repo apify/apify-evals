@@ -95,7 +95,7 @@ const SCHEDULED = (t: string | null) => (t ?? '').toLowerCase().startsWith('sche
  * run. Extra full runs on the same day and model (e.g. three concurrent manual
  * runs) stay out of the counts and are listed as excluded, so a day never
  * carries more than one attempt per task and model. Comparison runs (several
- * skill sets side by side) are never canonical: the report tracks the suite's
+ * surfaces or skill sets side by side) are never canonical: the report tracks the suite's
  * normal setup, and their variants share the model slot.
  */
 export function canonicalExperimentIds(observations: Observation[]): Set<string> {

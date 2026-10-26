@@ -101,7 +101,7 @@
         "runName": {
             "title": "Run name (optional)",
             "type": "string",
-            "description": "Defaults to \"<suite> · <model> · <scope> · <date time> · <trigger>\". With more than one model or skill set, each experiment gets \"<run name> · <model> · skills:<set>\" so Langfuse keeps them apart.",
+            "description": "Defaults to \"<suite> · <model> · <scope> · <date time> · <trigger>\". With more than one model, surface or skill set, each experiment gets \"<run name> · <model> · surface:<name> · skills:<set>\" so Langfuse keeps them apart.",
             "editor": "textfield",
             "nullable": true
         },

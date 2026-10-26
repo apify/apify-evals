@@ -519,8 +519,8 @@ for (const { entry, surface, skillSet } of variants) {
                 repeats: safeRepeats,
                 scope,
                 fullScope,
-                // Several skill sets side by side: the report leaves these out.
-                comparison: skillSets.length > 1,
+                // Several surfaces or skill sets side by side: the report leaves these out.
+                comparison: surfaces.length > 1 || skillSets.length > 1,
                 trigger,
                 scenarioCount: selected.length,
                 models,
@@ -790,7 +790,7 @@ if (shouldNotify(input.notify, trigger)) {
                     })) as unknown as { data?: PastExperiment[] };
                     previousPassRate = findPreviousPassRate(page.data ?? [], {
                         datasetRunId: s.datasetRunId,
-                        variant: { harness: s.harness, model: s.model, skillSet: s.skillSet },
+                        variant: { harness: s.harness, model: s.model, surface: s.surface, skillSet: s.skillSet },
                     });
                 } catch (err) {
                     log.warning(`previous pass rate lookup failed: ${err}`);
