@@ -420,9 +420,10 @@ for (const { entry, skillSet } of variants) {
     };
     const skillLabel = skillSetLabel(skillSet);
     const shortModel = model.replace(/^[^/]+\//, '');
-    const nameParts = [datasetName, shortModel];
-    if (harness.kind !== 'claude-code') nameParts.push(harness.kind);
-    if (skillsVaried) nameParts.push(`skills:${skillLabel}`);
+    const variantParts = [shortModel];
+    if (harness.kind !== 'claude-code') variantParts.push(harness.kind);
+    if (skillsVaried) variantParts.push(`skills:${skillLabel}`);
+    const nameParts = [datasetName, ...variantParts];
     if (!fullScope) nameParts.push(scope);
     if (safeRepeats > 1) nameParts.push(`×${safeRepeats}`);
     nameParts.push(stamp);
@@ -431,7 +432,11 @@ for (const { entry, skillSet } of variants) {
     // minute would otherwise merge into one experiment (three did on 22 Sept).
     const runTag = (process.env.APIFY_ACTOR_RUN_ID ?? '').slice(-5).toLowerCase();
     if (runTag) nameParts.push(runTag);
-    const effectiveRunName = runName ?? nameParts.join(' · ');
+    // A given runName is shared by every variant, and Langfuse would merge them
+    // into one experiment; with several variants each gets its label appended.
+    const effectiveRunName = runName
+        ? [runName, ...(variants.length > 1 ? variantParts : [])].join(' · ')
+        : nameParts.join(' · ');
 
     const started = Date.now();
     let result;
