@@ -372,6 +372,13 @@ describe('runChecks', () => {
             evidence,
         );
         expect(warn.severity).toBe('warn');
+        const [info, bogus] = runChecks(
+            [{ type: 'answer.contains', value: 'zzz', severity: 'info' }, { type: 'apify.run', severity: 'loud' }],
+            evidence,
+        );
+        expect(info.severity).toBe('info');
+        expect(info.passed).toBe(false);
+        expect(bogus.severity).toBe('fail');
         expect(warn.id).toBe('answer_contains_1');
         expect(auto.id).toBe('apify_run_2');
     });

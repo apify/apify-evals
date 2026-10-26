@@ -80,7 +80,7 @@ export interface CheckResult {
     value: number;
     /** Whether the check counts as passed (grounded: fraction >= minFraction). */
     passed: boolean;
-    severity: 'fail' | 'warn';
+    severity: 'fail' | 'warn' | 'info';
     applicable: boolean;
     comment: string;
 }
@@ -115,7 +115,8 @@ export function runChecks(checks: DeterministicCheck[], evidence: Evidence): Che
     return checks.map((raw, i) => {
         const check = raw as AnyCheck;
         const id = typeof check.id === 'string' && check.id ? check.id : `${check.type.replace(/\W+/g, '_')}_${i + 1}`;
-        const severity: 'fail' | 'warn' = check.severity === 'warn' ? 'warn' : 'fail';
+        const severity: CheckResult['severity'] =
+            check.severity === 'warn' || check.severity === 'info' ? check.severity : 'fail';
         try {
             const r = evaluate(check, evidence);
             return { id, type: check.type, severity, ...r };
