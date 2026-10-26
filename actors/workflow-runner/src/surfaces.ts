@@ -15,9 +15,11 @@ import { execFile as execFileCb } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 import { type DatasetItemMetadata, type SurfaceSpec, validateSurface } from '@apify-evals/contract';
+import { log } from 'apify';
 import YAML from 'yaml';
 
 import { fillPlaceholders, toolsUrl } from './mcp.js';
@@ -299,20 +301,46 @@ export function mcpcConnectUrl(meta: Pick<DatasetItemMetadata, 'tools' | 'mcp'>,
     return !meta.mcp && tools.length > 0 ? toolsUrl(mcpUrl, tools) : mcpUrl;
 }
 
+const MCPC_CONNECT_ATTEMPTS = 3;
+
 /**
  * Connect the session's mcpc to the Apify MCP server before the agent starts,
  * as `@apify`, with the surface's token as a bearer header (kept in the
- * session's file store, see installMcpc).
+ * session's file store, see installMcpc). A server that does not answer is
+ * retried, like the mcp surface restarts a session whose MCP server gave no
+ * tools; only the last failure fails the session. The error carries mcpc's
+ * stderr, never the command line with the token.
  */
-export async function connectMcpc(sessionHome: string, surface: ResolvedSurface, mcpUrl: string): Promise<void> {
+export async function connectMcpc(
+    sessionHome: string,
+    surface: ResolvedSurface,
+    mcpUrl: string,
+    retryDelayMs = 2000,
+): Promise<void> {
     if (!surface.mcpcBinDir) return;
     const token = surface.env.APIFY_TOKEN;
     if (!token) throw new Error(`surface "${surface.name}": mcpc needs APIFY_TOKEN in the surface env`);
-    await execFile(
-        join(sessionHome, 'bin', 'mcpc'),
-        ['connect', mcpUrl, MCPC_SESSION, '--header', `Authorization: Bearer ${token}`],
-        { timeout: 60_000, env: { PATH: process.env.PATH, HOME: sessionHome } },
-    );
+    const mcpc = join(sessionHome, 'bin', 'mcpc');
+    const env = { PATH: process.env.PATH, HOME: sessionHome };
+    for (let attempt = 1; ; attempt++) {
+        try {
+            await execFile(mcpc, ['connect', mcpUrl, MCPC_SESSION, '--header', `Authorization: Bearer ${token}`], {
+                timeout: 60_000,
+                env,
+            });
+            return;
+        } catch (err) {
+            const e = err as { stderr?: string; message?: string };
+            const reason = (e.stderr?.trim() || 'no output').replaceAll(token, '[REDACTED]').slice(0, 500);
+            if (attempt >= MCPC_CONNECT_ATTEMPTS) {
+                throw new Error(`mcpc connect to ${mcpUrl} failed after ${attempt} attempts: ${reason}`);
+            }
+            log.warning(`mcpc connect failed (attempt ${attempt}/${MCPC_CONNECT_ATTEMPTS}), retrying: ${reason}`);
+            // A half-open session would make the next connect fail on the name.
+            await execFile(mcpc, ['close', MCPC_SESSION], { timeout: 30_000, env }).catch(() => undefined);
+            await delay(retryDelayMs * attempt);
+        }
+    }
 }
 
 /**
