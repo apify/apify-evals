@@ -1,3 +1,4 @@
+import { ELIGIBLE_SCORE_NAME } from './online-classify.js';
 import { criterionScoreName, HOLISTIC_SCORE_NAME, ONLINE_RUBRIC, type Rubric } from './rubric.js';
 
 /**
@@ -43,6 +44,14 @@ export function desiredOnlineScoreConfigs(rubric: Rubric = ONLINE_RUBRIC): Desir
             dataType: 'BOOLEAN' as const,
             description: `${c.description} 1 = pass, 0 = fail. ${stamp}`,
         })),
+        {
+            name: ELIGIBLE_SCORE_NAME,
+            dataType: 'BOOLEAN',
+            description:
+                'Written by the input classifier before the judge, only on a turn it skips: 0 = the turn cannot be ' +
+                'evaluated (no content, no sense even with the earlier messages, abuse or gibberish). Eligible turns ' +
+                'get no score of this name. Metadata: stage (rule or model), rule id or Jev probability, threshold, mode.',
+        },
     ];
 }
 
