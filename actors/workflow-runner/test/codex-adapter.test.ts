@@ -255,16 +255,30 @@ process.stdin.on('end', () => {
         expect(mcp.listTools).toHaveBeenCalledTimes(2);
     });
 
+    it('waits the retryAfter the MCP server asks for before the restart', async () => {
+        mcp.listTools.mockRejectedValueOnce(
+            new Error(
+                'Streamable HTTP error: Error POSTing to endpoint: {"jsonrpc":"2.0","error":{"code":-32050,"message":"Rate limit exceeded","data":{"retryAfter":1}}}',
+            ),
+        );
+        stub('process.stdout.write(fixture);');
+        const t0 = Date.now();
+        const result = await runCodex(ctx);
+        expect(Date.now() - t0).toBeGreaterThanOrEqual(1000);
+        expect(result.metrics).toMatchObject({ mcpRestarts: 1, mcpToolsMissing: false });
+        expect(mcp.listTools).toHaveBeenCalledTimes(2);
+    });
+
     it('returns inconclusive MCP evidence after repeated initialization failure', async () => {
         mcp.connect.mockRejectedValue(new Error('connection failed'));
         const result = await runCodex(ctx);
         expect(result.harnessBroke).toBe(false);
         expect(result.metrics).toMatchObject({
-            mcpRestarts: 1,
+            mcpRestarts: 3,
             mcpToolCount: 0,
             mcpServers: [{ name: 'apify', status: 'failed' }],
         });
-        expect(mcp.close).toHaveBeenCalledTimes(2);
+        expect(mcp.close).toHaveBeenCalledTimes(4);
         expect(sessionInfra(result).ok).toBe(false);
     });
 
@@ -349,6 +363,23 @@ process.stdin.on('end', () => {
         expect(result.metrics).toMatchObject({ timedOut: true, mcpRestarts: 0 });
         expect(mcp.close).toHaveBeenCalledOnce();
         expect(sessionInfra(result).ok).toBe(false);
+    });
+
+    it('treats a deadline abort of MCP discovery as a timeout even when the clock lags the timer', async () => {
+        ctx.perItemTimeoutSecs = 0.05;
+        const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+        mcp.connect.mockImplementation(
+            (_transport, options) =>
+                new Promise((_resolve, reject) => {
+                    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+                }),
+        );
+        try {
+            const result = await runCodex(ctx);
+            expect(result.metrics).toMatchObject({ timedOut: true, mcpRestarts: 0, mcpToolsMissing: false });
+        } finally {
+            now.mockRestore();
+        }
     });
 
     it.each([

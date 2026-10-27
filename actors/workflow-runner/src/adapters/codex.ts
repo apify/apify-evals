@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -11,14 +12,7 @@ import { log } from 'apify';
 import { toolsUrl } from '../artifacts.js';
 import type { AdapterResult, SessionContext } from '../harness.js';
 import { parseCodexEvents, parseCodexLine } from './codex-events.js';
-import {
-    EXIT_GRACE_MS,
-    killProcessTree,
-    MAX_MCP_RESTARTS,
-    MAX_STDOUT_BYTES,
-    STDERR_CAP,
-    snapshotWorkspace,
-} from './shared.js';
+import { EXIT_GRACE_MS, killProcessTree, MAX_STDOUT_BYTES, STDERR_CAP, snapshotWorkspace } from './shared.js';
 
 /** Kept together so the provider can change without touching process handling. */
 export const CODEX_PROVIDER = {
@@ -110,6 +104,16 @@ function buildConfig(ctx: CodexContext): string {
     return `${lines.join('\n')}\n`;
 }
 
+/** mcp.apify.com rate-limits initialization bursts and names the seconds to
+ * wait; an immediate restart only keeps the rate up and fails again. */
+function restartDelayMs(failure: string): number {
+    const m = /"retryAfter":\s*([\d.]+)/.exec(failure);
+    return (m ? Number(m[1]) : 1) * 1000;
+}
+
+/** Two refusals in a row happen under the rate limit; one restart was not enough. */
+const CODEX_MCP_RESTARTS = 3;
+
 export async function runCodex(ctx: CodexContext): Promise<AdapterResult> {
     const maxTurns = ctx.item.metadata?.maxTurns ?? ctx.harness.maxTurns;
     if (!Number.isInteger(maxTurns) || maxTurns < 1) throw new Error('Codex maxTurns must be a positive integer');
@@ -119,9 +123,13 @@ export async function runCodex(ctx: CodexContext): Promise<AdapterResult> {
     let restarts = 0;
     for (;;) {
         const result = await runCodexOnce(ctx, deadline, expected);
-        if (result.metrics.mcpToolsMissing && restarts < MAX_MCP_RESTARTS && Date.now() < deadline) {
+        if (result.metrics.mcpToolsMissing && restarts < CODEX_MCP_RESTARTS && Date.now() < deadline) {
             restarts++;
-            log.warning(`Codex MCP startup failed; restarting session (${restarts}/${MAX_MCP_RESTARTS})`);
+            const waitMs = Math.min(restartDelayMs(result.stderr), deadline - Date.now());
+            log.warning(
+                `Codex MCP startup failed (${result.stderr.slice(0, 200)}); restarting session in ${waitMs} ms (${restarts}/${CODEX_MCP_RESTARTS})`,
+            );
+            await sleep(waitMs);
             continue;
         }
         result.startedAt = startedAt;
@@ -138,16 +146,21 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
     let mcpToolCount: number | null = null;
     let mcpFailure: string | null = null;
     const remaining = () => Math.max(1, deadline - Date.now());
+    // The abort timer can fire while Date.now() is still short of the deadline.
+    let timedOut = false;
     if (expected) {
+        const signal = AbortSignal.timeout(remaining());
         try {
-            mcpToolCount = await listMcpTools(ctx, AbortSignal.timeout(remaining()));
+            mcpToolCount = await listMcpTools(ctx, signal);
             if (mcpToolCount === 0) mcpFailure = 'MCP server exposed no allowed tools';
         } catch (error) {
             mcpToolCount = 0;
-            mcpFailure = String(error);
+            if (signal.aborted) timedOut = true;
+            else mcpFailure = String(error);
         }
     }
-    if (mcpFailure || Date.now() >= deadline) {
+    timedOut ||= Date.now() >= deadline;
+    if (mcpFailure || timedOut) {
         return {
             output: '',
             conversation: [],
@@ -162,7 +175,7 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
                 exitCode: null,
                 subtype: mcpFailure ? 'error_mcp_startup' : 'error_timeout',
                 isError: true,
-                timedOut: Date.now() >= deadline,
+                timedOut,
                 stdoutTruncated: false,
                 numTurns: 0,
                 usage: null,
