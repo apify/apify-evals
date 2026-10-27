@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { ELIGIBLE_SCORE_NAME } from '../src/online-classify.js';
 import { ONLINE_RUBRIC, ONLINE_SCORE_NAMES } from '../src/rubric.js';
 import { desiredOnlineScoreConfigs, type ExistingScoreConfig, planScoreConfigs } from '../src/score-configs.js';
 
@@ -11,12 +12,18 @@ function existingBoolean(name: string, overrides: Partial<ExistingScoreConfig> =
 
 describe('desiredOnlineScoreConfigs', () => {
     it('is one BOOLEAN config per online score name, stamped with the rubric version', () => {
-        expect(desired.map((c) => c.name)).toEqual(ONLINE_SCORE_NAMES);
-        for (const c of desired) {
+        expect(desired.map((c) => c.name)).toEqual([...ONLINE_SCORE_NAMES, ELIGIBLE_SCORE_NAME]);
+        for (const c of desired.filter((d) => d.name !== ELIGIBLE_SCORE_NAME)) {
             expect(c.dataType).toBe('BOOLEAN');
             expect(c.description).toContain('1 = pass, 0 = fail');
             expect(c.description).toContain(`Rubric ${ONLINE_RUBRIC.name} v${ONLINE_RUBRIC.version}.`);
         }
+    });
+
+    it('has a BOOLEAN config for the classifier skip score (#29)', () => {
+        const eligible = desired.find((c) => c.name === ELIGIBLE_SCORE_NAME);
+        expect(eligible?.dataType).toBe('BOOLEAN');
+        expect(eligible?.description).toContain('0 = the turn cannot be evaluated');
     });
 
     it('reuses the rubric descriptions verbatim', () => {
@@ -44,10 +51,11 @@ describe('planScoreConfigs', () => {
     });
 
     it('creates nothing when all exist, and ignores unrelated configs', () => {
-        const existing = [...ONLINE_SCORE_NAMES.map((n) => existingBoolean(n)), existingBoolean('judge.overall')];
+        const names = [...ONLINE_SCORE_NAMES, ELIGIBLE_SCORE_NAME];
+        const existing = [...names.map((n) => existingBoolean(n)), existingBoolean('judge.overall')];
         const plan = planScoreConfigs(desired, existing);
         expect(plan.every((e) => e.action === 'exists')).toBe(true);
-        expect(plan.map((e) => e.name)).toEqual(ONLINE_SCORE_NAMES);
+        expect(plan.map((e) => e.name)).toEqual(names);
     });
 
     it('reports a same-name config with another dataType as a conflict, never as existing', () => {

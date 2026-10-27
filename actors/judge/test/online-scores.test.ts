@@ -2,15 +2,19 @@ import { NotFoundError } from '@langfuse/core';
 import { describe, expect, it } from 'vitest';
 
 import { JUDGE_IMPL_VERSION } from '../src/core.js';
+import { ELIGIBLE_SCORE_NAME } from '../src/online-classify.js';
 import type { OnlineVerdicts } from '../src/online-judge.js';
 import {
     AllScoreWritesFailedError,
     computeRollup,
     type CreateDatasetItemRequest,
     type CreateScoreRequest,
+    type EligibilityVersion,
+    eligibleScoreId,
     environmentSuffix,
     type ExistingOnlineScore,
     finishOnlineRun,
+    ineligibleScoreRequest,
     InvalidScoreIdError,
     isNotFound,
     judgedUnderVersion,
@@ -19,6 +23,7 @@ import {
     MAX_JUDGE_FAILURE_RATIO,
     MAX_SCORE_ID_LENGTH,
     mergeRollup,
+    NO_CLASSIFIER_COUNTERS,
     onlineRunId,
     onlineScoreId,
     type OnlineScoreVersion,
@@ -435,7 +440,17 @@ describe('langfuseOnlineScoreReader', () => {
     });
 });
 
-const judgeCoverage = { tracesInWindow: 40, completedTraces: 30, sampled: 6, judged: 4, failedToJudge: 2 };
+const judgeCoverage = {
+    tracesInWindow: 40,
+    completedTraces: 30,
+    sampled: 6,
+    judged: 4,
+    failedToJudge: 2,
+    skippedIneligibleRule: 1,
+    skippedIneligibleModel: 2,
+    classifierFailed: 1,
+    targetMissed: 0,
+};
 const coverage = { ...judgeCoverage, scoresWritten: 4, failedToWrite: 0 };
 
 describe('computeRollup', () => {
@@ -517,6 +532,10 @@ describe('mergeRollup', () => {
             failedToJudge: 4,
             scoresWritten: 8,
             failedToWrite: 0,
+            skippedIneligibleRule: 2,
+            skippedIneligibleModel: 4,
+            classifierFailed: 2,
+            targetMissed: 0,
         });
         expect(merged.sampleRate).toBe(0.5);
         expect(merged.maxItems).toBe(10);
@@ -756,7 +775,14 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 3 },
+            coverage: {
+                tracesInWindow: 20,
+                completedTraces: 10,
+                sampled: 5,
+                judged: 0,
+                failedToJudge: 3,
+                ...NO_CLASSIFIER_COUNTERS,
+            },
             written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
@@ -820,7 +846,14 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 0 },
+            coverage: {
+                tracesInWindow: 20,
+                completedTraces: 10,
+                sampled: 5,
+                judged: 0,
+                failedToJudge: 0,
+                ...NO_CLASSIFIER_COUNTERS,
+            },
             written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
@@ -836,7 +869,14 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            coverage: { tracesInWindow: 3, completedTraces: 0, sampled: 0, judged: 0, failedToJudge: 0 },
+            coverage: {
+                tracesInWindow: 3,
+                completedTraces: 0,
+                sampled: 0,
+                judged: 0,
+                failedToJudge: 0,
+                ...NO_CLASSIFIER_COUNTERS,
+            },
             written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
@@ -864,5 +904,63 @@ describe('finishOnlineRun', () => {
         expect(writes).toEqual([]);
         // Everything was skipped by the pre-filter (sampled > 0, judged 0): the rollup still records the coverage.
         expect(result.rollupItemId).toBe('rollup-2026-09-09');
+    });
+});
+
+describe('classifier skip scores (#29)', () => {
+    const eligibility: EligibilityVersion = { judgeImplVersion: '0.6.0', classifierModel: 'typesafe/jev-1.13' };
+
+    it('eligibleScoreId is <traceId>-agent_judge_eligible-i<impl>-<classifierModel>, sanitised', () => {
+        expect(eligibleScoreId(TRACE_ID, eligibility)).toBe(
+            `${TRACE_ID}-agent_judge_eligible-i0-6-0-typesafe-jev-1-13`,
+        );
+        expect(eligibleScoreId('a:b', { ...eligibility, classifierModel: '~typesafe/jev-latest' })).toBe(
+            'a-b-agent_judge_eligible-i0-6-0--typesafe-jev-latest',
+        );
+        expect(() => eligibleScoreId('x'.repeat(300), eligibility)).toThrow(InvalidScoreIdError);
+    });
+
+    it('a skip is a BOOLEAN 0 trace score with the stage, the rule or P(yes), the threshold and the mode', () => {
+        const request = (classification: Parameters<typeof ineligibleScoreRequest>[0]['classification']) =>
+            ineligibleScoreRequest({
+                traceId: 't1',
+                classification,
+                version: eligibility,
+                threshold: 0.3,
+                mode: 'shadow',
+                environment: 'prod',
+            });
+        const rule = request({ verdict: 'ineligible', stage: 'rule', rule: 'digits-only' });
+        expect(rule).toEqual({
+            id: eligibleScoreId('t1', eligibility),
+            traceId: 't1',
+            name: ELIGIBLE_SCORE_NAME,
+            value: 0,
+            dataType: 'BOOLEAN',
+            comment: 'INELIGIBLE (shadow); rule digits-only',
+            environment: 'prod',
+            metadata: {
+                stage: 'rule',
+                rule: 'digits-only',
+                threshold: 0.3,
+                mode: 'shadow',
+                classifierModel: 'typesafe/jev-1.13',
+                judgeImplVersion: '0.6.0',
+                environment: 'prod',
+            },
+        });
+        expect(rule.datasetRunId).toBeUndefined();
+        const model = request({ verdict: 'ineligible', stage: 'model', probability: 0.12, servedModel: 'jev-x' });
+        expect(model.id).toBe(rule.id);
+        expect(model.comment).toBe('INELIGIBLE (shadow); P(yes)=0.120 < 0.3');
+        expect(model.metadata).toMatchObject({ stage: 'model', probability: 0.12, servedModel: 'jev-x' });
+    });
+
+    it('a rollup written before the classifier existed merges, counting its missing counters as 0', () => {
+        const fresh = computeRollup({ target: PROD, verdicts: [], sampleRate: 0.2, maxItems: 100, coverage });
+        const old = { tracesInWindow: 1, completedTraces: 1, sampled: 1, judged: 1, failedToJudge: 0 };
+        const legacy = { ...fresh, coverage: { ...old, scoresWritten: 1, failedToWrite: 0 } as Rollup['coverage'] };
+        const merged = mergeRollup(legacy, fresh);
+        expect(merged.coverage).toMatchObject({ sampled: 7, skippedIneligibleModel: 2, classifierFailed: 1 });
     });
 });
