@@ -322,11 +322,72 @@ clear message instead of selecting from, and scoring into, the wrong project.
 The daily schedule runs a Task that holds these keys (`schedule/README.md`).
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
-tracesInWindow, completedTraces, sampled, scoresSkipped, judged,
-failedToJudge, metadataMissing, scoresWritten, failedToWrite, rollupItemId,
-sampledTraceIds}`. `scoresSkipped` counts sampled traces already judged under
-this version (not judged again); `scoresWritten` and `failedToWrite` count
-traces, not individual scores.
+tracesInWindow, completedTraces, sampled, scoresSkipped, classifier,
+classifierModel, classifierThreshold, skippedIneligible: {rule, model},
+classifierFailed, targetReached, classifierTarget, classifierAttempts,
+toppedUp, skipScoreWriteFailed, classifierBudgetExceeded, classifierCostUsd,
+ineligibleTraceIds, toppedUpTraceIds, judged, failedToJudge, metadataMissing,
+scoresWritten, failedToWrite, rollupItemId, sampledTraceIds}`.
+`scoresSkipped` counts sampled traces already processed under this version
+(not judged again); `scoresWritten` and `failedToWrite` count traces, not
+individual scores. `sampledTraceIds` is the original sample; in enforce mode
+the judge gets it minus `ineligibleTraceIds` plus the eligible
+`toppedUpTraceIds`. The classifier fields are described below.
+
+### Input classifier
+
+Before the judge, a classifier rejects turns that cannot be evaluated
+([#29](https://github.com/apify/apify-evals/issues/29), `src/online-classify.ts`).
+Example: the user typed only `2` and there are no earlier messages. The order
+is: sampling, `skipAlreadyJudged`, classify, judge.
+
+1. **Rules.** Invisible characters (format characters such as zero-width
+   spaces, joiners and soft hyphens, and other default-ignorable code points)
+   are removed first. Always reject an empty, whitespace-only,
+   punctuation-only or emoji-only message. When the turn has no earlier
+   messages, also reject a message of digits only or of fewer than 3 visible
+   characters. There is no word list: a `2` that answers "choose 1-3" goes on
+   to Jev.
+2. **Jev.** One `noul` question, "Can this turn be evaluated?", to TypeSafe
+   Jev (`classifierModel`, default `typesafe/jev-1.13`) on
+   `POST https://openrouter.apify.actor/api/v1/systemone` (`src/jev.ts`). The
+   state is the user message and up to 10 earlier messages, never the agent's
+   answer. Its JSON is capped at 30,000 UTF-8 bytes (long texts are cut in the
+   middle, the oldest messages dropped), because TypeSafe sends a state above
+   about 32,000 bytes to a slower and less accurate long-context mode. The question is in the source, not in Langfuse prompt management.
+   The turn is skipped when P(yes) is below `classifierThreshold` (default
+   0.3). Off-topic turns stay eligible.
+
+Each skip writes the BOOLEAN trace score `agent_judge_eligible = 0`, id
+`<traceId>-agent_judge_eligible-i<judgeImplVersion>-<classifierModel>`, with
+`stage` (`rule` / `model`), the rule id or the Jev probability, the served
+model, the threshold and the mode in the metadata. Eligible turns get no such
+score. If Jev fails (network error, timeout, 408, 429 or 5xx after 3
+attempts; any other 4xx or a bad body at once) or the trace cannot be read,
+the turn is judged anyway and counted in `classifierFailed`. After 5 Jev
+failures in a row the rest of the batch fails open without a call, and the
+whole classification phase has a 20 min budget after which the rest goes to
+the judge unclassified (`classifierBudgetExceeded`), so a slow or failing Jev
+cannot push the run past its timeout. A failed score read during the top-up
+stops the top-up, not the run. A `classifierModel` that makes the skip score
+id invalid fails the run at start.
+
+`classifier` sets the mode:
+
+- `off`: no classifier, the same behaviour as before.
+- `shadow`: write the skip scores (`mode: shadow`), but judge every sampled
+  turn. No top-up.
+- `enforce` (schema default): do not judge a skipped turn. Replace it with the
+  next unsampled completed trace of the window (same shuffle as the sample)
+  until the sample is full again. The top-up stops after
+  `maxClassifyFactor` (default 3) x the sample size classifications;
+  `targetReached: false` in OUTPUT and `targetMissed` in the rollup report it.
+  In this mode `skipAlreadyJudged` also treats a trace with a matching skip
+  score as processed. The threshold is not in the id: see "After a threshold
+  change" in `schedule/README.md`.
+
+The rollup coverage has `skippedIneligibleRule`, `skippedIneligibleModel`,
+`classifierFailed` and `targetMissed`, and the rollup input has the mode.
 
 ### Verified live 2026-09-09
 
