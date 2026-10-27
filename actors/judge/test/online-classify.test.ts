@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { JevCaller, JevRequest } from '../src/jev.js';
 import {
+    type Classification,
     classifierState,
+    classifyBatch,
+    type ClassifyBatchOptions,
     classifyTurn,
     EVALUABLE_QUESTION,
     EVALUABLE_QUESTION_NAME,
+    type Ineligible,
     MAX_STATE_BYTES,
     ruleVerdict,
     traceClassifier,
@@ -188,5 +192,64 @@ describe('traceClassifier', () => {
         };
         const c = await traceClassifier({ langfuse, ...config, callJev: fakeJev(0.8).callJev })('tr1');
         expect(c.verdict).toBe('failed');
+    });
+});
+
+describe('classifyBatch', () => {
+    const ELIGIBLE: Classification = { verdict: 'eligible', probability: 0.9, servedModel: 'jev' };
+    const RULE_SKIP: Classification = { verdict: 'ineligible', stage: 'rule', rule: 'digits-only' };
+    const MODEL_SKIP: Classification = { verdict: 'ineligible', stage: 'model', probability: 0.1, servedModel: 'jev' };
+    const FAILED: Classification = { verdict: 'failed', error: 'Jev HTTP 503' };
+    const BY_PREFIX: Record<string, Classification> = { 'bad-r': RULE_SKIP, 'bad-m': MODEL_SKIP, fail: FAILED };
+
+    /** Classifies by id prefix: `bad-r*` rule skip, `bad-m*` model skip, `fail*` failed, else eligible. */
+    function setup(overrides: Partial<ClassifyBatchOptions> = {}) {
+        const classified: string[] = [];
+        const recorded: { traceId: string; classification: Ineligible }[] = [];
+        const opts: ClassifyBatchOptions = {
+            mode: 'shadow',
+            initial: [],
+            concurrency: 2,
+            classify: async (traceId) => {
+                classified.push(traceId);
+                const prefix = Object.keys(BY_PREFIX).find((p) => traceId.startsWith(p));
+                return prefix ? BY_PREFIX[prefix] : ELIGIBLE;
+            },
+            onIneligible: async (traceId, classification) => {
+                recorded.push({ traceId, classification });
+            },
+            ...overrides,
+        };
+        return { opts, classified, recorded };
+    }
+
+    it('off makes no classifier calls and writes no skip score', async () => {
+        const { opts, classified, recorded } = setup({ mode: 'off', initial: ['a', 'bad-r1'] });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['a', 'bad-r1']);
+        expect(classified).toEqual([]);
+        expect(recorded).toEqual([]);
+    });
+
+    it('shadow: judges every sampled trace and writes the skips', async () => {
+        const { opts, classified, recorded } = setup({ initial: ['a', 'bad-r1', 'bad-m1', 'fail1'] });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['a', 'bad-r1', 'bad-m1', 'fail1']);
+        expect(classified.sort()).toEqual(['a', 'bad-m1', 'bad-r1', 'fail1']);
+        expect(recorded.map((x) => x.traceId).sort()).toEqual(['bad-m1', 'bad-r1']);
+        expect(r.skippedIneligible).toEqual({ rule: 1, model: 1 });
+        expect(r.classifierFailed).toBe(1);
+    });
+
+    it('a failed skip-score write is logged, never fatal', async () => {
+        const { opts } = setup({
+            initial: ['bad-r1', 'a'],
+            onIneligible: async () => {
+                throw new Error('langfuse down');
+            },
+        });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['bad-r1', 'a']);
+        expect(r.skippedIneligible.rule).toBe(1);
     });
 });

@@ -40,6 +40,37 @@ reviewable in git.
 Cost per run at the defaults is about a dollar of judge calls (see the Actor
 README, `maxItems`).
 
+The Task input also sets `classifier: shadow`, `classifierModel` and
+`classifierThreshold`; see the next section.
+
+## Input classifier rollout
+
+The input classifier ([#29](https://github.com/apify/apify-evals/issues/29))
+starts in shadow mode: it writes `agent_judge_eligible = 0` (metadata
+`mode: shadow`) on each turn it would skip, and the judge still evaluates every
+sampled turn, so `agent_judge` does not change.
+
+1. Let the schedule run a few days in shadow mode.
+2. In Langfuse, filter the trace scores on `agent_judge_eligible = 0` and read
+   the skipped turns. Look for valid turns that were skipped, per `stage` and
+   rule id or P(yes). OUTPUT and the daily rollup show `skippedIneligible` and
+   `classifierFailed`.
+3. If the skips are correct, change `classifier` in the Task (Console or
+   `PUT /v2/actor-tasks/<id>`) and in `online-task.json`.
+
+The classifier adds one Jev call per sampled turn that the rules let through,
+a fraction of a cent per run. A Jev call takes at most 3 x 10 s plus two 2 s
+sleeps = 34 s; when two attempts time out and the third answers slowly, the
+circuit breaker (5 failures in a row) never trips. So in shadow mode the
+classifier adds at most 25 waves x 34 s = about 14 min, plus a second Langfuse
+fetch per classified trace (the judge reads the trace again). With the judge's
+152 min above, that is about 166 min, under the 3 h timeout.
+
+**After a threshold change.** The threshold is not in the skip score id, so
+old skips stay: filter them on `metadata.threshold`. To classify an old window
+again, run once with `windowStart`, `windowEnd` and `force: true` (this also
+judges that window again, at the normal judge cost).
+
 ## Secrets the run needs
 
 The Langfuse keys of the "Apify AI Agent" project go into the Task input, not

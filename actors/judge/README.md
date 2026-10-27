@@ -322,11 +322,39 @@ clear message instead of selecting from, and scoring into, the wrong project.
 The daily schedule runs a Task that holds these keys (`schedule/README.md`).
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
-tracesInWindow, completedTraces, sampled, scoresSkipped, judged,
-failedToJudge, metadataMissing, scoresWritten, failedToWrite, rollupItemId,
+tracesInWindow, completedTraces, sampled, scoresSkipped, classifier,
+skippedIneligible: {rule, model}, classifierFailed, judged, failedToJudge,
+metadataMissing, scoresWritten, failedToWrite, rollupItemId,
 sampledTraceIds}`. `scoresSkipped` counts sampled traces already judged under
 this version (not judged again); `scoresWritten` and `failedToWrite` count
 traces, not individual scores.
+
+### Input classifier
+
+Before the judge, a classifier finds turns that cannot be evaluated
+([#29](https://github.com/apify/apify-evals/issues/29), `src/online-classify.ts`),
+for example a lone `2` with no earlier messages.
+
+1. **Rules.** A message with no letter and no digit is always skipped. When
+   the turn has no earlier messages, digits only and fewer than 3 characters
+   are skipped too. There is no word list.
+2. **Jev.** One `noul` question, "Can this turn be evaluated?", to TypeSafe
+   Jev (`classifierModel`, default `typesafe/jev-1.13`) on
+   `POST https://openrouter.apify.actor/api/v1/systemone` (`src/jev.ts`). Jev
+   sees the user message and the earlier messages, never the agent's answer,
+   capped at 30,000 bytes of JSON. The turn is skipped when P(yes) is below
+   `classifierThreshold` (default 0.3).
+
+Each skip writes the BOOLEAN trace score `agent_judge_eligible = 0`, id
+`<traceId>-agent_judge_eligible-i<judgeImplVersion>-<classifierModel>`, with
+the stage, the rule id or P(yes), the served model, the threshold and the mode
+in the metadata. If Jev fails after 3 attempts or the trace cannot be read, the
+turn is judged anyway and counted in `classifierFailed`. After 5 Jev failures
+in a row, the run stops calling Jev.
+
+`classifier` sets the mode. `off` (default): no classifier. `shadow`: write
+the skip scores, but judge every sampled turn. The rollup coverage has
+`skippedIneligibleRule`, `skippedIneligibleModel` and `classifierFailed`.
 
 ### Verified live 2026-09-09
 
