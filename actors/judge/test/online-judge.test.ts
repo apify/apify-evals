@@ -355,7 +355,7 @@ describe('judgeOnlineTrace', () => {
     };
     const base = { traceId: 't1', apifyToken: 'tok', judgeModel: 'm', promptTemplate: '{{turn}}', promptVersion: 1 };
     /** The shape judgeLlmCall returns: the parsed reply plus usage and timing. */
-    const llmResult = (json: unknown) => ({ json, usage: null, startedAt: 0, endedAt: 0 });
+    const llmResult = (json: unknown) => ({ json, usage: null, model: null, startedAt: 0, endedAt: 0 });
 
     it('fetches, reconstructs, checks arguments and judges, rendering the turn into the prompt', async () => {
         const prompts: string[] = [];
