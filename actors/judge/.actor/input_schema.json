@@ -131,16 +131,18 @@
         "classifier": {
             "title": "Input classifier (online)",
             "type": "string",
-            "description": "Online mode only. Before the judge, a classifier finds turns that cannot be evaluated (no letter or digit; a lone number or a very short text with no earlier messages; then a TypeSafe Jev decision). Each such turn gets the trace score agent_judge_eligible = 0. off: no classifier. shadow: write the skip scores, but judge every sampled turn.",
-            "default": "off",
+            "description": "Online mode only. Before the judge, a classifier finds turns that cannot be evaluated (no letter or digit; a lone number or a very short text with no earlier messages; then a TypeSafe Jev decision). Each such turn gets the trace score agent_judge_eligible = 0. off: no classifier. shadow: write the skip scores, but judge every sampled turn. enforce: do not judge the skipped turns and replace each one with another completed turn from the window.",
+            "default": "enforce",
             "editor": "select",
             "enum": [
                 "off",
-                "shadow"
+                "shadow",
+                "enforce"
             ],
             "enumTitles": [
                 "Off",
-                "Shadow (score skips, judge all)"
+                "Shadow (score skips, judge all)",
+                "Enforce (skip and top up)"
             ]
         },
         "classifierModel": {
@@ -159,6 +161,14 @@
             "default": 0.3,
             "minimum": 0,
             "maximum": 1
+        },
+        "maxClassifyFactor": {
+            "title": "Max classification factor (online)",
+            "type": "number",
+            "description": "Online mode, enforce only. The top-up stops after maxClassifyFactor x the sample size classifications. OUTPUT reports targetReached: false when the sample could not be filled.",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 10
         },
         "artifactStore": {
             "title": "Eval artifacts store",
