@@ -1,6 +1,7 @@
 import type { LangfuseClient } from '@langfuse/client';
 import { log } from 'apify';
 
+import { type ClassifierMode, ELIGIBLE_SCORE_NAME, type Ineligible } from './online-classify.js';
 import type { OnlineVerdicts } from './online-judge.js';
 import { HOLISTIC_SCORE_NAME, ONLINE_SCORE_NAMES } from './rubric.js';
 import { type Checkpoint, type CheckpointStore, DEFAULT_ENVIRONMENT } from './select.js';
@@ -149,6 +150,92 @@ export function environmentSuffix(environment: string): string {
 /** The invented dataset run the archival copies hang off; one per UTC day of the window start and environment. */
 export function onlineRunId(date: Date, environment: string = DEFAULT_ENVIRONMENT): string {
     return `${ONLINE_RUN_ID_PREFIX}${utcDate(date)}${environmentSuffix(environment)}`;
+}
+
+/** What the skip score id is keyed on. No threshold and no mode: after a threshold change, use `force`. */
+export interface EligibilityVersion {
+    judgeImplVersion: string;
+    classifierModel: string;
+}
+
+/**
+ * `<traceId>-agent_judge_eligible-i<judgeImplVersion>-<classifierModel>`,
+ * sanitised and checked like `onlineScoreId()`. Trace copy only: a skip has no
+ * archival run copy and does not go into the rollup's pass rates.
+ */
+export function eligibleScoreId(traceId: string, version: EligibilityVersion): string {
+    const id = rawEligibleScoreId(traceId, version);
+    if (id.length > MAX_SCORE_ID_LENGTH) {
+        throw new InvalidScoreIdError(id, `is ${id.length} chars, max is ${MAX_SCORE_ID_LENGTH}`);
+    }
+    if (!SCORE_ID_PATTERN.test(id))
+        throw new InvalidScoreIdError(id, `contains characters outside ${SCORE_ID_PATTERN}`);
+    return id;
+}
+
+/** The id before the checks; `skippedUnderVersion` compares with it so a bad input never throws there. */
+function rawEligibleScoreId(traceId: string, version: EligibilityVersion): string {
+    return [
+        sanitiseIdPart(traceId),
+        ELIGIBLE_SCORE_NAME,
+        `i${sanitiseIdPart(version.judgeImplVersion)}`,
+        sanitiseIdPart(version.classifierModel),
+    ].join('-');
+}
+
+/** A Langfuse (OTel) trace id is 32 hex characters; used to check a classifier model before the run starts. */
+export const SAMPLE_TRACE_ID = '0'.repeat(32);
+
+/**
+ * The `agent_judge_eligible = 0` score for one skipped turn. The comment and
+ * the metadata carry the stage, the rule id or the Jev probability, never
+ * user text. `mode` tells a shadow skip (the turn was judged too) from an
+ * enforced one.
+ */
+export function ineligibleScoreRequest({
+    traceId,
+    classification,
+    version,
+    threshold,
+    mode,
+    environment,
+}: {
+    traceId: string;
+    classification: Ineligible;
+    version: EligibilityVersion;
+    threshold: number;
+    mode: Exclude<ClassifierMode, 'off'>;
+    environment: string;
+}): CreateScoreRequest {
+    const detail =
+        classification.stage === 'rule'
+            ? { stage: 'rule' as const, rule: classification.rule }
+            : {
+                  stage: 'model' as const,
+                  probability: classification.probability,
+                  servedModel: classification.servedModel,
+              };
+    const reason =
+        classification.stage === 'rule'
+            ? `rule ${classification.rule}`
+            : `P(yes)=${classification.probability.toFixed(3)} < ${threshold}`;
+    return {
+        id: eligibleScoreId(traceId, version),
+        traceId,
+        name: ELIGIBLE_SCORE_NAME,
+        value: 0,
+        dataType: 'BOOLEAN',
+        comment: `INELIGIBLE (${mode}); ${reason}`,
+        environment,
+        metadata: {
+            ...detail,
+            threshold,
+            mode,
+            classifierModel: version.classifierModel,
+            judgeImplVersion: version.judgeImplVersion,
+            environment,
+        },
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -323,12 +410,16 @@ export class AllScoreWritesFailedError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface ExistingOnlineScore {
+    /** The score id; the eligibility match is on it. */
+    id?: string;
     name: string;
     traceId: string | null;
+    /** BOOLEAN scores read back as `false`/`true` on v3, as 0/1 elsewhere. */
+    value?: unknown;
     metadata?: Record<string, unknown>;
 }
 
-/** Existing holistic scores for the given traces; `langfuseOnlineScoreReader()` in production, a fake in tests. */
+/** Existing holistic and eligibility scores for the given traces; `langfuseOnlineScoreReader()` in production, a fake in tests. */
 export type OnlineScoreReader = (traceIds: string[]) => Promise<ExistingOnlineScore[]>;
 
 function versionsMatch(metadata: Record<string, unknown> | undefined, version: OnlineScoreVersion): boolean {
@@ -350,24 +441,49 @@ export function judgedUnderVersion(existing: ExistingOnlineScore[], version: Onl
 }
 
 /**
+ * Traces that already carry `agent_judge_eligible = 0` with exactly this id
+ * (impl and classifier model). Compares with the unchecked id: an id too long
+ * to write was never written, so it cannot match, and this never throws.
+ */
+export function skippedUnderVersion(existing: ExistingOnlineScore[], version: EligibilityVersion): Set<string> {
+    const skipped = new Set<string>();
+    for (const s of existing) {
+        if (s.name !== ELIGIBLE_SCORE_NAME || !s.traceId) continue;
+        if (s.value !== 0 && s.value !== false) continue;
+        if (s.id === rawEligibleScoreId(s.traceId, version)) skipped.add(s.traceId);
+    }
+    return skipped;
+}
+
+/**
  * Runs BEFORE judging so a re-run spends nothing on the LLM. A bumped prompt,
  * impl or model does not match, so the trace is judged again and the new
  * score lands beside the old one. `force` judges and writes everything; the
  * ids still dedup same-day repeats at the server.
+ *
+ * With `eligibility` (enforce mode only, #29), a trace with a matching
+ * `agent_judge_eligible = 0` score is processed too, so it is neither
+ * classified nor judged again. The threshold is not in the id: after a
+ * threshold change, use `force`. Shadow mode leaves it out, because there
+ * every sampled trace must still reach the judge.
  */
 export async function skipAlreadyJudged({
     traceIds,
     version,
     force,
     readScores,
+    eligibility,
 }: {
     traceIds: string[];
     version: OnlineScoreVersion;
     force: boolean;
     readScores: OnlineScoreReader;
+    eligibility?: EligibilityVersion;
 }): Promise<{ toJudge: string[]; skipped: string[] }> {
     if (force || traceIds.length === 0) return { toJudge: traceIds, skipped: [] };
-    const judged = judgedUnderVersion(await readScores(traceIds), version);
+    const existing = await readScores(traceIds);
+    const judged = judgedUnderVersion(existing, version);
+    if (eligibility) for (const id of skippedUnderVersion(existing, eligibility)) judged.add(id);
     return {
         toJudge: traceIds.filter((id) => !judged.has(id)),
         skipped: traceIds.filter((id) => judged.has(id)),
@@ -378,7 +494,9 @@ const TRACE_ID_CHUNK = 50;
 
 interface ScoresV3Page {
     data?: {
+        id?: string;
         name?: string;
+        value?: unknown;
         metadata?: Record<string, unknown>;
         subject?: { kind?: string; id?: string; traceId?: string };
     }[];
@@ -398,7 +516,8 @@ function subjectTraceId(subject: NonNullable<ScoresV3Page['data']>[number]['subj
 
 /**
  * `GET /api/public/v3/scores` (the endpoint that works in `events_only` mode),
- * holistic name only, `details` for the metadata and `subject` for the trace
+ * the holistic and the eligibility names only (`name` is a comma-separated
+ * list), `details` for the metadata and `subject` for the trace
  * id, in trace-id chunks so one query stays bounded. Sibling of core.ts's
  * offline reader rather than a generalisation of it: that one is keyed on
  * observation subjects and the offline behaviour must not move.
@@ -412,13 +531,19 @@ export function langfuseOnlineScoreReader(langfuse: ScoresV3Api): OnlineScoreRea
             do {
                 const page = (await langfuse.api.scoresV3.getManyV3({
                     traceId: chunk,
-                    name: HOLISTIC_SCORE_NAME,
+                    name: `${HOLISTIC_SCORE_NAME},${ELIGIBLE_SCORE_NAME}`,
                     fields: 'details,subject',
                     limit: 100,
                     cursor,
                 })) as ScoresV3Page;
                 for (const s of page.data ?? []) {
-                    out.push({ name: s.name ?? '', traceId: subjectTraceId(s.subject), metadata: s.metadata });
+                    out.push({
+                        id: s.id,
+                        name: s.name ?? '',
+                        traceId: subjectTraceId(s.subject),
+                        value: s.value,
+                        metadata: s.metadata,
+                    });
                 }
                 cursor = page.meta?.cursor;
             } while (cursor);
@@ -440,7 +565,22 @@ export interface CoverageCounters {
     /** Traces whose scores reached Langfuse; the rollup's n counts only these. */
     scoresWritten: number;
     failedToWrite: number;
+    /** Classifier (#29): turns that got `agent_judge_eligible = 0`, by stage. In shadow mode they were judged too. */
+    skippedIneligibleRule: number;
+    skippedIneligibleModel: number;
+    /** Classifications that failed open (Jev or the trace read failed); the trace was judged anyway. */
+    classifierFailed: number;
+    /** 1 when an enforce run could not reach its target of eligible traces; summed over the merged runs. */
+    targetMissed: number;
 }
+
+/** The classifier counters of a run that did not classify (`classifier: off`). */
+export const NO_CLASSIFIER_COUNTERS = {
+    skippedIneligibleRule: 0,
+    skippedIneligibleModel: 0,
+    classifierFailed: 0,
+    targetMissed: 0,
+} as const satisfies Partial<CoverageCounters>;
 
 /** What the caller knows before the writes; `finishOnlineRun()` fills in the write counters. */
 export type JudgeCounters = Omit<CoverageCounters, 'scoresWritten' | 'failedToWrite'>;
@@ -461,6 +601,8 @@ export interface Rollup {
     passRate: Record<string, number | null>;
     sampleRate: number;
     maxItems: number;
+    /** The latest run's classifier mode (#29). Absent on items written before the classifier existed. */
+    classifier?: ClassifierMode;
     /** Summed over the merged runs. */
     coverage: CoverageCounters;
 }
@@ -475,12 +617,14 @@ export function computeRollup({
     verdicts,
     sampleRate,
     maxItems,
+    classifier = 'off',
     coverage,
 }: {
     target: ScoreTarget;
     verdicts: OnlineVerdicts[];
     sampleRate: number;
     maxItems: number;
+    classifier?: ClassifierMode;
     coverage: CoverageCounters;
 }): Rollup {
     const passes = Object.fromEntries(ONLINE_SCORE_NAMES.map((name) => [name, 0]));
@@ -501,6 +645,7 @@ export function computeRollup({
         passRate: passRates(passes, n),
         sampleRate,
         maxItems,
+        classifier,
         coverage,
     };
 }
@@ -529,15 +674,12 @@ function isRollup(value: unknown): value is Rollup {
 const sumRecords = (a: Record<string, number>, b: Record<string, number>): Record<string, number> =>
     Object.fromEntries([...new Set([...Object.keys(a), ...Object.keys(b)])].map((k) => [k, (a[k] ?? 0) + (b[k] ?? 0)]));
 
-const sumCoverage = (a: CoverageCounters, b: CoverageCounters): CoverageCounters => ({
-    tracesInWindow: a.tracesInWindow + b.tracesInWindow,
-    completedTraces: a.completedTraces + b.completedTraces,
-    sampled: a.sampled + b.sampled,
-    judged: a.judged + b.judged,
-    failedToJudge: a.failedToJudge + b.failedToJudge,
-    scoresWritten: a.scoresWritten + b.scoresWritten,
-    failedToWrite: a.failedToWrite + b.failedToWrite,
-});
+/** Key by key; a counter missing on an older item (the classifier ones, #29) counts as 0. */
+const sumCoverage = (a: CoverageCounters, b: CoverageCounters): CoverageCounters =>
+    sumRecords(
+        a as unknown as Record<string, number>,
+        b as unknown as Record<string, number>,
+    ) as unknown as CoverageCounters;
 
 /**
  * Several judge runs on one UTC day share one item, so counts are summed and
@@ -589,6 +731,7 @@ export function rollupItemRequest(rollup: Rollup): CreateDatasetItemRequest {
             environment: rollup.environment,
             sampleRate: rollup.sampleRate,
             maxItems: rollup.maxItems,
+            ...(rollup.classifier ? { classifier: rollup.classifier } : {}),
         },
         metadata: rollup,
     };
@@ -658,6 +801,7 @@ export interface FinishOnlineRunOptions {
     target: ScoreTarget;
     sampleRate: number;
     maxItems: number;
+    classifier?: ClassifierMode;
     coverage: JudgeCounters;
 }
 
@@ -689,7 +833,8 @@ export interface FinishOnlineRunResult extends Omit<WriteResult, 'written'> {
  * batch is retried, not summarised; its written scores stay in Langfuse).
  */
 export async function finishOnlineRun(opts: FinishOnlineRunOptions): Promise<FinishOnlineRunResult> {
-    const { written, failedToWrite, rollupApi, checkpoints, checkpoint, target, sampleRate, maxItems } = opts;
+    const { written, failedToWrite, rollupApi, checkpoints, checkpoint, target, sampleRate, maxItems, classifier } =
+        opts;
     const scoresWritten = written.length;
     const coverage: CoverageCounters = { ...opts.coverage, scoresWritten, failedToWrite };
 
@@ -704,7 +849,7 @@ export async function finishOnlineRun(opts: FinishOnlineRunOptions): Promise<Fin
         log.error(String(error));
     } else if (coverage.sampled > 0 || coverage.judged > 0) {
         try {
-            const rollup = computeRollup({ target, verdicts: written, sampleRate, maxItems, coverage });
+            const rollup = computeRollup({ target, verdicts: written, sampleRate, maxItems, classifier, coverage });
             rollupId = (await upsertDailyRollup({ api: rollupApi, rollup })).id;
         } catch (err) {
             error = err;

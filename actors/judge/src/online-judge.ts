@@ -288,6 +288,8 @@ export interface JudgeOnlineTraceOptions {
     promptVersion: number;
     /** Loaded once per batch; null when the MCP fetch failed, which omits argumentCorrectness. */
     schemas: ToolSchemaSet | null;
+    /** The turn the classifier already rebuilt (#29); the trace is fetched only when it is absent. */
+    turn?: OnlineTurn;
     /** Test seam for the LLM call. */
     callLlm?: typeof judgeLlmCall;
 }
@@ -301,8 +303,7 @@ export interface OnlineJudgement {
 /** Fetch, reconstruct, check, judge. Throws on anything that prevents a trustworthy verdict. */
 export async function judgeOnlineTrace(opts: JudgeOnlineTraceOptions): Promise<OnlineJudgement> {
     const { langfuse, traceId, apifyToken, judgeModel, promptTemplate, promptVersion, schemas } = opts;
-    const observations = await fetchTraceObservations(langfuse, traceId);
-    const turn = reconstructTurn(traceId, observations);
+    const turn = opts.turn ?? reconstructTurn(traceId, await fetchTraceObservations(langfuse, traceId));
     if (turn.excludedGenerations > 0) {
         log.debug(`${traceId}: ${turn.excludedGenerations} generation(s) excluded as not part of the turn`);
     }

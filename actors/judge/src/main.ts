@@ -1,5 +1,7 @@
 import { Actor, log } from 'apify';
 
+import type { OnlineTurn } from './online-turn.js';
+
 interface Input {
     mode?: 'datasetRun' | 'online';
     datasetRunId?: string;
@@ -34,6 +36,11 @@ interface Input {
     langfuseSecretKey?: string;
     /** Online mode only: the Langfuse project (name or id) the keys must belong to. */
     langfuseProject?: string;
+    /** Online mode only: the input classifier before the judge (#29). */
+    classifier?: 'off' | 'shadow' | 'enforce';
+    classifierModel?: string;
+    classifierThreshold?: number;
+    maxClassifyFactor?: number;
 }
 
 await Actor.init();
@@ -92,9 +99,27 @@ if (mode === 'online') {
         await import('./online-judge.js');
     const { mcpToolSchemaSource } = await import('./online-schema.js');
     const { JUDGE_IMPL_VERSION } = await import('./core.js');
-    const { finishOnlineRun, langfuseOnlineScoreReader, skipAlreadyJudged, writeOnlineScores } =
-        await import('./online-scores.js');
+    const { finishOnlineRun, langfuseOnlineScoreReader, writeOnlineScores } = await import('./online-scores.js');
+    const { assertClassifierModel, prepareOnlineBatch } = await import('./online-run.js');
     const { assertOnlineProject, DEFAULT_ONLINE_PROJECT, langfuseProjectFetcher } = await import('./online-project.js');
+    const {
+        DEFAULT_CLASSIFIER_MODE,
+        DEFAULT_CLASSIFIER_MODEL,
+        DEFAULT_CLASSIFIER_THRESHOLD,
+        DEFAULT_MAX_CLASSIFY_FACTOR,
+        traceClassifier,
+        withCircuitBreaker,
+    } = await import('./online-classify.js');
+    const { jevDecide } = await import('./jev.js');
+    const classifier = input.classifier ?? DEFAULT_CLASSIFIER_MODE;
+    const classifierModel = input.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
+    const classifierThreshold = input.classifierThreshold ?? DEFAULT_CLASSIFIER_THRESHOLD;
+    // Below 1 the limit could not even classify the sample itself.
+    const maxClassifyFactor = Math.max(1, input.maxClassifyFactor ?? DEFAULT_MAX_CLASSIFY_FACTOR);
+    const eligibility = { judgeImplVersion: JUDGE_IMPL_VERSION, classifierModel };
+    // Before any read: a model that makes the skip score id invalid would drop
+    // every skipped trace without a record.
+    if (classifier !== 'off') assertClassifierModel(eligibility);
     const langfuse = new LangfuseClient();
     // Before any read or write: the Actor env keys are the dataset-run project.
     const project = await assertOnlineProject(
@@ -117,6 +142,7 @@ if (mode === 'online') {
         traceIds: string[],
         prompt: { version: number; template: string },
         target: { date: Date; environment: string },
+        turns: Map<string, OnlineTurn>,
     ) {
         const written: Verdicts[] = [];
         let judged = 0;
@@ -150,7 +176,9 @@ if (mode === 'online') {
                         promptTemplate: prompt.template,
                         promptVersion: prompt.version,
                         schemas,
+                        turn: turns.get(traceId),
                     });
+                    turns.delete(traceId);
                     verdicts = judgement.verdicts;
                     judged++;
                     if (!judgement.traceMetadataFound) metadataMissing++;
@@ -214,16 +242,32 @@ if (mode === 'online') {
                   defaultPrompt: DEFAULT_ONLINE_JUDGE_PROMPT,
               })
             : { version: 0, template: '' };
-    const { toJudge, skipped } = await skipAlreadyJudged({
-        traceIds: selection.sampledTraceIds,
-        version: { promptVersion: prompt.version, judgeImplVersion: JUDGE_IMPL_VERSION, judgeModel },
+    // 3. Classify (#29): rules, then Jev; a skip writes agent_judge_eligible = 0.
+    // Enforce mode drops the skipped traces and tops the sample up from the
+    // unsampled completed traces; shadow mode judges every sampled trace.
+    const prepared = await prepareOnlineBatch({
+        classifier,
+        selection,
+        maxClassifyFactor,
+        concurrency,
         force,
+        version: { promptVersion: prompt.version, judgeImplVersion: JUDGE_IMPL_VERSION, judgeModel },
+        eligibility,
+        threshold: classifierThreshold,
+        environment,
         readScores: langfuseOnlineScoreReader(langfuse),
+        classify: traceClassifier({
+            langfuse,
+            apifyToken,
+            model: classifierModel,
+            threshold: classifierThreshold,
+            callJev: withCircuitBreaker(jevDecide),
+        }),
+        writeScore: async (request) => langfuse.api.scores.create(request),
     });
-    if (skipped.length > 0) log.info(`${skipped.length} sampled traces already judged under this version, skipped`);
 
-    // 3. Judge and write both copies of every score trace by trace, then 4.
-    // roll the batch up into the day's dataset item and 5. move the
+    // 4. Judge and write both copies of every score trace by trace, then 5.
+    // roll the batch up into the day's dataset item and 6. move the
     // checkpoint, in that order; finishOnlineRun() documents why a rollup
     // failure, an all-failed write batch or a mostly-failed judge batch holds
     // the checkpoint back and a single trace's write failure does not. Run
@@ -232,9 +276,10 @@ if (mode === 'online') {
     // day and a staging run never touches prod's run or rollup.
     const target = { date: selection.window?.start ?? now, environment };
     const { judged, failedToJudge, failedToWrite, metadataMissing, written } = await judgeAndWriteOnline(
-        toJudge,
+        prepared.toJudge,
         prompt,
         target,
+        prepared.turns,
     );
     const finished = await finishOnlineRun({
         written,
@@ -245,12 +290,14 @@ if (mode === 'online') {
         target,
         sampleRate,
         maxItems,
+        classifier,
         coverage: {
             tracesInWindow: selection.tracesInWindow,
             completedTraces: selection.completedTraces,
             sampled: selection.sampled,
             judged,
             failedToJudge,
+            ...prepared.coverage,
         },
     });
 
@@ -265,7 +312,8 @@ if (mode === 'online') {
         tracesInWindow: selection.tracesInWindow,
         completedTraces: selection.completedTraces,
         sampled: selection.sampled,
-        scoresSkipped: skipped.length,
+        scoresSkipped: prepared.skipped.length,
+        ...prepared.output,
         judged,
         failedToJudge,
         metadataMissing,

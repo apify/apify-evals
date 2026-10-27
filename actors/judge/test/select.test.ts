@@ -16,9 +16,11 @@ import {
     type ObservationPage,
     requestedWindow,
     safeUpperBound,
+    sampleSize,
     sampleTraceIds,
     selectTraces,
     settledBefore,
+    shuffleAndSplit,
     traceFilter,
     TURN_COMPLETE_SPAN_NAME,
 } from '../src/select.js';
@@ -253,6 +255,16 @@ describe('sampleTraceIds', () => {
     });
 });
 
+describe('shuffleAndSplit', () => {
+    it('splits one shuffle into the sample and the unsampled rest, in the same order', () => {
+        const ids = ['t1', 't2', 't3', 't4', 't5'];
+        const { sampled, rest } = shuffleAndSplit(ids, 0.4, 100, fixedRng([0.37, 0.82, 0.05]));
+        expect(sampled).toEqual(sampleTraceIds(ids, 0.4, 100, fixedRng([0.37, 0.82, 0.05])));
+        expect(sampled).toHaveLength(sampleSize(ids.length, 0.4, 100));
+        expect([...sampled, ...rest].sort()).toEqual([...ids].sort());
+    });
+});
+
 describe('isCompletionGateBroken', () => {
     const window = { start: new Date('2026-09-08T00:00:00.000Z'), end: new Date('2026-09-08T12:00:00.000Z') };
     const settled = { traceId: 'a', startTime: '2026-09-08T11:29:59.000Z' };
@@ -301,6 +313,8 @@ describe('selectTraces', () => {
         expect(s.sampled).toBe(2);
         expect(s.sampledTraceIds.length).toBe(2);
         for (const id of s.sampledTraceIds) expect(['a', 'c', 'e']).toContain(id);
+        // The rest of the shuffle is the classifier's top-up reserve (#29).
+        expect([...s.sampledTraceIds, ...s.unsampledTraceIds].sort()).toEqual(completed);
         expect(s.checkpoint).toEqual({
             upperBound: safeUpperBound(NOW).toISOString(),
             runId: 'run-1',

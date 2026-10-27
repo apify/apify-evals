@@ -2,15 +2,19 @@ import { NotFoundError } from '@langfuse/core';
 import { describe, expect, it } from 'vitest';
 
 import { JUDGE_IMPL_VERSION } from '../src/core.js';
+import { ELIGIBLE_SCORE_NAME } from '../src/online-classify.js';
 import type { OnlineVerdicts } from '../src/online-judge.js';
 import {
     AllScoreWritesFailedError,
     computeRollup,
     type CreateDatasetItemRequest,
     type CreateScoreRequest,
+    type EligibilityVersion,
+    eligibleScoreId,
     environmentSuffix,
     type ExistingOnlineScore,
     finishOnlineRun,
+    ineligibleScoreRequest,
     InvalidScoreIdError,
     isNotFound,
     judgedUnderVersion,
@@ -19,6 +23,7 @@ import {
     MAX_JUDGE_FAILURE_RATIO,
     MAX_SCORE_ID_LENGTH,
     mergeRollup,
+    NO_CLASSIFIER_COUNTERS,
     onlineRunId,
     onlineScoreId,
     type OnlineScoreVersion,
@@ -34,6 +39,7 @@ import {
     scoreRequests,
     type ScoreTarget,
     skipAlreadyJudged,
+    skippedUnderVersion,
     TooManyJudgeFailuresError,
     upsertDailyRollup,
     utcDate,
@@ -160,10 +166,10 @@ describe('ids', () => {
     it('onlineScoreId is <traceId>-<name>-p<prompt>-i<impl>-<model>, plus -run for the archival copy', () => {
         const key = { traceId: TRACE_ID, scoreName: 'agent_judge_toolSelection', version };
         expect(onlineScoreId(key, 'trace')).toBe(
-            `${TRACE_ID}-agent_judge_toolSelection-p3-i0-5-0-deepseek-deepseek-v4-flash`,
+            `${TRACE_ID}-agent_judge_toolSelection-p3-i0-6-0-deepseek-deepseek-v4-flash`,
         );
         expect(onlineScoreId(key, 'run')).toBe(`${onlineScoreId(key, 'trace')}${RUN_COPY_SUFFIX}`);
-        expect(JUDGE_IMPL_VERSION).toBe('0.5.0');
+        expect(JUDGE_IMPL_VERSION).toBe('0.6.0');
     });
 
     it('a bumped prompt, impl or model changes the id', () => {
@@ -423,7 +429,7 @@ describe('langfuseOnlineScoreReader', () => {
 
         expect(requests[0]).toMatchObject({
             traceId: traceIds.slice(0, 50).join(','),
-            name: HOLISTIC_SCORE_NAME,
+            name: `${HOLISTIC_SCORE_NAME},${ELIGIBLE_SCORE_NAME}`,
             fields: 'details,subject',
             limit: 100,
             cursor: undefined,
@@ -435,7 +441,17 @@ describe('langfuseOnlineScoreReader', () => {
     });
 });
 
-const judgeCoverage = { tracesInWindow: 40, completedTraces: 30, sampled: 6, judged: 4, failedToJudge: 2 };
+const judgeCoverage = {
+    tracesInWindow: 40,
+    completedTraces: 30,
+    sampled: 6,
+    judged: 4,
+    failedToJudge: 2,
+    skippedIneligibleRule: 1,
+    skippedIneligibleModel: 2,
+    classifierFailed: 1,
+    targetMissed: 0,
+};
 const coverage = { ...judgeCoverage, scoresWritten: 4, failedToWrite: 0 };
 
 describe('computeRollup', () => {
@@ -517,6 +533,10 @@ describe('mergeRollup', () => {
             failedToJudge: 4,
             scoresWritten: 8,
             failedToWrite: 0,
+            skippedIneligibleRule: 2,
+            skippedIneligibleModel: 4,
+            classifierFailed: 2,
+            targetMissed: 0,
         });
         expect(merged.sampleRate).toBe(0.5);
         expect(merged.maxItems).toBe(10);
@@ -530,7 +550,7 @@ describe('rollupItemRequest', () => {
         expect(rollupItemRequest(rollup)).toEqual({
             datasetName: ROLLUP_DATASET_NAME,
             id: 'rollup-2026-09-09',
-            input: { date: '2026-09-09', environment: 'prod', sampleRate: 0.2, maxItems: 100 },
+            input: { date: '2026-09-09', environment: 'prod', sampleRate: 0.2, maxItems: 100, classifier: 'off' },
             metadata: rollup,
         });
         expect(ROLLUP_DATASET_NAME).toBe('apify-ai-online-rollups');
@@ -756,7 +776,14 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 3 },
+            coverage: {
+                tracesInWindow: 20,
+                completedTraces: 10,
+                sampled: 5,
+                judged: 0,
+                failedToJudge: 3,
+                ...NO_CLASSIFIER_COUNTERS,
+            },
             written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
@@ -820,7 +847,14 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            coverage: { tracesInWindow: 20, completedTraces: 10, sampled: 5, judged: 0, failedToJudge: 0 },
+            coverage: {
+                tracesInWindow: 20,
+                completedTraces: 10,
+                sampled: 5,
+                judged: 0,
+                failedToJudge: 0,
+                ...NO_CLASSIFIER_COUNTERS,
+            },
             written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
@@ -836,7 +870,14 @@ describe('finishOnlineRun', () => {
 
         const result = await finishOnlineRun({
             ...base,
-            coverage: { tracesInWindow: 3, completedTraces: 0, sampled: 0, judged: 0, failedToJudge: 0 },
+            coverage: {
+                tracesInWindow: 3,
+                completedTraces: 0,
+                sampled: 0,
+                judged: 0,
+                failedToJudge: 0,
+                ...NO_CLASSIFIER_COUNTERS,
+            },
             written: [],
             rollupApi: rollupApi.api,
             checkpoints: store,
@@ -864,5 +905,188 @@ describe('finishOnlineRun', () => {
         expect(writes).toEqual([]);
         // Everything was skipped by the pre-filter (sampled > 0, judged 0): the rollup still records the coverage.
         expect(result.rollupItemId).toBe('rollup-2026-09-09');
+    });
+});
+
+describe('classifier skip scores (#29)', () => {
+    const eligibility: EligibilityVersion = {
+        judgeImplVersion: JUDGE_IMPL_VERSION,
+        classifierModel: 'typesafe/jev-1.13',
+    };
+
+    it('eligibleScoreId is <traceId>-agent_judge_eligible-i<impl>-<classifierModel>, sanitised', () => {
+        expect(eligibleScoreId(TRACE_ID, eligibility)).toBe(
+            `${TRACE_ID}-agent_judge_eligible-i0-6-0-typesafe-jev-1-13`,
+        );
+        expect(eligibleScoreId('a:b', { ...eligibility, classifierModel: '~typesafe/jev-latest' })).toBe(
+            'a-b-agent_judge_eligible-i0-6-0--typesafe-jev-latest',
+        );
+        expect(() => eligibleScoreId('x'.repeat(300), eligibility)).toThrow(InvalidScoreIdError);
+    });
+
+    it('a new classifier model or impl version gives a new id; the threshold is not part of it', () => {
+        const id = eligibleScoreId('t', eligibility);
+        expect(eligibleScoreId('t', { ...eligibility, classifierModel: 'typesafe/jev-1.14' })).not.toBe(id);
+        expect(eligibleScoreId('t', { ...eligibility, judgeImplVersion: '9.9.9' })).not.toBe(id);
+    });
+
+    it('a rule skip is a BOOLEAN 0 trace score with the stage, rule, threshold and mode in the metadata', () => {
+        const request = ineligibleScoreRequest({
+            traceId: 't1',
+            classification: { verdict: 'ineligible', stage: 'rule', rule: 'digits-only' },
+            version: eligibility,
+            threshold: 0.3,
+            mode: 'shadow',
+            environment: 'prod',
+        });
+        expect(request).toEqual({
+            id: eligibleScoreId('t1', eligibility),
+            traceId: 't1',
+            name: ELIGIBLE_SCORE_NAME,
+            value: 0,
+            dataType: 'BOOLEAN',
+            comment: 'INELIGIBLE (shadow); rule digits-only',
+            environment: 'prod',
+            metadata: {
+                stage: 'rule',
+                rule: 'digits-only',
+                threshold: 0.3,
+                mode: 'shadow',
+                classifierModel: 'typesafe/jev-1.13',
+                judgeImplVersion: JUDGE_IMPL_VERSION,
+                environment: 'prod',
+            },
+        });
+        expect(request.datasetRunId).toBeUndefined();
+    });
+
+    it('a model skip carries the Jev probability and the served model', () => {
+        const request = ineligibleScoreRequest({
+            traceId: 't1',
+            classification: {
+                verdict: 'ineligible',
+                stage: 'model',
+                probability: 0.12,
+                servedModel: 'typesafe/jev-1.13-x',
+                costUsd: null,
+            },
+            version: eligibility,
+            threshold: 0.3,
+            mode: 'enforce',
+            environment: 'staging',
+        });
+        expect(request.comment).toBe('INELIGIBLE (enforce); P(yes)=0.120 < 0.3');
+        expect(request.metadata).toMatchObject({
+            stage: 'model',
+            probability: 0.12,
+            servedModel: 'typesafe/jev-1.13-x',
+            mode: 'enforce',
+            environment: 'staging',
+        });
+    });
+
+    const skipScore = (traceId: string, v: EligibilityVersion = eligibility, value: unknown = false) => ({
+        id: eligibleScoreId(traceId, v),
+        name: ELIGIBLE_SCORE_NAME,
+        traceId,
+        value,
+    });
+
+    it('skippedUnderVersion matches only a 0 skip score with exactly this id', () => {
+        const scores: ExistingOnlineScore[] = [
+            skipScore('match'),
+            skipScore('numeric-zero', eligibility, 0),
+            skipScore('one', eligibility, true),
+            skipScore('other-model', { ...eligibility, classifierModel: 'typesafe/jev-2' }),
+            { ...skipScore('holistic-name'), name: HOLISTIC_SCORE_NAME },
+        ];
+        expect([...skippedUnderVersion(scores, eligibility)].sort()).toEqual(['match', 'numeric-zero']);
+    });
+
+    it('skippedUnderVersion never throws on a classifier model too long for an id', () => {
+        const long = { ...eligibility, classifierModel: `x/${'y'.repeat(300)}` };
+        expect(() => skippedUnderVersion([skipScore('a')], long)).not.toThrow();
+        expect(skippedUnderVersion([skipScore('a')], long).size).toBe(0);
+    });
+
+    it('skipAlreadyJudged treats a matching skip score as processed only when eligibility is given', async () => {
+        const readScores = async () => [skipScore('b')];
+        const withGate = await skipAlreadyJudged({
+            traceIds: ['a', 'b'],
+            version,
+            force: false,
+            readScores,
+            eligibility,
+        });
+        expect(withGate).toEqual({ toJudge: ['a'], skipped: ['b'] });
+        // Shadow and off leave it out: the trace is judged.
+        const without = await skipAlreadyJudged({ traceIds: ['a', 'b'], version, force: false, readScores });
+        expect(without).toEqual({ toJudge: ['a', 'b'], skipped: [] });
+        // force classifies again, e.g. after a threshold change.
+        const forced = await skipAlreadyJudged({ traceIds: ['a', 'b'], version, force: true, readScores, eligibility });
+        expect(forced.toJudge).toEqual(['a', 'b']);
+    });
+
+    it('round trip: the skip request the writer produces is what the reader recognises', () => {
+        const request = ineligibleScoreRequest({
+            traceId: 'rt',
+            classification: { verdict: 'ineligible', stage: 'rule', rule: 'empty' },
+            version: eligibility,
+            threshold: 0.3,
+            mode: 'enforce',
+            environment: 'prod',
+        });
+        const asRead: ExistingOnlineScore = {
+            id: request.id,
+            name: request.name,
+            traceId: request.traceId ?? null,
+            value: false,
+        };
+        expect(skippedUnderVersion([asRead], eligibility).has('rt')).toBe(true);
+    });
+
+    it('the reader keeps the id and the value', async () => {
+        const fake = {
+            api: {
+                scoresV3: {
+                    getManyV3: async () => ({
+                        data: [
+                            { id: 's1', name: ELIGIBLE_SCORE_NAME, value: false, subject: { kind: 'trace', id: 'a' } },
+                        ],
+                        meta: {},
+                    }),
+                },
+            },
+        };
+        expect(await langfuseOnlineScoreReader(fake)(['a'])).toEqual([
+            { id: 's1', name: ELIGIBLE_SCORE_NAME, traceId: 'a', value: false, metadata: undefined },
+        ]);
+    });
+
+    it('a rollup written before the classifier existed merges, counting its missing counters as 0', () => {
+        const fresh = computeRollup({
+            target: PROD,
+            verdicts: [],
+            sampleRate: 0.2,
+            maxItems: 100,
+            classifier: 'shadow',
+            coverage: { ...coverage },
+        });
+        const legacyCoverage = {
+            tracesInWindow: 1,
+            completedTraces: 1,
+            sampled: 1,
+            judged: 1,
+            failedToJudge: 0,
+            scoresWritten: 1,
+            failedToWrite: 0,
+        };
+        const { classifier: _dropped, ...legacy } = { ...fresh, coverage: legacyCoverage };
+        const merged = mergeRollup(legacy, fresh);
+        expect(merged.coverage.skippedIneligibleModel).toBe(2);
+        expect(merged.coverage.classifierFailed).toBe(1);
+        expect(merged.coverage.sampled).toBe(7);
+        expect(merged.classifier).toBe('shadow');
+        expect(rollupItemRequest(merged).input).toMatchObject({ classifier: 'shadow' });
     });
 });

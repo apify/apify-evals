@@ -355,7 +355,7 @@ describe('judgeOnlineTrace', () => {
     };
     const base = { traceId: 't1', apifyToken: 'tok', judgeModel: 'm', promptTemplate: '{{turn}}', promptVersion: 1 };
     /** The shape judgeLlmCall returns: the parsed reply plus usage and timing. */
-    const llmResult = (json: unknown) => ({ json, usage: null, startedAt: 0, endedAt: 0 });
+    const llmResult = (json: unknown) => ({ json, usage: null, model: null, startedAt: 0, endedAt: 0 });
 
     it('fetches, reconstructs, checks arguments and judges, rendering the turn into the prompt', async () => {
         const prompts: string[] = [];
@@ -378,6 +378,31 @@ describe('judgeOnlineTrace', () => {
         expect(score(verdicts.scores, 'agent_judge')).toMatchObject({ value: 1 });
         expect(score(verdicts.scores, 'agent_judge_argumentCorrectness')).toMatchObject({ value: 1 });
         expect(verdicts.metadata).toMatchObject({ schemaMatch: false, toolSchemaHash: 'sha256:stale', spanId: 'g1' });
+    });
+
+    it('uses the turn the classifier already rebuilt and does not fetch the trace again (#29)', async () => {
+        const noFetch = {
+            api: {
+                observations: {
+                    getMany: async (): Promise<never> => {
+                        throw new Error('fetched');
+                    },
+                },
+            },
+        };
+        const prompts: string[] = [];
+        const { verdicts } = await judgeOnlineTrace({
+            ...base,
+            langfuse: noFetch,
+            schemas,
+            turn,
+            callLlm: async ({ prompt }) => {
+                prompts.push(prompt);
+                return llmResult(modelReply);
+            },
+        });
+        expect(prompts[0]).toContain(USER_TEXT);
+        expect(verdicts.traceId).toBe('t1');
     });
 
     it('reports missing trace metadata instead of failing the trace', async () => {

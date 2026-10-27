@@ -128,6 +128,45 @@
             "default": "Apify AI Agent",
             "editor": "textfield"
         },
+        "classifier": {
+            "title": "Input classifier (online)",
+            "type": "string",
+            "description": "Online mode only. Before the judge, a classifier rejects turns that cannot be evaluated (empty, punctuation or emoji only, a lone number or a very short text with no earlier messages, then a TypeSafe Jev decision). Each rejected turn gets the trace score agent_judge_eligible = 0. off: no classifier, same as before. shadow: write the skip scores, but judge every sampled turn. enforce: do not judge the rejected turns and replace each one with another completed turn from the window.",
+            "default": "enforce",
+            "editor": "select",
+            "enum": [
+                "off",
+                "shadow",
+                "enforce"
+            ],
+            "enumTitles": [
+                "Off",
+                "Shadow (score skips, judge all)",
+                "Enforce (skip and top up)"
+            ]
+        },
+        "classifierModel": {
+            "title": "Classifier model (online)",
+            "type": "string",
+            "description": "Online mode only. OpenRouter id of the TypeSafe Jev model, called through the Apify OpenRouter proxy. Use a pinned id: the model is part of the skip score id.",
+            "default": "typesafe/jev-1.13",
+            "editor": "textfield"
+        },
+        "classifierThreshold": {
+            "title": "Classifier threshold (online)",
+            "type": "number",
+            "description": "Online mode only. Jev gives P(yes) for \"Can this turn be evaluated?\". A turn is skipped when P(yes) is below this value. Keep it low so that the gate skips only when Jev is confident. The threshold is not part of the skip score id: to classify old traffic again after a change, run once with windowStart, windowEnd and force (see schedule/README.md).",
+            "default": 0.3,
+            "minimum": 0,
+            "maximum": 1
+        },
+        "maxClassifyFactor": {
+            "title": "Max classification factor (online)",
+            "type": "number",
+            "description": "Online mode, enforce only. The top-up stops after maxClassifyFactor x the sample size classifications. OUTPUT reports targetReached: false when the sample could not be filled.",
+            "default": 3,
+            "minimum": 1
+        },
         "artifactStore": {
             "title": "Eval artifacts store",
             "type": "string",
