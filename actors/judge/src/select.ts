@@ -242,18 +242,26 @@ export function isCompletionGateBroken(roots: ObservationRow[], completedTraces:
 export type Rng = () => number;
 
 /**
- * Fisher-Yates shuffle, then take `ceil(sampleRate * n)` capped at `maxItems`.
- * Shuffling before the cap keeps a capped sample uniform over the window
- * instead of biased toward whatever order Langfuse returned.
+ * Fisher-Yates shuffle, then split at `ceil(sampleRate * n)` capped at
+ * `maxItems`: the sample, and the unsampled rest in the same shuffled order.
+ * The rest is the classifier's top-up reserve (#29), so a replacement is as
+ * random as the sample itself. Shuffling before the cap keeps a capped sample
+ * uniform over the window instead of biased toward whatever order Langfuse
+ * returned.
  */
-export function sampleTraceIds(traceIds: string[], sampleRate: number, maxItems: number, rng: Rng): string[] {
+export function shuffleAndSplit(
+    traceIds: string[],
+    sampleRate: number,
+    maxItems: number,
+    rng: Rng,
+): { sampled: string[]; rest: string[] } {
     const shuffled = [...traceIds];
     for (let i = shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(rng() * (i + 1));
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     const size = Math.min(Math.ceil(sampleRate * traceIds.length), maxItems);
-    return shuffled.slice(0, size);
+    return { sampled: shuffled.slice(0, size), rest: shuffled.slice(size) };
 }
 
 export interface SelectionCounters {
@@ -277,6 +285,8 @@ export interface Selection extends SelectionCounters {
     /** See `isCompletionGateBroken()`: settled traffic with no completion signal. The caller fails the run on it. */
     isGateBroken: boolean;
     sampledTraceIds: string[];
+    /** The completed traces NOT sampled, in shuffled order: the classifier's top-up reserve in enforce mode. */
+    unsampledTraceIds: string[];
     /** The record that moves the checkpoint past this window; null under an override, an empty window
      * or a broken completion gate. Nothing here writes it: the caller does, once the window's scores
      * are safe (`finishOnlineRun()`, #270). */
@@ -322,6 +332,7 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
             completedTraces: 0,
             sampled: 0,
             sampledTraceIds: [],
+            unsampledTraceIds: [],
             checkpoint: null,
             isGateBroken: false,
         };
@@ -351,7 +362,12 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
                 `${settledBefore(window).toISOString()}: still running at the window end, picked up next window`,
         );
     }
-    const sampledTraceIds = sampleTraceIds(completedIds, sampleRate, maxItems, rng);
+    const { sampled: sampledTraceIds, rest: unsampledTraceIds } = shuffleAndSplit(
+        completedIds,
+        sampleRate,
+        maxItems,
+        rng,
+    );
 
     return {
         window,
@@ -359,6 +375,7 @@ export async function selectTraces(opts: SelectTracesOptions): Promise<Selection
         completedTraces: completedIds.length,
         sampled: sampledTraceIds.length,
         sampledTraceIds,
+        unsampledTraceIds,
         checkpoint:
             isOverridden || isGateBroken
                 ? null

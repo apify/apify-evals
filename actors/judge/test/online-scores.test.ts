@@ -2,7 +2,7 @@ import { NotFoundError } from '@langfuse/core';
 import { describe, expect, it } from 'vitest';
 
 import { JUDGE_IMPL_VERSION } from '../src/core.js';
-import { ELIGIBLE_SCORE_NAME } from '../src/online-classify.js';
+import { type ClassifierMode, ELIGIBLE_SCORE_NAME } from '../src/online-classify.js';
 import type { OnlineVerdicts } from '../src/online-judge.js';
 import {
     AllScoreWritesFailedError,
@@ -39,6 +39,7 @@ import {
     scoreRequests,
     type ScoreTarget,
     skipAlreadyJudged,
+    skippedUnderVersion,
     TooManyJudgeFailuresError,
     upsertDailyRollup,
     utcDate,
@@ -397,6 +398,41 @@ describe('idempotency', () => {
         });
         expect(reads).toBe(0);
     });
+
+    const eligibility = { judgeImplVersion: JUDGE_IMPL_VERSION, classifierModel: 'typesafe/jev-1.13' };
+    const skipScore = (traceId: string, value: unknown = false, classifierModel = eligibility.classifierModel) => ({
+        id: eligibleScoreId(traceId, { ...eligibility, classifierModel }),
+        name: ELIGIBLE_SCORE_NAME,
+        traceId,
+        value,
+    });
+
+    it('skippedUnderVersion matches only a 0 skip score with exactly this id', () => {
+        const scores: ExistingOnlineScore[] = [
+            skipScore('match'),
+            skipScore('numeric-zero', 0),
+            skipScore('one', true),
+            skipScore('other-model', false, 'typesafe/jev-2'),
+            { ...skipScore('holistic-name'), name: HOLISTIC_SCORE_NAME },
+        ];
+        expect([...skippedUnderVersion(scores, eligibility)].sort()).toEqual(['match', 'numeric-zero']);
+    });
+
+    it('only enforce counts skip scores; force classifies again (#29)', async () => {
+        const readScores = async () => [skipScore('b')];
+        const run = async (mode: ClassifierMode, force = false) =>
+            skipAlreadyJudged({
+                traceIds: ['a', 'b'],
+                version,
+                force,
+                readScores,
+                eligibility: { ...eligibility, mode },
+            });
+        expect(await run('enforce')).toEqual({ toJudge: ['a'], skipped: ['b'] });
+        expect(await run('shadow')).toEqual({ toJudge: ['a', 'b'], skipped: [] });
+        expect(await run('off')).toEqual({ toJudge: ['a', 'b'], skipped: [] });
+        expect((await run('enforce', true)).toJudge).toEqual(['a', 'b']);
+    });
 });
 
 describe('langfuseOnlineScoreReader', () => {
@@ -407,6 +443,7 @@ describe('langfuseOnlineScoreReader', () => {
                 data: [
                     { name: HOLISTIC_SCORE_NAME, metadata: { promptVersion: 3 }, subject: { kind: 'trace', id: 'a' } },
                     { name: HOLISTIC_SCORE_NAME, subject: { kind: 'observation', id: 'o1', traceId: 'b' } },
+                    { id: 's1', name: ELIGIBLE_SCORE_NAME, value: false, subject: { kind: 'trace', id: 'c' } },
                 ],
                 meta: { cursor: 'p2' },
             },
@@ -428,15 +465,16 @@ describe('langfuseOnlineScoreReader', () => {
 
         expect(requests[0]).toMatchObject({
             traceId: traceIds.slice(0, 50).join(','),
-            name: HOLISTIC_SCORE_NAME,
+            name: `${HOLISTIC_SCORE_NAME},${ELIGIBLE_SCORE_NAME}`,
             fields: 'details,subject',
             limit: 100,
             cursor: undefined,
         });
         expect(requests[1].cursor).toBe('p2');
         expect(requests[2]).toMatchObject({ traceId: 't50' });
-        expect(scores.slice(0, 3).map((s) => s.traceId)).toEqual(['a', 'b', null]);
+        expect(scores.slice(0, 4).map((s) => s.traceId)).toEqual(['a', 'b', 'c', null]);
         expect(scores[0].metadata).toEqual({ promptVersion: 3 });
+        expect(scores[2]).toMatchObject({ id: 's1', name: ELIGIBLE_SCORE_NAME, value: false });
     });
 });
 

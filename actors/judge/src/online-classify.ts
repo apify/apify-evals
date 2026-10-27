@@ -11,7 +11,8 @@ import { fetchTraceObservations, type OnlineTurn, reconstructTurn, type TurnMess
  * Two stages. Deterministic rules first (`ruleVerdict`), then one TypeSafe Jev
  * `noul` question (`classifyTurn`). A Jev failure fails OPEN: the trace is
  * judged anyway and counted in `classifierFailed`, so the gate can never hold
- * the checkpoint. `classifyBatch` runs both stages over the sample.
+ * the checkpoint. `classifyBatch` runs both stages over the sample and, in
+ * enforce mode, tops the sample up from the unsampled completed traces.
  *
  * Nothing here writes to Langfuse: the caller passes `onIneligible`, which
  * writes the `agent_judge_eligible = 0` score (online-scores.ts).
@@ -20,8 +21,11 @@ import { fetchTraceObservations, type OnlineTurn, reconstructTurn, type TurnMess
 /** BOOLEAN trace score written only on a skipped turn, always 0; eligible turns get none. */
 export const ELIGIBLE_SCORE_NAME = 'agent_judge_eligible';
 
-/** `off`: no classifier. `shadow`: write the skip scores, but judge every sampled turn. */
-export type ClassifierMode = 'off' | 'shadow';
+/**
+ * `off`: no classifier. `shadow`: write the skip scores, but judge every
+ * sampled turn. `enforce`: do not judge a skipped turn, and top the sample up.
+ */
+export type ClassifierMode = 'off' | 'shadow' | 'enforce';
 
 /**
  * After this many Jev failures in a row, the rest of the batch fails open
@@ -235,18 +239,26 @@ export interface ClassifyBatchOptions {
     mode: ClassifierMode;
     /** The sample after `skipAlreadyJudged()`. */
     initial: string[];
+    /** The unsampled completed traces, in shuffled order (`Selection.unsampledTraceIds`). Enforce only. */
+    reserve: string[];
+    /** The top-up stops when this many traces were classified, the sample included. */
+    maxAttempts: number;
     concurrency: number;
     classify: TraceClassifier;
+    /** `skipAlreadyJudged()` over a slice of the reserve: returns the ids that still need processing. */
+    filterProcessed: (traceIds: string[]) => Promise<string[]>;
     /** Writes the `agent_judge_eligible = 0` score. A throw is logged, never fatal. */
     onIneligible: (traceId: string, classification: Ineligible) => Promise<void>;
 }
 
 export interface ClassifyBatchResult {
-    /** The traces to judge. */
+    /** The traces to judge, in classification order. */
     toJudge: string[];
     skippedIneligible: { rule: number; model: number };
     /** Failed open: Jev or the trace read failed, the trace went to the judge. */
     classifierFailed: number;
+    /** False when enforce mode could not find as many eligible traces as the sample had. */
+    targetReached: boolean;
 }
 
 function describe(c: Classification): string {
@@ -257,17 +269,24 @@ function describe(c: Classification): string {
 
 /**
  * Classify the sample. `off` classifies nothing. In shadow mode the skip
- * scores are written, and every sampled trace still goes to the judge.
+ * scores are written, every sampled trace still goes to the judge and nothing
+ * is topped up. In enforce mode a skipped trace is not judged, and each one is
+ * replaced by the next unprocessed trace of the reserve until the sample size
+ * of traces is eligible, the reserve runs out, or `maxAttempts` traces were
+ * classified. A failed score read stops the top-up, never the run.
  */
 export async function classifyBatch(opts: ClassifyBatchOptions): Promise<ClassifyBatchResult> {
-    const { mode, initial, concurrency, classify, onIneligible } = opts;
+    const { mode, initial, reserve, maxAttempts, concurrency, classify, filterProcessed, onIneligible } = opts;
     const result: ClassifyBatchResult = {
         toJudge: initial,
         skippedIneligible: { rule: 0, model: 0 },
         classifierFailed: 0,
+        targetReached: true,
     };
     if (mode === 'off' || initial.length === 0) return result;
     const servedModels = new Set<string>();
+    const classified: string[] = [];
+    const ineligible = new Set<string>();
 
     async function classifyOne(traceId: string) {
         const c = await classify(traceId);
@@ -280,6 +299,7 @@ export async function classifyBatch(opts: ClassifyBatchOptions): Promise<Classif
         if (c.verdict === 'failed') result.classifierFailed++;
         if (c.verdict !== 'ineligible') return;
         result.skippedIneligible[c.stage]++;
+        ineligible.add(traceId);
         try {
             await onIneligible(traceId, c);
         } catch (err) {
@@ -287,15 +307,44 @@ export async function classifyBatch(opts: ClassifyBatchOptions): Promise<Classif
         }
     }
 
-    let next = 0;
-    async function worker() {
-        while (next < initial.length) await classifyOne(initial[next++]);
+    async function round(traceIds: string[]) {
+        classified.push(...traceIds);
+        let next = 0;
+        async function worker() {
+            while (next < traceIds.length) await classifyOne(traceIds[next++]);
+        }
+        await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), traceIds.length) }, worker));
     }
-    await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), initial.length) }, worker));
-    const { rule, model } = result.skippedIneligible;
+
+    const target = initial.length;
+    const eligible = () => classified.length - ineligible.size;
+    await round(initial);
+    let cursor = 0;
+    while (mode === 'enforce' && eligible() < target && classified.length < maxAttempts && cursor < reserve.length) {
+        const want = Math.min(target - eligible(), maxAttempts - classified.length);
+        const chunk: string[] = [];
+        try {
+            while (chunk.length < want && cursor < reserve.length) {
+                const slice = reserve.slice(cursor, cursor + want - chunk.length);
+                cursor += slice.length;
+                chunk.push(...(await filterProcessed(slice)));
+            }
+        } catch (err) {
+            log.warning(`Classifier top-up stopped, reading existing scores failed: ${err}`);
+            break;
+        }
+        if (chunk.length === 0) break;
+        await round(chunk);
+    }
+
+    result.toJudge = mode === 'shadow' ? classified : classified.filter((id) => !ineligible.has(id));
+    result.targetReached = mode === 'shadow' || eligible() >= target;
     log.info(
-        `Classifier (${mode}): ${initial.length} classified, ${rule + model} skipped, ` +
+        `Classifier (${mode}): ${classified.length} classified, ${ineligible.size} skipped, ` +
             `${result.classifierFailed} failed open`,
     );
+    if (!result.targetReached) {
+        log.warning(`Classifier top-up stopped at ${eligible()} of ${target} eligible traces (limit ${maxAttempts})`);
+    }
     return result;
 }
