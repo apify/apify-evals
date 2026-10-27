@@ -146,16 +146,21 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
     let mcpToolCount: number | null = null;
     let mcpFailure: string | null = null;
     const remaining = () => Math.max(1, deadline - Date.now());
+    // The abort timer can fire while Date.now() is still short of the deadline.
+    let timedOut = false;
     if (expected) {
+        const signal = AbortSignal.timeout(remaining());
         try {
-            mcpToolCount = await listMcpTools(ctx, AbortSignal.timeout(remaining()));
+            mcpToolCount = await listMcpTools(ctx, signal);
             if (mcpToolCount === 0) mcpFailure = 'MCP server exposed no allowed tools';
         } catch (error) {
             mcpToolCount = 0;
-            mcpFailure = String(error);
+            if (signal.aborted) timedOut = true;
+            else mcpFailure = String(error);
         }
     }
-    if (mcpFailure || Date.now() >= deadline) {
+    timedOut ||= Date.now() >= deadline;
+    if (mcpFailure || timedOut) {
         return {
             output: '',
             conversation: [],
@@ -170,7 +175,7 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
                 exitCode: null,
                 subtype: mcpFailure ? 'error_mcp_startup' : 'error_timeout',
                 isError: true,
-                timedOut: Date.now() >= deadline,
+                timedOut,
                 stdoutTruncated: false,
                 numTurns: 0,
                 usage: null,

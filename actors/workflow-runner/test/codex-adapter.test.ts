@@ -365,6 +365,23 @@ process.stdin.on('end', () => {
         expect(sessionInfra(result).ok).toBe(false);
     });
 
+    it('treats a deadline abort of MCP discovery as a timeout even when the clock lags the timer', async () => {
+        ctx.perItemTimeoutSecs = 0.05;
+        const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+        mcp.connect.mockImplementation(
+            (_transport, options) =>
+                new Promise((_resolve, reject) => {
+                    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+                }),
+        );
+        try {
+            const result = await runCodex(ctx);
+            expect(result.metrics).toMatchObject({ timedOut: true, mcpRestarts: 0, mcpToolsMissing: false });
+        } finally {
+            now.mockRestore();
+        }
+    });
+
     it.each([
         ['empty output', ''],
         ['nonzero exit with a final answer', 'process.stdout.write(fixture); process.exitCode = 2;'],
