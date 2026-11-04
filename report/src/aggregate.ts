@@ -94,12 +94,14 @@ const SCHEDULED = (t: string | null) => (t ?? '').toLowerCase().startsWith('sche
  * full-scope run, or, on a day without one, the only full-scope single-repeat
  * run. Extra full runs on the same day and model (e.g. three concurrent manual
  * runs) stay out of the counts and are listed as excluded, so a day never
- * carries more than one attempt per task and model.
+ * carries more than one attempt per task and model. Comparison runs (several
+ * skill sets side by side) are never canonical: the report tracks the suite's
+ * normal setup, and their variants share the model slot.
  */
 export function canonicalExperimentIds(observations: Observation[]): Set<string> {
     const byDay = new Map<string, Map<string, { first: Observation; count: number }>>();
     for (const o of observations) {
-        if (o.fullScope !== true || (o.repeats ?? 1) > 1) continue;
+        if (o.fullScope !== true || (o.repeats ?? 1) > 1 || o.comparison === true) continue;
         const dayKey = `${o.day}|${modelSlot(o.model)}`;
         const day = byDay.get(dayKey) ?? new Map<string, { first: Observation; count: number }>();
         const entry = day.get(o.experimentId);
@@ -124,7 +126,7 @@ export function canonicalExperimentIds(observations: Observation[]): Set<string>
 }
 
 export function isCanonical(o: Observation, canonicalIds?: Set<string>): boolean {
-    if (!canonicalIds) return o.fullScope === true && (o.repeats ?? 1) <= 1;
+    if (!canonicalIds) return o.fullScope === true && (o.repeats ?? 1) <= 1 && o.comparison !== true;
     return canonicalIds.has(o.experimentId);
 }
 

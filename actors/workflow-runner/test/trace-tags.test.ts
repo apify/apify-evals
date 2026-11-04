@@ -23,6 +23,7 @@ describe('buildTraceTags', () => {
             'actor:apify/instagram-scraper',
             'team:socials',
             'skill:find',
+            'skills:none',
             'family:instagram',
         ]);
     });
@@ -39,6 +40,10 @@ describe('buildTraceTags', () => {
             expect(tags).toContain('trigger:manual');
             expect(tags).toContain('repeats:3');
         }
+    });
+    it('labels the injected skill set', () => {
+        const tags = buildTraceTags({ ...(ctx as object), skillSet: ['b', 'a'] } as never, {});
+        expect(tags).toContain('skills:a+b');
     });
     it('defaults to unknown trigger and one repeat', () => {
         const tags = buildTraceTags(ctx, {});

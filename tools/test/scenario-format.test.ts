@@ -109,3 +109,28 @@ describe('lintPrompt', () => {
         expect(lintPrompt('Get the 5 most recent posts in the last month')).toEqual([]);
     });
 });
+
+describe('profile validation', () => {
+    it('rejects an agentSkills entry that is not a skill name', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'profile-test-'));
+        try {
+            mkdirSync(join(dir, 'profiles'));
+            writeFileSync(
+                join(dir, 'profiles', 'with-skills.yaml'),
+                [
+                    'name: with-skills',
+                    'subjectKind: actor',
+                    'agentSkills: [Not_A_Skill]',
+                    'skills:',
+                    '    find: { label: Found, tools: [search-actors], maxTurns: 4 }',
+                    'wrongSubjectLabel: wrong-actor',
+                    'fixAreas: [{ id: agent-or-model, owner: none, description: x }]',
+                    'evidence: []',
+                ].join('\n'),
+            );
+            expect(() => loadProfile(dir, 'with-skills')).toThrow(/"Not_A_Skill" is not a skill name/);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});

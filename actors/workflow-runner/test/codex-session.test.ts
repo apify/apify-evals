@@ -75,6 +75,8 @@ describe('Codex wiring into the unchanged session pipeline', () => {
             mcpUrl: 'https://mcp.apify.com',
             apifyToken: 'apify_test_token',
             mcpEnv: { APIFY_TOKEN: 'apify_test_token' },
+            skillSet: [],
+            skillsRoot: '/nonexistent',
             artifactStore: { putJson, putLog },
             snapshots: { get: vi.fn().mockResolvedValue(ref) },
             references: { run: vi.fn() },

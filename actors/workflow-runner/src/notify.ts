@@ -1,7 +1,7 @@
 /**
  * Slack digest after a run: one message per owner whose subjects were in
  * scope, with the pass rate and its delta against the previous full-scope
- * run on the same model, the scenarios that did not pass (with trace links),
+ * run of the same configuration, the scenarios that did not pass (with trace links),
  * the fix-area tally, cost and the results link.
  *
  * Posting needs a webhook: `SLACK_WEBHOOK_URL` (one channel for everyone) or
@@ -37,6 +37,43 @@ export interface DigestInput {
     actorRunsCostUsd: number | null;
     fixAreas: Record<string, number>;
     scenarios: DigestScenario[];
+}
+
+/** An experiment as `GET /api/public/experiments?fields=core,metadata,scores` returns it. */
+export interface PastExperiment {
+    id: string;
+    startTime: string;
+    metadata?: Record<string, unknown> | null;
+    scores?: { name?: string; value?: unknown; timestamp?: string }[] | null;
+}
+
+/** Metadata values an experiment written before that axis existed stands for. */
+const VARIANT_DEFAULTS: Record<string, string> = { harness: 'claude-code', skillSet: 'none' };
+
+/**
+ * The digest's baseline: the newest `pass_rate` of an earlier full-scope run of
+ * the same dataset and the same configuration (harness, model, skill set).
+ * Another configuration's rate is not a "previous run", it is a comparison.
+ * `experiments` come newest first; a run re-judged later has several
+ * `pass_rate` scores and the newest counts.
+ */
+export function previousPassRate(
+    experiments: PastExperiment[],
+    current: { datasetRunId: string | null; variant: Record<string, string> },
+): number | null {
+    const field = (e: PastExperiment, key: string) => {
+        const v = e.metadata?.[key];
+        return v === undefined || v === null || v === '' ? VARIANT_DEFAULTS[key] : String(v);
+    };
+    for (const e of experiments) {
+        if (e.id === current.datasetRunId || field(e, 'fullScope') !== 'true') continue;
+        if (Object.entries(current.variant).some(([key, value]) => field(e, key) !== value)) continue;
+        const rates = (e.scores ?? [])
+            .filter((s) => s.name === 'pass_rate' && typeof s.value === 'number')
+            .sort((a, b) => String(b.timestamp ?? '').localeCompare(String(a.timestamp ?? '')));
+        if (rates.length > 0) return rates[0].value as number;
+    }
+    return null;
 }
 
 function pct(v: number | null): string {
