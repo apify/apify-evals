@@ -31,7 +31,7 @@ button.
   `profiles/<suite>.yaml` — what a suite tests, tools per skill, fix areas.
   `tools/` syncs scenarios to Langfuse (`npm run scenarios:sync`) and
   validates them (`npm run scenarios:check`). See `scenarios/README.md`.
-- `surfaces/<name>.yaml` (how the agent reaches Apify: `mcp`, `api`)
+- `surfaces/<name>.yaml` (how the agent reaches Apify: `mcp`, `cli`, `api`)
   and agent skills (injectable; the runner downloads `apify/agent-skills` at
   the commit pinned in `src/skills.ts`, see `skills/README.md`): the runner runs every
   model × surface × skill set as its own dataset run. Scenarios stay
