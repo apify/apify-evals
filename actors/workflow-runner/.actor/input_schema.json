@@ -55,6 +55,13 @@
             "description": "Start the Judge Actor when the agents finish so the results link already shows verdicts and fix areas. Turn off only to re-judge later with a different judge model.",
             "default": true
         },
+        "surfaces": {
+            "title": "Surfaces (optional)",
+            "type": "array",
+            "description": "How the agent reaches Apify, one experiment per entry so the compare view shows them side by side: mcp (Apify MCP server, the default), api (raw HTTP to the Apify API). Each name is a file surfaces/<name>.yaml. Combines with skill sets: surfaces x skill sets x models.",
+            "editor": "stringList",
+            "default": []
+        },
         "skillSets": {
             "title": "Skill sets (optional)",
             "type": "array",
@@ -94,7 +101,7 @@
         "runName": {
             "title": "Run name (optional)",
             "type": "string",
-            "description": "Defaults to \"<suite> · <model> · <scope> · <date time> · <trigger>\". With more than one model or skill set, each experiment gets \"<run name> · <model> · skills:<set>\" so Langfuse keeps them apart.",
+            "description": "Defaults to \"<suite> · <model> · <scope> · <date time> · <trigger>\". With more than one model, surface or skill set, each experiment gets \"<run name> · <model> · surface:<name> · skills:<set>\" so Langfuse keeps them apart.",
             "editor": "textfield",
             "nullable": true
         },
@@ -158,7 +165,7 @@
         "maxSessions": {
             "title": "Session limit",
             "type": "integer",
-            "description": "Refuse to start (exit 15) when models x skill sets x scenarios x repeats is larger than this. Filter scenarios or raise the limit on purpose.",
+            "description": "Refuse to start (exit 15) when models x surfaces x skill sets x scenarios x repeats is larger than this. Filter scenarios or raise the limit on purpose.",
             "default": 400,
             "minimum": 1
         },

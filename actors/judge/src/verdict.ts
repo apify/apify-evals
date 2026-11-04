@@ -62,6 +62,8 @@ export const STORE_PROFILE_FOR_VERDICT: ProfileForVerdict = {
         'output-format',
         'error-messages',
         'discoverability',
+        'surface',
+        'skill-instructions',
         'agent-or-model',
         'none',
     ],
@@ -73,6 +75,8 @@ export const STORE_PROFILE_FOR_VERDICT: ProfileForVerdict = {
         'apify.run': 'error-messages',
         'answer.grounded': 'agent-or-model',
         'tool.called': 'agent-or-model',
+        // Gating only when a scenario raises it to severity fail: the agent left the configured surface.
+        'surface.used': 'surface',
         'workspace.file': 'agent-or-model',
         'answer.contains': 'agent-or-model',
         'answer.regex': 'agent-or-model',

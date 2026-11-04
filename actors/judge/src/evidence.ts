@@ -96,6 +96,39 @@ export async function conversationFromFullLog(
     return conversation.length > 0 ? conversation : null;
 }
 
+const SURFACE_LABELS: Record<string, string> = {
+    mcp: 'the Apify MCP server',
+    cli: 'the Apify CLI in Bash',
+    api: 'raw HTTP to the Apify API',
+};
+
+/**
+ * What the agent was given (surface and agent skills) and which Apify surfaces
+ * it actually used, so tool choices are read against the setup: `apify call`
+ * is the right tool on the CLI surface and a fallback on the MCP one. Null for
+ * traces from before contract 1.3.
+ */
+export function renderSetup(session: Partial<AgentSpanMetadata>): string | null {
+    const m = session as {
+        surface?: string;
+        surfaceKind?: string;
+        surfacesUsed?: string[];
+        cliVersion?: string;
+        agentSkills?: string[];
+        skillsLoaded?: string[];
+    };
+    if (!m.surface) return null;
+    const kind = m.surfaceKind ?? m.surface;
+    const parts = [
+        `surface ${m.surface} (${SURFACE_LABELS[kind] ?? kind}${m.cliVersion ? ` ${m.cliVersion}` : ''})`,
+        m.agentSkills && m.agentSkills.length > 0
+            ? `agent skills ${m.agentSkills.join(', ')} (loaded: ${(m.skillsLoaded ?? []).join(', ') || 'none'})`
+            : 'no agent skills',
+    ];
+    const used = m.surfacesUsed ?? [];
+    return `- Agent setup: ${parts.join('; ')}. Apify surfaces the agent used: ${used.length > 0 ? used.join(', ') : 'none'}.`;
+}
+
 /** The facts block the judge reads before the conversation. */
 export function renderFacts(opts: {
     intendedSubject: string | null;
@@ -109,8 +142,10 @@ export function renderFacts(opts: {
     // are judged on their expected output alone.
     if (skill) lines.push(`- Scenario type: ${skill === 'find' ? 'find (the agent had to discover the subject in store search)' : 'use (the subject was named in the prompt)'}`);
     if (intendedSubject) lines.push(`- Intended subject: ${intendedSubject}`);
+    const setup = renderSetup(session);
+    if (setup) lines.push(setup);
     const runs = artifact?.evidence.actorRuns ?? [];
-    if (runs.length === 0 && skill) lines.push('- Actor runs triggered by the agent: none');
+    if (runs.length === 0 && skill) lines.push('- Actor runs the agent started: none');
     for (const r of runs) {
         const items = r.datasetId ? artifact?.evidence.datasets[r.datasetId]?.length : undefined;
         lines.push(`- Actor run: ${r.actor} · ${r.status ?? 'status unknown'}${items !== undefined ? ` · ${items} dataset items` : r.itemCount !== undefined ? ` · ${r.itemCount} items` : ''}${r.runId ? ` · run ${r.runId}` : ''}`);
