@@ -92,7 +92,7 @@ if (mode === 'online') {
         await import('./online-judge.js');
     const { mcpToolSchemaSource } = await import('./online-schema.js');
     const { JUDGE_IMPL_VERSION } = await import('./core.js');
-    const { finishOnlineRun, langfuseOnlineScoreReader, skipAlreadyJudged, writeOnlineScores } =
+    const { finishOnlineRun, langfuseOnlineScoreReader, NO_CLASSIFIER_COUNTERS, skipAlreadyJudged, writeOnlineScores } =
         await import('./online-scores.js');
     const { assertOnlineProject, DEFAULT_ONLINE_PROJECT, langfuseProjectFetcher } = await import('./online-project.js');
     const langfuse = new LangfuseClient();
@@ -251,6 +251,7 @@ if (mode === 'online') {
             sampled: selection.sampled,
             judged,
             failedToJudge,
+            ...NO_CLASSIFIER_COUNTERS,
         },
     });
 
