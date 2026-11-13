@@ -1,3 +1,5 @@
+import { log } from 'apify';
+
 import { type JevCaller, type NoulQuestion } from './jev.js';
 import { fetchTraceObservations, type OnlineTurn, reconstructTurn, type TurnMessage } from './online-turn.js';
 
@@ -9,11 +11,17 @@ import { fetchTraceObservations, type OnlineTurn, reconstructTurn, type TurnMess
  * Two stages. Deterministic rules first (`ruleVerdict`), then one TypeSafe Jev
  * `noul` question (`classifyTurn`). A Jev failure fails OPEN: the trace is
  * judged anyway and counted in `classifierFailed`, so the gate can never hold
- * the checkpoint. Nothing here writes to Langfuse.
+ * the checkpoint. `classifyBatch` runs both stages over the sample.
+ *
+ * Nothing here writes to Langfuse: the caller passes `onIneligible`, which
+ * writes the `agent_judge_eligible = 0` score (online-scores.ts).
  */
 
 /** BOOLEAN trace score written only on a skipped turn, always 0; eligible turns get none. */
 export const ELIGIBLE_SCORE_NAME = 'agent_judge_eligible';
+
+/** `off`: no classifier. `shadow`: write the skip scores, but judge every sampled turn. */
+export type ClassifierMode = 'off' | 'shadow';
 
 /**
  * After this many Jev failures in a row, the rest of the batch fails open
@@ -217,4 +225,77 @@ export function traceClassifier({
         }
         return classifyTurn(turn, config);
     };
+}
+
+// ---------------------------------------------------------------------------
+// The batch
+// ---------------------------------------------------------------------------
+
+export interface ClassifyBatchOptions {
+    mode: ClassifierMode;
+    /** The sample after `skipAlreadyJudged()`. */
+    initial: string[];
+    concurrency: number;
+    classify: TraceClassifier;
+    /** Writes the `agent_judge_eligible = 0` score. A throw is logged, never fatal. */
+    onIneligible: (traceId: string, classification: Ineligible) => Promise<void>;
+}
+
+export interface ClassifyBatchResult {
+    /** The traces to judge. */
+    toJudge: string[];
+    skippedIneligible: { rule: number; model: number };
+    /** Failed open: Jev or the trace read failed, the trace went to the judge. */
+    classifierFailed: number;
+}
+
+function describe(c: Classification): string {
+    if (c.verdict === 'eligible') return `eligible (P(yes)=${c.probability.toFixed(3)})`;
+    if (c.verdict === 'failed') return `classifier failed, judged anyway: ${c.error}`;
+    return c.stage === 'rule' ? `ineligible (rule ${c.rule})` : `ineligible (P(yes)=${c.probability.toFixed(3)})`;
+}
+
+/**
+ * Classify the sample. `off` classifies nothing. In shadow mode the skip
+ * scores are written, and every sampled trace still goes to the judge.
+ */
+export async function classifyBatch(opts: ClassifyBatchOptions): Promise<ClassifyBatchResult> {
+    const { mode, initial, concurrency, classify, onIneligible } = opts;
+    const result: ClassifyBatchResult = {
+        toJudge: initial,
+        skippedIneligible: { rule: 0, model: 0 },
+        classifierFailed: 0,
+    };
+    if (mode === 'off' || initial.length === 0) return result;
+    const servedModels = new Set<string>();
+
+    async function classifyOne(traceId: string) {
+        const c = await classify(traceId);
+        log.info(`${traceId}: ${describe(c)}`);
+        const servedModel = 'servedModel' in c ? c.servedModel : null;
+        if (servedModel && !servedModels.has(servedModel)) {
+            servedModels.add(servedModel);
+            log.info(`Classifier answered with model ${servedModel}`);
+        }
+        if (c.verdict === 'failed') result.classifierFailed++;
+        if (c.verdict !== 'ineligible') return;
+        result.skippedIneligible[c.stage]++;
+        try {
+            await onIneligible(traceId, c);
+        } catch (err) {
+            log.warning(`${traceId}: ${ELIGIBLE_SCORE_NAME} score write failed: ${err}`);
+        }
+    }
+
+    let next = 0;
+    async function worker() {
+        while (next < initial.length) await classifyOne(initial[next++]);
+    }
+    await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), initial.length) }, worker));
+    const { rule, model } = result.skippedIneligible;
+    log.info(
+        `Classifier (${mode}): ${initial.length} classified, ${rule + model} skipped, ` +
+            `${result.classifierFailed} failed open`,
+    );
+    return result;
 }

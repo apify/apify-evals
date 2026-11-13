@@ -128,6 +128,38 @@
             "default": "Apify AI Agent",
             "editor": "textfield"
         },
+        "classifier": {
+            "title": "Input classifier (online)",
+            "type": "string",
+            "description": "Online mode only. Before the judge, a classifier finds turns that cannot be evaluated (no letter or digit; a lone number or a very short text with no earlier messages; then a TypeSafe Jev decision). Each such turn gets the trace score agent_judge_eligible = 0. off: no classifier. shadow: write the skip scores, but judge every sampled turn.",
+            "default": "off",
+            "editor": "select",
+            "enum": [
+                "off",
+                "shadow"
+            ],
+            "enumTitles": [
+                "Off",
+                "Shadow (score skips, judge all)"
+            ]
+        },
+        "classifierModel": {
+            "title": "Classifier model (online)",
+            "type": "string",
+            "description": "Online mode only. OpenRouter id of the TypeSafe Jev model, called through the Apify OpenRouter proxy. Use a pinned id: the model is part of the skip score id.",
+            "default": "typesafe/jev-1.13",
+            "editor": "textfield",
+            "pattern": "^~?[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$",
+            "maxLength": 128
+        },
+        "classifierThreshold": {
+            "title": "Classifier threshold (online)",
+            "type": "number",
+            "description": "Online mode only. Jev gives P(yes) for \"Can this turn be evaluated?\". A turn is skipped when P(yes) is below this value. Keep it low, so that the gate skips only when Jev is confident. The threshold is not part of the skip score id (see schedule/README.md).",
+            "default": 0.3,
+            "minimum": 0,
+            "maximum": 1
+        },
         "artifactStore": {
             "title": "Eval artifacts store",
             "type": "string",
