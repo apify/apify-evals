@@ -206,42 +206,120 @@ describe('classifyBatch', () => {
     function setup(overrides: Partial<ClassifyBatchOptions> = {}) {
         const classified: string[] = [];
         const recorded: { traceId: string; classification: Ineligible }[] = [];
+        const filtered: string[][] = [];
         const opts: ClassifyBatchOptions = {
-            mode: 'shadow',
+            mode: 'enforce',
             initial: [],
+            reserve: [],
+            maxAttempts: 100,
             concurrency: 2,
             classify: async (traceId) => {
                 classified.push(traceId);
                 const prefix = Object.keys(BY_PREFIX).find((p) => traceId.startsWith(p));
                 return prefix ? BY_PREFIX[prefix] : ELIGIBLE;
             },
+            filterProcessed: async (traceIds) => {
+                filtered.push(traceIds);
+                return traceIds.filter((id) => !id.startsWith('done'));
+            },
             onIneligible: async (traceId, classification) => {
                 recorded.push({ traceId, classification });
             },
             ...overrides,
         };
-        return { opts, classified, recorded };
+        return { opts, classified, recorded, filtered };
     }
 
-    it('off makes no classifier calls and writes no skip score', async () => {
-        const { opts, classified, recorded } = setup({ mode: 'off', initial: ['a', 'bad-r1'] });
+    it('off makes no classifier calls and no skip-score reads', async () => {
+        const { opts, classified, recorded, filtered } = setup({
+            mode: 'off',
+            initial: ['a', 'bad-r1'],
+            reserve: ['b'],
+        });
         const r = await classifyBatch(opts);
         expect(r.toJudge).toEqual(['a', 'bad-r1']);
         expect(classified).toEqual([]);
+        expect(filtered).toEqual([]);
         expect(recorded).toEqual([]);
     });
 
-    it('shadow: judges every sampled trace and writes the skips', async () => {
-        const { opts, classified, recorded } = setup({ initial: ['a', 'bad-r1', 'bad-m1', 'fail1'] });
+    it('shadow: judges every sampled trace, writes the skips, never tops up', async () => {
+        const { opts, classified, recorded, filtered } = setup({
+            mode: 'shadow',
+            initial: ['a', 'bad-r1', 'bad-m1', 'fail1'],
+            reserve: ['b', 'c'],
+        });
         const r = await classifyBatch(opts);
         expect(r.toJudge).toEqual(['a', 'bad-r1', 'bad-m1', 'fail1']);
         expect(classified.sort()).toEqual(['a', 'bad-m1', 'bad-r1', 'fail1']);
+        expect(filtered).toEqual([]);
         expect(recorded.map((x) => x.traceId).sort()).toEqual(['bad-m1', 'bad-r1']);
         expect(r.skippedIneligible).toEqual({ rule: 1, model: 1 });
         expect(r.classifierFailed).toBe(1);
+        expect(r.targetReached).toBe(true);
     });
 
-    it('a failed skip-score write is logged, never fatal', async () => {
+    it('enforce: drops the skipped traces and tops up from the reserve until the target is reached', async () => {
+        const { opts, classified, recorded, filtered } = setup({
+            initial: ['a', 'bad-r1', 'bad-m1'],
+            reserve: ['done1', 'b', 'bad-r2', 'c', 'unused'],
+        });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['a', 'b', 'c']);
+        expect(r.targetReached).toBe(true);
+        // The reserve is filtered by skipAlreadyJudged before it is classified.
+        expect(filtered[0]).toEqual(['done1', 'b']);
+        expect(classified).not.toContain('done1');
+        expect(classified).not.toContain('unused');
+        expect(recorded.map((x) => x.traceId).sort()).toEqual(['bad-m1', 'bad-r1', 'bad-r2']);
+        expect(r.skippedIneligible).toEqual({ rule: 2, model: 1 });
+    });
+
+    it('enforce: the top-up stops at maxAttempts and reports the missed target', async () => {
+        const { opts, classified } = setup({
+            initial: ['bad-r1', 'bad-r2'],
+            reserve: ['bad-r3', 'bad-r4', 'bad-r5', 'bad-r6', 'ok'],
+            maxAttempts: 6,
+        });
+        const r = await classifyBatch(opts);
+        expect(classified).toHaveLength(6);
+        expect(classified).not.toContain('ok');
+        expect(r.toJudge).toEqual([]);
+        expect(r.targetReached).toBe(false);
+    });
+
+    it('enforce: the top-up stops when the reserve runs out', async () => {
+        const { opts, classified } = setup({ initial: ['bad-r1', 'a'], reserve: ['done1'] });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['a']);
+        expect(r.targetReached).toBe(false);
+        expect(classified.sort()).toEqual(['a', 'bad-r1']);
+    });
+
+    it('enforce: a failed score read during the top-up stops the top-up, not the run', async () => {
+        const { opts, classified } = setup({
+            initial: ['a', 'bad-r1'],
+            reserve: ['b', 'c'],
+            filterProcessed: async () => {
+                throw new Error('langfuse 500');
+            },
+        });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['a']);
+        expect(r.targetReached).toBe(false);
+        expect(classified.sort()).toEqual(['a', 'bad-r1']);
+    });
+
+    it('fails open: a failed classification is judged, counted and not replaced', async () => {
+        const { opts, filtered } = setup({ initial: ['fail1', 'a'], reserve: ['b'] });
+        const r = await classifyBatch(opts);
+        expect(r.toJudge).toEqual(['fail1', 'a']);
+        expect(r.classifierFailed).toBe(1);
+        expect(r.targetReached).toBe(true);
+        expect(filtered).toEqual([]);
+    });
+
+    it('a failed skip-score write is logged, and the trace is still not judged in enforce mode', async () => {
         const { opts } = setup({
             initial: ['bad-r1', 'a'],
             onIneligible: async () => {
@@ -249,7 +327,7 @@ describe('classifyBatch', () => {
             },
         });
         const r = await classifyBatch(opts);
-        expect(r.toJudge).toEqual(['bad-r1', 'a']);
+        expect(r.toJudge).toEqual(['a']);
         expect(r.skippedIneligible.rule).toBe(1);
     });
 });

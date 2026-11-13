@@ -35,9 +35,11 @@ interface Input {
     /** Online mode only: the Langfuse project (name or id) the keys must belong to. */
     langfuseProject?: string;
     /** Online mode only: the input classifier before the judge (#29). */
-    classifier?: 'off' | 'shadow';
+    classifier?: 'off' | 'shadow' | 'enforce';
     classifierModel?: string;
     classifierThreshold?: number;
+    /** Enforce only: the top-up stops after this many times the sample size in classifications. */
+    maxClassifyFactor?: number;
 }
 
 await Actor.init();
@@ -53,9 +55,10 @@ const {
     writeRunScores = true,
     auditQueue = 'judge-audit',
     auditPassSample: auditPassSampleInput = 0.1,
-    classifier = 'off',
+    classifier = 'enforce',
     classifierModel = 'typesafe/jev-1.13',
     classifierThreshold = 0.3,
+    maxClassifyFactor = 3,
 } = input;
 if (mode === 'datasetRun' && !datasetRunId) {
     throw new Error('datasetRunId is required (the Runner returns it in its OUTPUT)');
@@ -223,20 +226,29 @@ if (mode === 'online') {
                   defaultPrompt: DEFAULT_ONLINE_JUDGE_PROMPT,
               })
             : { version: 0, template: '' };
-    const { toJudge, skipped } = await skipAlreadyJudged({
-        traceIds: selection.sampledTraceIds,
-        version: { promptVersion: prompt.version, judgeImplVersion: JUDGE_IMPL_VERSION, judgeModel },
-        force,
-        readScores: langfuseOnlineScoreReader(langfuse),
-    });
-    if (skipped.length > 0) log.info(`${skipped.length} sampled traces already judged under this version, skipped`);
+    // In enforce mode a matching agent_judge_eligible = 0 score also marks a trace as processed.
+    const eligibility = { judgeImplVersion: JUDGE_IMPL_VERSION, classifierModel };
+    const alreadyProcessed = async (traceIds: string[]) =>
+        skipAlreadyJudged({
+            traceIds,
+            version: { promptVersion: prompt.version, judgeImplVersion: JUDGE_IMPL_VERSION, judgeModel },
+            force,
+            readScores: langfuseOnlineScoreReader(langfuse),
+            eligibility: { ...eligibility, mode: classifier },
+        });
+    const { toJudge, skipped } = await alreadyProcessed(selection.sampledTraceIds);
+    if (skipped.length > 0) log.info(`${skipped.length} sampled traces already processed under this version, skipped`);
 
     // 3. Classify (#29): rules, then Jev; a skip writes agent_judge_eligible = 0.
-    // Shadow mode still judges every sampled trace.
-    const eligibility = { judgeImplVersion: JUDGE_IMPL_VERSION, classifierModel };
+    // Enforce mode drops the skipped traces and tops the sample up from the
+    // unsampled completed traces; shadow mode judges every sampled trace.
     const classified = await classifyBatch({
         mode: classifier,
         initial: toJudge,
+        reserve: selection.unsampledTraceIds,
+        // Below 1 the limit could not even classify the sample itself.
+        maxAttempts: Math.ceil(Math.max(1, maxClassifyFactor) * selection.sampled),
+        filterProcessed: async (traceIds) => (await alreadyProcessed(traceIds)).toJudge,
         concurrency,
         classify: traceClassifier({
             langfuse,
@@ -251,7 +263,7 @@ if (mode === 'online') {
                 classification,
                 version: eligibility,
                 threshold: classifierThreshold,
-                mode: 'shadow',
+                mode: classifier === 'enforce' ? 'enforce' : 'shadow',
                 environment,
             });
             await langfuse.api.scores.create(request);
@@ -290,7 +302,7 @@ if (mode === 'online') {
             skippedIneligibleRule: classified.skippedIneligible.rule,
             skippedIneligibleModel: classified.skippedIneligible.model,
             classifierFailed: classified.classifierFailed,
-            targetMissed: 0,
+            targetMissed: classified.targetReached ? 0 : 1,
         },
     });
 
@@ -309,6 +321,7 @@ if (mode === 'online') {
         classifier,
         skippedIneligible: classified.skippedIneligible,
         classifierFailed: classified.classifierFailed,
+        targetReached: classified.targetReached,
         judged,
         failedToJudge,
         metadataMissing,

@@ -16,9 +16,9 @@ import {
     type ObservationPage,
     requestedWindow,
     safeUpperBound,
-    sampleTraceIds,
     selectTraces,
     settledBefore,
+    shuffleAndSplit,
     traceFilter,
     TURN_COMPLETE_SPAN_NAME,
 } from '../src/select.js';
@@ -228,18 +228,18 @@ describe('collectTraceIds', () => {
     });
 });
 
-describe('sampleTraceIds', () => {
+describe('shuffleAndSplit', () => {
     const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't9', 't10'];
 
     it('takes ceil(rate * n)', () => {
-        expect(sampleTraceIds(ids, 0.2, 100, fixedRng([0.5])).length).toBe(2);
-        expect(sampleTraceIds(ids, 0.25, 100, fixedRng([0.5])).length).toBe(3);
-        expect(sampleTraceIds(ids, 0, 100, fixedRng([0.5]))).toEqual([]);
-        expect(sampleTraceIds([], 1, 100, fixedRng([0.5]))).toEqual([]);
+        expect(shuffleAndSplit(ids, 0.2, 100, fixedRng([0.5])).sampled.length).toBe(2);
+        expect(shuffleAndSplit(ids, 0.25, 100, fixedRng([0.5])).sampled.length).toBe(3);
+        expect(shuffleAndSplit(ids, 0, 100, fixedRng([0.5])).sampled).toEqual([]);
+        expect(shuffleAndSplit([], 1, 100, fixedRng([0.5])).sampled).toEqual([]);
     });
 
     it('caps at maxItems after shuffling', () => {
-        const sample = sampleTraceIds(ids, 1, 3, fixedRng([0.1, 0.9, 0.3]));
+        const sample = shuffleAndSplit(ids, 1, 3, fixedRng([0.1, 0.9, 0.3])).sampled;
         expect(sample.length).toBe(3);
         // A capped sample is not the input prefix: the shuffle ran first.
         expect(sample).not.toEqual(ids.slice(0, 3));
@@ -247,9 +247,16 @@ describe('sampleTraceIds', () => {
     });
 
     it('is a permutation-based subset with no duplicates', () => {
-        const sample = sampleTraceIds(ids, 1, 100, fixedRng([0.37, 0.82, 0.05]));
+        const sample = shuffleAndSplit(ids, 1, 100, fixedRng([0.37, 0.82, 0.05])).sampled;
         expect([...sample].sort()).toEqual([...ids].sort());
         expect(sample).not.toBe(ids);
+    });
+
+    it('returns the unsampled rest of the same shuffle (#29)', () => {
+        const all = shuffleAndSplit(ids, 1, 100, fixedRng([0.37, 0.82, 0.05])).sampled;
+        const { sampled, rest } = shuffleAndSplit(ids, 0.4, 100, fixedRng([0.37, 0.82, 0.05]));
+        expect(sampled).toEqual(all.slice(0, 4));
+        expect(rest).toEqual(all.slice(4));
     });
 });
 
@@ -301,6 +308,8 @@ describe('selectTraces', () => {
         expect(s.sampled).toBe(2);
         expect(s.sampledTraceIds.length).toBe(2);
         for (const id of s.sampledTraceIds) expect(['a', 'c', 'e']).toContain(id);
+        // The rest of the shuffle is the classifier's top-up reserve (#29).
+        expect([...s.sampledTraceIds, ...s.unsampledTraceIds].sort()).toEqual(completed);
         expect(s.checkpoint).toEqual({
             upperBound: safeUpperBound(NOW).toISOString(),
             runId: 'run-1',

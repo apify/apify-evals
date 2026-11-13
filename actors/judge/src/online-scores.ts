@@ -1,7 +1,7 @@
 import type { LangfuseClient } from '@langfuse/client';
 import { log } from 'apify';
 
-import { ELIGIBLE_SCORE_NAME, type Ineligible } from './online-classify.js';
+import { type ClassifierMode, ELIGIBLE_SCORE_NAME, type Ineligible } from './online-classify.js';
 import type { OnlineVerdicts } from './online-judge.js';
 import { HOLISTIC_SCORE_NAME, ONLINE_SCORE_NAMES } from './rubric.js';
 import { type Checkpoint, type CheckpointStore, DEFAULT_ENVIRONMENT } from './select.js';
@@ -398,12 +398,16 @@ export class AllScoreWritesFailedError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface ExistingOnlineScore {
+    /** The score id; the eligibility match is on it. */
+    id?: string;
     name: string;
     traceId: string | null;
+    /** BOOLEAN scores read back as `false`/`true` on v3, as 0/1 elsewhere. */
+    value?: unknown;
     metadata?: Record<string, unknown>;
 }
 
-/** Existing holistic scores for the given traces; `langfuseOnlineScoreReader()` in production, a fake in tests. */
+/** Existing holistic and eligibility scores for the given traces; `langfuseOnlineScoreReader()` in production, a fake in tests. */
 export type OnlineScoreReader = (traceIds: string[]) => Promise<ExistingOnlineScore[]>;
 
 function versionsMatch(metadata: Record<string, unknown> | undefined, version: OnlineScoreVersion): boolean {
@@ -424,25 +428,44 @@ export function judgedUnderVersion(existing: ExistingOnlineScore[], version: Onl
     return judged;
 }
 
+/** Traces that already carry `agent_judge_eligible = 0` with exactly this id (impl and classifier model). */
+export function skippedUnderVersion(existing: ExistingOnlineScore[], version: EligibilityVersion): Set<string> {
+    const skipped = new Set<string>();
+    for (const s of existing) {
+        if (s.name !== ELIGIBLE_SCORE_NAME || !s.traceId || (s.value !== 0 && s.value !== false)) continue;
+        if (s.id === eligibleScoreId(s.traceId, version)) skipped.add(s.traceId);
+    }
+    return skipped;
+}
+
 /**
  * Runs BEFORE judging so a re-run spends nothing on the LLM. A bumped prompt,
  * impl or model does not match, so the trace is judged again and the new
  * score lands beside the old one. `force` judges and writes everything; the
  * ids still dedup same-day repeats at the server.
+ *
+ * In enforce mode only (#29), a trace with a matching `agent_judge_eligible = 0`
+ * score is processed too, so it is neither classified nor judged again. The
+ * threshold is not in the id: after a threshold change, use `force`. Shadow
+ * mode must still judge every sampled trace.
  */
 export async function skipAlreadyJudged({
     traceIds,
     version,
     force,
     readScores,
+    eligibility,
 }: {
     traceIds: string[];
     version: OnlineScoreVersion;
     force: boolean;
     readScores: OnlineScoreReader;
+    eligibility?: EligibilityVersion & { mode: ClassifierMode };
 }): Promise<{ toJudge: string[]; skipped: string[] }> {
     if (force || traceIds.length === 0) return { toJudge: traceIds, skipped: [] };
-    const judged = judgedUnderVersion(await readScores(traceIds), version);
+    const existing = await readScores(traceIds);
+    const judged = judgedUnderVersion(existing, version);
+    if (eligibility?.mode === 'enforce') for (const id of skippedUnderVersion(existing, eligibility)) judged.add(id);
     return {
         toJudge: traceIds.filter((id) => !judged.has(id)),
         skipped: traceIds.filter((id) => judged.has(id)),
@@ -453,7 +476,9 @@ const TRACE_ID_CHUNK = 50;
 
 interface ScoresV3Page {
     data?: {
+        id?: string;
         name?: string;
+        value?: unknown;
         metadata?: Record<string, unknown>;
         subject?: { kind?: string; id?: string; traceId?: string };
     }[];
@@ -473,7 +498,7 @@ function subjectTraceId(subject: NonNullable<ScoresV3Page['data']>[number]['subj
 
 /**
  * `GET /api/public/v3/scores` (the endpoint that works in `events_only` mode),
- * holistic name only, `details` for the metadata and `subject` for the trace
+ * the holistic and the eligibility names, `details` for the metadata and `subject` for the trace
  * id, in trace-id chunks so one query stays bounded. Sibling of core.ts's
  * offline reader rather than a generalisation of it: that one is keyed on
  * observation subjects and the offline behaviour must not move.
@@ -487,13 +512,14 @@ export function langfuseOnlineScoreReader(langfuse: ScoresV3Api): OnlineScoreRea
             do {
                 const page = (await langfuse.api.scoresV3.getManyV3({
                     traceId: chunk,
-                    name: HOLISTIC_SCORE_NAME,
+                    name: `${HOLISTIC_SCORE_NAME},${ELIGIBLE_SCORE_NAME}`,
                     fields: 'details,subject',
                     limit: 100,
                     cursor,
                 })) as ScoresV3Page;
                 for (const s of page.data ?? []) {
-                    out.push({ name: s.name ?? '', traceId: subjectTraceId(s.subject), metadata: s.metadata });
+                    const { id, name = '', value, metadata } = s;
+                    out.push({ id, name, traceId: subjectTraceId(s.subject), value, metadata });
                 }
                 cursor = page.meta?.cursor;
             } while (cursor);

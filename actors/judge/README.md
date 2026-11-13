@@ -323,11 +323,12 @@ The daily schedule runs a Task that holds these keys (`schedule/README.md`).
 
 **OUTPUT.** `{mode, environment, window, checkpointWritten, isGateBroken,
 tracesInWindow, completedTraces, sampled, scoresSkipped, classifier,
-skippedIneligible: {rule, model}, classifierFailed, judged, failedToJudge,
-metadataMissing, scoresWritten, failedToWrite, rollupItemId,
-sampledTraceIds}`. `scoresSkipped` counts sampled traces already judged under
-this version (not judged again); `scoresWritten` and `failedToWrite` count
-traces, not individual scores.
+skippedIneligible: {rule, model}, classifierFailed, targetReached, judged,
+failedToJudge, metadataMissing, scoresWritten, failedToWrite, rollupItemId,
+sampledTraceIds}`. `scoresSkipped` counts sampled traces already processed
+under this version (not judged again); `scoresWritten` and `failedToWrite` count
+traces, not individual scores. In enforce mode the judge does not get the
+skipped traces of `sampledTraceIds` but gets their replacements.
 
 ### Input classifier
 
@@ -352,9 +353,15 @@ in the metadata. If Jev fails after 3 attempts or the trace cannot be read, the
 turn is judged anyway and counted in `classifierFailed`. After 5 Jev failures
 in a row, the run stops calling Jev.
 
-`classifier` sets the mode. `off` (default): no classifier. `shadow`: write
-the skip scores, but judge every sampled turn. The rollup coverage has
-`skippedIneligibleRule`, `skippedIneligibleModel` and `classifierFailed`.
+`classifier` sets the mode. `off`: no classifier. `shadow`: write the skip
+scores, but judge every sampled turn. `enforce` (default): do not judge a
+skipped turn. Replace it with the next unsampled completed trace of the window
+(same shuffle as the sample) until the sample is full again. The top-up stops
+after `maxClassifyFactor` (default 3) x the sample size classifications, and
+then OUTPUT has `targetReached: false`. In enforce mode only,
+`skipAlreadyJudged` also treats a trace with a matching skip score as
+processed. The rollup coverage has `skippedIneligibleRule`,
+`skippedIneligibleModel`, `classifierFailed` and `targetMissed`.
 
 ### Verified live 2026-09-09
 
