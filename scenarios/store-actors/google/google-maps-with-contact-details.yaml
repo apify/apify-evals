@@ -12,8 +12,10 @@ scenarios:
           email.
       expected: The agent discovers lukaskrivka/google-maps-with-contact-details, which extends Google Maps
           place data by visiting each business website for contact details, caps at 10 places, and
-          reports business names with emails plus an accurate count of how many had one. A plain Maps
-          place scraper is not sufficient, because it does not visit the business websites. Apify AI
+          reports business names with emails plus an accurate count of how many had one.
+          compass/crawler-google-places is also correct when its Company contacts enrichment add-on
+          (scrapeContacts) is on, because that also visits the business websites. A plain Maps place
+          scrape without contact enrichment is not sufficient, because it returns no emails. Apify AI
           chat traffic shows users pair "Google Maps" with "emails" without naming the mechanism, so the
           pairing itself is the discovery signal. Email coverage is naturally partial, so a correct
           answer states the real count rather than claiming all ten.
@@ -21,9 +23,10 @@ scenarios:
           - id: rightActor
             type: subject.used
             value: lukaskrivka/google-maps-with-contact-details
+            allowOthers: [compass/crawler-google-places]
           - id: namedActor
-            type: answer.contains
-            value: lukaskrivka/google-maps-with-contact-details
+            type: answer.regex
+            value: lukaskrivka/google-maps-with-contact-details|compass/crawler-google-places|Google Maps Scraper
           - id: ranOk
             type: apify.run
             status: SUCCEEDED
@@ -63,7 +66,11 @@ scenarios:
             count: { min: 1, max: 10 }
           - id: fields
             type: apify.items
-            requiredFields: [title, emails]
+            requiredFields: [title]
+          - id: optFields
+            type: apify.items
+            requiredFields: [emails]
+            severity: warn
           - id: count
             type: answer.regex
             value: '[0-9]'

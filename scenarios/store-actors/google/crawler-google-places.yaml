@@ -15,8 +15,8 @@ scenarios:
             type: subject.used
             value: compass/crawler-google-places
           - id: namedActor
-            type: answer.contains
-            value: compass/crawler-google-places
+            type: answer.regex
+            value: compass/crawler-google-places|Google Maps Scraper
           - id: ranOk
             type: apify.run
             status: SUCCEEDED

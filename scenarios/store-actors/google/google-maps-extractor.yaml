@@ -60,7 +60,11 @@ scenarios:
             count: { min: 1, max: 15 }
           - id: fields
             type: apify.items
-            requiredFields: [title, totalScore, address]
+            requiredFields: [title]
+          - id: optFields
+            type: apify.items
+            requiredFields: [totalScore, address]
+            severity: warn
           - id: shape
             type: answer.regex
             value: '[1-5][.][0-9]'

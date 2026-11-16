@@ -31,7 +31,7 @@ scenarios:
       title: 'contact-info / use / two-domains-shallow'
       notes: 'Usage: pinned contact info scraper, two start URLs with depth limited to one'
       prompt: Using the vdrmota/contact-info-scraper Actor, get contact details from https://www.apify.com
-          and https://www.notion.so without crawling deeper than one level. Report emails and social
+          and https://www.debian.org without crawling deeper than one level. Report emails and social
           profiles per domain.
       expected: The agent runs the pinned Actor with both URLs as start URLs and the crawl depth limited to
           one level, then reports emails and social profiles grouped by domain from the retrieved data.
@@ -57,4 +57,4 @@ scenarios:
             count: { min: 1, max: 40 }
           - id: fields
             type: apify.items
-            requiredFields: [url, domain, emails]
+            requiredFields: [originalStartUrl, domain, emails]
