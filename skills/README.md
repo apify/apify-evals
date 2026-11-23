@@ -20,6 +20,11 @@ agent span records `agentSkills` (requested) and `skillsLoaded` (what Claude
 Code reported at init), the run metadata records `skillsSource` (repo, ref,
 commit), and the trace is tagged `skills:<label>`.
 
+On Codex the runner copies the skills into the session's `$HOME/.agents/skills`.
+Codex lists them in the prompt by path and the agent reads `SKILL.md` with its
+shell tool, which every Codex variant has. `skillsLoaded` holds the installed
+skills and `skillsRead` the ones whose `SKILL.md` the agent opened.
+
 ## Where the skills come from
 
 The first match wins:
