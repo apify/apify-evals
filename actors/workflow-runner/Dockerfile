@@ -34,6 +34,11 @@ RUN npm install --global @anthropic-ai/claude-code@2.1.300 --audit=false \
 RUN npm install --global @openai/codex@0.162.1 --audit=false \
     && codex --version
 
+# OpenCode 2.x is published as @opencode/cli (the opencode-ai package is the 1.x line).
+# Its postinstall links the platform binary (musl on this image).
+RUN npm install --global @opencode/cli@2.3.2 --allow-scripts=@opencode/cli --audit=false \
+    && opencode --version
+
 COPY package*.json ./
 COPY shared/package*.json ./shared/
 COPY contract/package*.json ./contract/

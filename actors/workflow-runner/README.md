@@ -83,7 +83,7 @@ Each scenario can declare checks that are decided by code, not by the judge: whi
 
 ### Reading the numbers honestly
 
-- Models run inside the selected harness, Claude Code by default or Codex. Compare the same model and harness; Codex run names include `codex`.
+- Models run inside the selected harness: Claude Code by default, Codex or OpenCode. Compare the same model and harness; Codex and OpenCode run names include `codex` or `opencode`.
 - Compare surfaces and skill sets on the same model, scenarios and judge. Runs on a surface other than `mcp` have trace `version` = `<model> · <surface>`, so per-model dashboard widgets keep them apart.
 - One run is a sample. Compare runs on the same model and judge; use repeats or the dashboard trend before acting.
 - The judge is a model. Its fix area is a hint with evidence, not a verdict.
@@ -124,13 +124,25 @@ Codex JSONL reports token usage for the entire user turn, including all model ca
 
 Local checks verified authenticated MCP calls, the event format, and shell/write restrictions. The orchestrating cloud probe verified `/api/v1/responses` with an Actor run token. An end-to-end cloud run is still needed to verify the built image, Codex's streaming model requests through the proxy, and the resulting Langfuse trace, evidence artifacts, and check scores.
 
+#### OpenCode
+
+OpenCode runs any model that OpenRouter serves, through the proxy's OpenAI-compatible endpoint, with no API key other than the run token: `{"model": "google/gemini-3.8-flash", "harness": "opencode"}`, the same for `x-ai/...`, `moonshotai/...`, `z-ai/...`, `minimax/...`, Anthropic and OpenAI ids, and moving aliases such as `~anthropic/claude-haiku-latest`. It supports skill sets and the `api` surface; it supports only the Apify MCP server (not a profile's own `mcp`). Its experiment name includes `opencode`.
+
+The image pins OpenCode 2.3.2 (`@opencode/cli`; the `opencode-ai` npm package is the older 1.x line). Each session is two processes in a throwaway directory: `opencode serve` holds the agent and its MCP connection, and `opencode run --server ... --format json` sends the prompt on stdin and prints the session. The adapter starts the session only after `GET /api/mcp` reports the server `connected`, because `opencode run` on its own waits at most 2 seconds for MCP and would then start without the tools. A failed or never-connected MCP server gets up to three restarts, as for Codex. The MCP tool count comes from the server's own `mcp connected ... tools=N` log line. If OpenCode drops part of the generated config (it logs a `configuration normalization diagnostic` and goes on), the adapter refuses to run the session and reports a broken harness instead.
+
+Isolation: `HOME`, the XDG directories, `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` point into the session directory, autoupdate, models.dev fetches, free models and `.claude` reading are off, and the child gets only the variables it needs. No global config, skills, plugins, MCP servers or credentials of the machine reach the agent. What ships inside the binary stays: the built-in skills (`opencode`, `report`) and the built-in tools the permission list allows.
+
+Tools: the config denies every tool, then allows `read`, `glob`, `grep` and `skill` in every arm (the same set with and without injected skills, so an agent can read a skill's reference files), the scenario's MCP tools (`apify_*` with the `?tools=` filter), `shell` (and `external_directory`) only when the scenario allows Bash, and `webfetch` only when the surface adds it. Denied tools (`edit`, `write`, `question`, `subagent`, `websearch`, Code Mode `execute`, `experimental_image_generate`) are not offered to the model. MCP Code Mode is off (`codemode: false`), so the agent calls MCP tools directly, as in the other harnesses; Code Mode's `fetch` would also give it web access. Tool calls are stored under Claude Code names (`mcp__apify__call-actor`, `Bash`, `WebFetch`, `Read`, `Skill`), so checks, evidence and the judge read them unchanged. Skills go to `<cwd>/.opencode/skills/<name>`; the skill tool returns the SKILL.md body. Metrics record `skillsLoaded` (injected skills OpenCode listed in `GET /api/skill`) and `skillsUsed` (skills the agent loaded with the skill tool).
+
+Turn limit: `maxTurns` becomes the agent's `steps` plus one. OpenCode runs the last step with tools disabled and asks for a text answer, so the agent gets `maxTurns` tool rounds, then one final answer; a session that reaches that step is scored as `error_max_turns`. `--title eval` skips the extra model call that names the session. Token usage is per step (`input` without cache reads, `output` plus reasoning, cache reads and writes); cost is not available, because OpenCode has no prices for the proxy's models. OpenCode retries transport errors without limit, so a proxy that stays down ends as a timeout with the last retry error in stderr; a non-retryable provider error (HTTP 400, 403) ends the session at once as a broken harness. For a local smoke test against another OpenAI-compatible endpoint, set `OPENCODE_EVAL_BASE_URL` (for example a mock server); without it every session uses the proxy, also with `useOpenRouterProxy: false`.
+
 ### Run health and exit codes
 
 The run status reports system health, never scenario results (spec D14). Exit 0: ran and judged. 10: fewer than `healthThreshold` of the sessions completed. 11: the judge Actor failed. 12: no scenario matched the filters. 13: telemetry flush failed. 14: preflight failed (the MCP server returned no tools, the API rejected the token, or the LLM proxy did not answer). 15: the run would start more sessions than `maxSessions`. Schedules and tasks get Apify's failure notifications for free.
 
 ### Secrets and permissions
 
-Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; API sessions get the same token as `APIFY_TOKEN` in their environment, and every filled secret is redacted from stored stderr; Claude Code uses its Anthropic wire format, while Codex uses the Responses API. Both accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for another Langfuse project, and when any is set the runner passes the resolved set to the judge so both Actors use the same project. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
+Sessions authenticate the LLM through the Apify OpenRouter proxy and MCP through `mcp.apify.com` with the run's own `APIFY_TOKEN`; API sessions get the same token as `APIFY_TOKEN` in their environment, and every filled secret is redacted from stored stderr; Claude Code uses its Anthropic wire format, Codex uses the Responses API, and OpenCode uses chat completions (`/api/v1/chat/completions`). All accept OpenRouter model ids. Langfuse keys come from the Actor's environment (`@langfusePublicKey`, `@langfuseSecretKey` Apify secrets); the input fields are overrides for another Langfuse project, and when any is set the runner passes the resolved set to the judge so both Actors use the same project. `artifactStore` is a resource picker; leaving it empty uses `ARTIFACT_STORE_ID` from the environment, which points at the named `eval-artifacts` store.
 
 Both Actors must run with **full permissions** (Actor settings → Permissions, or `apify api PUT actors/<id> -d '{"actorPermissionLevel":"FULL_PERMISSIONS"}'`). A new Actor defaults to limited permissions, and a limited run token cannot start other Actors or create tasks, so every MCP call the agent makes fails with `insufficient-permissions` and the runner cannot open the named store. It is a one-time setting per Actor; it survives every `apify push`.
 
@@ -164,12 +176,12 @@ Langfuse here runs v4 in events-only mode: dataset-run read APIs are disabled, u
 
 ### Spec mapping
 
-| Spec decision                                 | Here                                                              |
-| --------------------------------------------- | ----------------------------------------------------------------- |
-| D1 hosted MCP, per-case tools                 | yes (`metadata.tools` → `?tools=`)                                |
-| D5 one image, harness discriminator           | yes (`harness.kind`, adapter registry; `claude-code` and `codex`) |
-| D7 one Actor run per case                     | replaced by the in-process pool                                   |
-| D8 per-case timeout/maxTurns                  | `metadata.maxTurns`; timeout is run-level                         |
-| D9/D11 judge reads traces, prompt in Langfuse | yes, via the Judge Actor the runner starts                        |
-| D10 conversation JSON on the agent span       | yes                                                               |
-| D13/D14 health vs results                     | yes                                                               |
+| Spec decision                                 | Here                                                                       |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| D1 hosted MCP, per-case tools                 | yes (`metadata.tools` → `?tools=`)                                         |
+| D5 one image, harness discriminator           | yes (`harness.kind`, adapter registry; `claude-code`, `codex`, `opencode`) |
+| D7 one Actor run per case                     | replaced by the in-process pool                                            |
+| D8 per-case timeout/maxTurns                  | `metadata.maxTurns`; timeout is run-level                                  |
+| D9/D11 judge reads traces, prompt in Langfuse | yes, via the Judge Actor the runner starts                                 |
+| D10 conversation JSON on the agent span       | yes                                                                        |
+| D13/D14 health vs results                     | yes                                                                        |
