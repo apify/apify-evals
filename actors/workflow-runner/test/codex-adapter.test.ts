@@ -139,7 +139,6 @@ describe('Codex event parser', () => {
                 },
             ) + '\nnot-json\n{"type":',
         );
-        expect(parsed.toolRounds).toBe(1);
         expect(parsed.timeline).toHaveLength(3);
         expect(parsed.timeline[0]).toMatchObject({ text: ['[Reasoning] Check both runs.'] });
         expect(parsed.timeline[1]).toMatchObject({ isError: true, toolUseId: 'a' });
@@ -168,47 +167,48 @@ describe('Codex event parser', () => {
         });
     });
 
-    it('records shell commands as Bash tool calls with their output', () => {
-        const cmd = (status: string, extra: object = {}) => ({
-            id: 'c1',
-            type: 'command_execution',
-            command: "/bin/bash -lc 'cat SKILL.md'",
-            status,
-            ...extra,
-        });
-        const parsed = parseCodexEvents(
-            jsonl(
-                { type: 'item.started', item: cmd('in_progress', { aggregated_output: '', exit_code: null }) },
-                { type: 'item.completed', item: cmd('completed', { aggregated_output: 'skill body', exit_code: 0 }) },
-                { type: 'item.started', item: { id: 'c2', type: 'command_execution', command: 'touch x' } },
-                {
-                    type: 'item.completed',
-                    item: {
-                        id: 'c2',
-                        type: 'command_execution',
-                        command: 'touch x',
-                        aggregated_output: 'Read-only file system',
-                        exit_code: 1,
-                        status: 'failed',
-                    },
-                },
-                { type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'done' } },
-            ),
-        );
-        expect(parsed.timeline[0]).toMatchObject({
-            toolUses: [{ id: 'c1', name: 'Bash', input: { command: 'cat SKILL.md' } }],
-        });
-        expect(parsed.timeline[1]).toMatchObject({ kind: 'tool_result', content: 'skill body', isError: false });
-        expect(parsed.timeline[3]).toMatchObject({ kind: 'tool_result', isError: true });
-        expect(parsed.timeline.filter((e) => e.kind === 'tool_result')).toHaveLength(2);
-        expect(parsed.conversation.map((e) => e.type)).toEqual([
-            'tool_call',
-            'tool_result',
-            'tool_call',
-            'tool_result',
-            'text',
+    it('records shell commands of a recorded Codex session as Bash calls with their output', () => {
+        // codex 0.162.1, three model calls with parallel commands; `sleep 300`/`sleep 301` never return.
+        const real = readFileSync(new URL('./fixtures/codex-shell-real.jsonl', import.meta.url), 'utf8');
+        const parsed = parseCodexEvents(real);
+        const calls = parsed.timeline.flatMap((e) => (e.kind === 'assistant' ? e.toolUses : []));
+        expect(calls.map((c) => [c.name, (c.input as { command: string }).command])).toEqual([
+            ['Bash', 'echo a'],
+            ['Bash', 'sleep 300'],
+            ['Bash', 'sleep 301'],
+            ['Bash', 'nl -ba ~/.agents/skills/beta/SKILL.md'],
+            ['Bash', 'echo hi'],
+            ['Bash', 'echo hi3'],
+            ['Bash', 'echo hi2'],
         ]);
-        expect(parsed.toolRounds).toBe(2);
+        const results = parsed.timeline.flatMap((e) => (e.kind === 'tool_result' ? [e] : []));
+        expect(results.map((r) => [r.toolUseId, r.content, r.isError])).toEqual([
+            ['item_1', 'a\n', false],
+            ['item_4', '     1\t---\n     2\tname: beta\n     3\tdescription: b\n     4\t---\n     5\tbody\n', false],
+            ['item_5', 'hi\n', false],
+            ['item_6', 'hi3\n', false],
+            ['item_7', 'hi2\n', false],
+        ]);
+        expect(parsed).toMatchObject({ finalResult: 'done', completed: true, failed: false });
+        // Commands still running when the session ends have a call and no result.
+        expect(parsed.conversation.filter((e) => e.type === 'tool_call')).toHaveLength(7);
+    });
+
+    it('marks a failed shell command as a tool error', () => {
+        const parsed = parseCodexEvents(
+            jsonl({
+                type: 'item.completed',
+                item: {
+                    id: 'c2',
+                    type: 'command_execution',
+                    command: "/bin/sh -c 'touch x'",
+                    aggregated_output: 'touch: x: Read-only file system\n',
+                    exit_code: 1,
+                    status: 'failed',
+                },
+            }),
+        );
+        expect(parsed.timeline[1]).toMatchObject({ kind: 'tool_result', isError: true });
     });
 
     it.each([
