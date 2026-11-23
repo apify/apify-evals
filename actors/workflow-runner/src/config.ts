@@ -70,7 +70,8 @@ export const HARNESS_SUPPORT: Record<HarnessKind, HarnessSupport> = {
 /**
  * Refuse a run whose matrix asks a harness for something it cannot do. Checks
  * every model entry, not only the base harness: a `{model, harness: "codex"}`
- * entry in a Claude Code run must not run its skills arm without skills.
+ * entry in a Claude Code run must not run, say, its `api` surface arm on a
+ * harness without that surface.
  */
 export function assertHarnessSupport(
     entries: ModelEntry[],
