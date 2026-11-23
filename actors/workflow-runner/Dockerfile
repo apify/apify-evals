@@ -35,8 +35,18 @@ RUN npm install --global @openai/codex@0.162.1 --audit=false \
     && codex --version
 
 # OpenCode 2.x is published as @opencode/cli (the opencode-ai package is the 1.x line).
-# Its postinstall links the platform binary (musl on this image).
-RUN npm install --global @opencode/cli@2.3.2 --allow-scripts=@opencode/cli --audit=false \
+# Its postinstall links the binary of a platform package. In this image npm did not
+# install the matching optional dependency, so the postinstall fell back to its own
+# nested registry install (about 3 minutes). Name the musl package for this CPU
+# explicitly so the install is the same on every build. On an x64 CPU without AVX2
+# the postinstall still fetches the -baseline-musl build itself.
+RUN case "$(uname -m)" in \
+        x86_64) platform=linux-x64-musl ;; \
+        aarch64) platform=linux-arm64-musl ;; \
+        *) echo "no OpenCode build for $(uname -m)" && exit 1 ;; \
+    esac \
+    && npm install --global --allow-scripts=@opencode/cli --audit=false \
+        @opencode/cli@2.2.6 "@opencode/cli-${platform}@2.2.6" \
     && opencode --version
 
 COPY package*.json ./
