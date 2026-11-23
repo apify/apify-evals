@@ -42,13 +42,18 @@ function toolContent(item: JsonObject): string {
     return JSON.stringify(item.error ?? item.result ?? null);
 }
 
-/** One POSIX shell word (quotes and backslashes), or null when `text` is not exactly one word. */
+/**
+ * One POSIX shell word made only of quoting (single quotes, double quotes,
+ * backslashes), or null when `text` is not exactly one such word. A word the
+ * shell would expand (`$`, a backtick, `$'...'`) or join (backslash-newline)
+ * is null too: the unwrapper does not evaluate the shell.
+ */
 function shellWord(text: string): string | null {
     let out = '';
     let i = 0;
     while (i < text.length) {
         const c = text[i];
-        if (/\s/.test(c)) return null;
+        if (/\s/.test(c) || c === '$' || c === '`') return null;
         if (c === "'") {
             const end = text.indexOf("'", i + 1);
             if (end < 0) return null;
@@ -57,12 +62,17 @@ function shellWord(text: string): string | null {
         } else if (c === '"') {
             i++;
             while (i < text.length && text[i] !== '"') {
-                if (text[i] === '\\' && i + 1 < text.length && '"\\$`\n'.includes(text[i + 1])) i++;
+                if (text[i] === '$' || text[i] === '`') return null;
+                if (text[i] === '\\' && i + 1 < text.length) {
+                    if (text[i + 1] === '\n') return null;
+                    if ('"\\$`'.includes(text[i + 1])) i++;
+                }
                 out += text[i++];
             }
             if (i >= text.length) return null;
             i++;
         } else if (c === '\\' && i + 1 < text.length) {
+            if (text[i + 1] === '\n') return null;
             out += text[i + 1];
             i += 2;
         } else {

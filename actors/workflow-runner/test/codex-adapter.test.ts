@@ -213,6 +213,12 @@ describe('Codex event parser', () => {
         ['cat SKILL.md', 'cat SKILL.md'],
         ["/bin/sh -c 'unterminated", "/bin/sh -c 'unterminated"],
         ["/bin/sh -c 'a' 'b'", "/bin/sh -c 'a' 'b'"],
+        // Shell expansions the unwrapper does not evaluate: keep Codex's command.
+        ["/bin/sh -c $'echo \\x41'", "/bin/sh -c $'echo \\x41'"],
+        ['/bin/sh -c "echo a\\\nb"', '/bin/sh -c "echo a\\\nb"'],
+        ['/bin/sh -c echo$HOME', '/bin/sh -c echo$HOME'],
+        ["/bin/sh -c 'ls '$HOME", "/bin/sh -c 'ls '$HOME"],
+        ['/bin/sh -c echo\\\nx', '/bin/sh -c echo\\\nx'],
     ])('reads the agent command out of %s', (wrapped, command) => {
         expect(unwrapShellCommand(wrapped)).toBe(command);
     });
