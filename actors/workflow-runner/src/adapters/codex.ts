@@ -401,6 +401,17 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         const failed = new Set(result.metrics.skillsFailed as string[]);
         result.metrics.skillsLoaded = skillSet.filter((name) => installed.has(name) && !failed.has(name));
         result.metrics.skillsRead = codexSkillsRead(result.rawStdout, skillSet, join(home, CODEX_SKILLS_DIR));
+        // A skills variant must never pass as a no-skills run: a missing skill
+        // breaks the session as infrastructure, whatever the agent did.
+        const notLoaded = skillSet.filter((name) => !(result.metrics.skillsLoaded as string[]).includes(name));
+        if (notLoaded.length > 0) {
+            result.harnessBroke = true;
+            Object.assign(result.metrics, { subtype: 'error_skills', isError: true });
+            result.stderr = `injected skills not loaded: ${notLoaded.join(', ')}\n${result.stderr}`.slice(
+                0,
+                STDERR_CAP,
+            );
+        }
         return result;
     } finally {
         await relay?.close();

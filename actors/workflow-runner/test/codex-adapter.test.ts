@@ -524,6 +524,11 @@ process.stdin.on('end', () => {
                 process.stdout.write(fixture);`);
             const result = await runCodex({ ...ctx, skillSet: ['alpha', 'beta'], skillsRoot });
             expect(result.metrics).toMatchObject({ skillsLoaded: ['beta'], skillsFailed: ['alpha'] });
+            // A skills arm missing a skill must not pass as a result: it is a broken harness.
+            expect(result.metrics).toMatchObject({ subtype: 'error_skills', isError: true });
+            expect(result.harnessBroke).toBe(true);
+            expect(result.stderr).toContain('injected skills not loaded: alpha');
+            expect(sessionInfra(result).ok).toBe(false);
         } finally {
             rmSync(skillsRoot, { recursive: true, force: true });
         }
