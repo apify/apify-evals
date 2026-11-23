@@ -151,7 +151,7 @@ const { LangfuseClient } = await import('@langfuse/client');
 const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
-const { CODEX_PROVIDER } = await import('./adapters/codex.js');
+const { CODEX_PROVIDER, probeCodexSandbox } = await import('./adapters/codex.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
 const { preflightModels } = await import('./preflight.js');
@@ -388,6 +388,13 @@ if (!skipPreflight) {
                 `surface ${surface.name}: Apify API unreachable: ${String((err as Error).message ?? err).slice(0, 200)}`,
             );
         }
+    }
+    // Codex sessions read skills (and run any command) through the shell in a
+    // read-only sandbox. Where the sandbox cannot start, every command fails.
+    if (entries.some((e) => e.kind === 'codex')) {
+        const failure = await probeCodexSandbox();
+        if (failure) problems.push(`Codex sandbox cannot run a shell command: ${failure}`);
+        else log.info('preflight: Codex read-only sandbox runs shell commands');
     }
     if (useOpenRouterProxy) {
         // Every model in the matrix, not only the first: a bad second id would

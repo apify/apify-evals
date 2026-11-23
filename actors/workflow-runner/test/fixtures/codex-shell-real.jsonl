@@ -1,0 +1,17 @@
+{"type":"thread.started","thread_id":"01a2066f-6a4c-7812-b126-56ce2219db41"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/sh -c 'echo a'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/sh -c 'echo a'","aggregated_output":"a\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/sh -c 'sleep 300'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"/bin/sh -c 'sleep 301'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.started","item":{"id":"item_4","type":"command_execution","command":"/bin/sh -c 'nl -ba ~/.agents/skills/beta/SKILL.md'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"/bin/sh -c 'nl -ba ~/.agents/skills/beta/SKILL.md'","aggregated_output":"     1\t---\n     2\tname: beta\n     3\tdescription: b\n     4\t---\n     5\tbody\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_5","type":"command_execution","command":"/bin/sh -c 'echo hi'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.started","item":{"id":"item_6","type":"command_execution","command":"/bin/sh -c 'echo hi3'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.started","item":{"id":"item_7","type":"command_execution","command":"/bin/sh -c 'echo hi2'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"/bin/sh -c 'echo hi'","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_6","type":"command_execution","command":"/bin/sh -c 'echo hi3'","aggregated_output":"hi3\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_7","type":"command_execution","command":"/bin/sh -c 'echo hi2'","aggregated_output":"hi2\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_8","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}

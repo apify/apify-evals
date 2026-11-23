@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
@@ -15,8 +15,73 @@ export function capToolInput(input: unknown): unknown {
     return json.length <= TOOL_INPUT_CAP ? input : json.slice(0, TOOL_INPUT_CAP);
 }
 
-/** Kill the detached process group, including descendants holding stdio open. */
+/** Parent of every live process: /proc on Linux, `ps` elsewhere. */
+function parentPids(): Map<number, number> {
+    const parents = new Map<number, number>();
+    try {
+        if (process.platform === 'linux') {
+            for (const name of readdirSync('/proc')) {
+                if (!/^\d+$/.test(name)) continue;
+                try {
+                    // `pid (comm) state ppid ...`; comm can hold spaces and parentheses.
+                    const stat = readFileSync(`/proc/${name}/stat`, 'utf8');
+                    parents.set(Number(name), Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]));
+                } catch {
+                    /* exited meanwhile */
+                }
+            }
+        } else {
+            for (const line of execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).split('\n')) {
+                const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+                if (pid && Number.isFinite(ppid)) parents.set(pid, ppid);
+            }
+        }
+    } catch {
+        /* no process table: only the group kill below */
+    }
+    return parents;
+}
+
+/** Every descendant of `root`, found by walking the parent links. */
+export function descendantPids(root: number, parents = parentPids()): number[] {
+    const out: number[] = [];
+    const queue = [root];
+    while (queue.length > 0) {
+        const pid = queue.shift() as number;
+        for (const [child, parent] of parents) {
+            if (parent === pid && !out.includes(child)) {
+                out.push(child);
+                queue.push(child);
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Kill the detached process group, including descendants holding stdio open.
+ * Descendants in their own session (Codex runs shell commands in a PTY, which
+ * starts a new session) are outside the group: kill them by pid first, or a
+ * `sleep`/`tail -f` the agent started keeps running after the session.
+ *
+ * Best effort, by design without native helpers. Two gaps remain: a process
+ * whose parent already exited is reparented to PID 1 (or a subreaper) and is
+ * no longer a descendant, so it survives (`nohup cmd & exit`); and a process
+ * forked between the process-table read and the kills is missed. Production
+ * relies on the session's sandbox (bubblewrap on Linux kills its PID
+ * namespace with the sandboxed command) and on the container ending with the
+ * Actor run for those.
+ */
 export function killProcessTree(child: ChildProcess): void {
+    if (child.pid) {
+        for (const pid of descendantPids(child.pid)) {
+            try {
+                process.kill(pid, 'SIGKILL');
+            } catch {
+                /* already gone */
+            }
+        }
+    }
     try {
         process.kill(-(child.pid as number), 'SIGKILL');
     } catch {
