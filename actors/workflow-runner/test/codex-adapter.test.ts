@@ -14,6 +14,7 @@ import {
     probeCodexSandbox,
     runCodex,
     skillLoadFailures,
+    trimPartialSecret,
 } from '../src/adapters/codex.js';
 import { killTrackedChildren } from '../src/adapters/shared.js';
 import { extractFromTools } from '../src/evidence.js';
@@ -555,6 +556,22 @@ process.stdin.on('end', () => {
         expect(result.harnessBroke).toBe(false);
     });
 
+    it('keeps a capped one-line stderr, so a long MCP startup error still restarts', async () => {
+        // e.g. an HTML error page in one line, longer than the stderr cap.
+        stub(`
+            const marker = ${JSON.stringify(join(dir, 'retried'))};
+            if (!fs.existsSync(marker)) {
+                fs.writeFileSync(marker, 'yes');
+                process.stderr.write('Error: required MCP server apify failed to initialize: <html>' + 'x'.repeat(2500));
+                setTimeout(() => process.stderr.write('y'.repeat(500)), 100);
+                setTimeout(() => (process.exitCode = 1), 200);
+            } else process.stdout.write(fixture);
+        `);
+        const result = await runCodex(ctx);
+        expect(result.metrics).toMatchObject({ mcpRestarts: 1, exitCode: 0 });
+        expect(result.harnessBroke).toBe(false);
+    });
+
     it('times out a process group and preserves partial evidence', async () => {
         ctx.perItemTimeoutSecs = 1;
         stub(`process.stdout.write(fixture); setInterval(() => {}, 1000);`);
@@ -764,6 +781,10 @@ process.stdin.on('end', () => {
         expect(result.metrics.stdoutTruncated).toBe(true);
         expect(result.rawStdout).not.toContain(token.slice(0, 10));
         expect(result.stderr).not.toContain(token.slice(0, 10));
+        // Only the partial secret goes, not the stream around it.
+        expect(result.stderr).toMatch(/^e{1990}$/);
+        expect(result.rawStdout).toContain('apify/website-content-crawler');
+        expect(result.rawStdout.endsWith('x'.repeat(100))).toBe(true);
     });
 
     it('redacts the local Codex login from everything the session returns', async () => {
@@ -828,6 +849,15 @@ process.stdin.on('end', () => {
                 ].join('\n'),
             ),
         ).toEqual(['alpha', 'beta two']);
+    });
+
+    it('trims only the start of a secret from the end of capped text', () => {
+        const secrets = ['token-ABCDEFGH', 'other-secret-123'];
+        expect(trimPartialSecret('line one\nhead token-ABC', secrets)).toBe('line one\nhead ');
+        expect(trimPartialSecret('no newline at all, ends in other-sec', secrets)).toBe('no newline at all, ends in ');
+        // Three characters or fewer are too common to drop.
+        expect(trimPartialSecret('ends in tok', secrets)).toBe('ends in tok');
+        expect(trimPartialSecret('clean text', secrets)).toBe('clean text');
     });
 
     it('finds the secret values of a Codex login', () => {

@@ -420,10 +420,22 @@ interface SpawnOptions {
     relay: ModelRelay | null;
 }
 
-/** Cut text at its last newline: a value split by a size cap must not leave its prefix behind. */
-function cutAtLine(text: string): string {
-    const end = text.lastIndexOf('\n');
-    return end < 0 ? '' : text.slice(0, end + 1);
+/**
+ * Text cut by a size cap can end in the first part of a secret, which no
+ * redaction matches. Drop the longest end of the text that is the start of a
+ * known secret (4 characters or more); keep everything else.
+ */
+export function trimPartialSecret(text: string, secrets: string[]): string {
+    let cut = 0;
+    for (const secret of secrets) {
+        for (let n = Math.min(secret.length - 1, text.length); n >= 4 && n > cut; n--) {
+            if (text.endsWith(secret.slice(0, n))) {
+                cut = n;
+                break;
+            }
+        }
+    }
+    return text.slice(0, text.length - cut);
 }
 
 function spawnCodex(
@@ -498,8 +510,8 @@ function spawnCodex(
             clearTimeout(grace);
             const ordered = [...new Set(secrets().filter(Boolean))].sort((a, b) => b.length - a.length);
             const redact = (s: string) => redactSecrets(s, ordered);
-            stdout = stdoutTruncated ? cutAtLine(stdout) : stdout + decoder.end();
-            stderr = stderrCapped ? cutAtLine(stderr) : stderr + errDecoder.end();
+            stdout = stdoutTruncated ? trimPartialSecret(stdout, ordered) : stdout + decoder.end();
+            stderr = stderrCapped ? trimPartialSecret(stderr, ordered) : stderr + errDecoder.end();
             const rawStdout = redact(stdout);
             const traced = cutLine === null ? rawStdout : rawStdout.split('\n').slice(0, cutLine).join('\n');
             const parsed = parseCodexEvents(traced, lineTimes, Date.now());
