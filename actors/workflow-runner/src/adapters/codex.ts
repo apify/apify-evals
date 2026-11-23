@@ -12,7 +12,7 @@ import { log } from 'apify';
 import { toolsUrl } from '../artifacts.js';
 import type { AdapterResult, SessionContext } from '../harness.js';
 import { availableSkills, CODEX_SKILLS_DIR, installSkills } from '../skills.js';
-import { codexSkillsRead, parseCodexEvents, parseCodexLine } from './codex-events.js';
+import { codexSkillsRead, parseCodexEvents, parseCodexLine, ToolRounds } from './codex-events.js';
 import { EXIT_GRACE_MS, killProcessTree, MAX_STDOUT_BYTES, STDERR_CAP, snapshotWorkspace } from './shared.js';
 
 /** Kept together so the provider can change without touching process handling. */
@@ -103,9 +103,10 @@ function buildConfig(ctx: CodexContext): string {
         // SKILL.md and references are listed in the prompt by path, not
         // inlined. On in every variant, so the variants differ only in the
         // skill files; the read-only sandbox blocks writes and network.
+        // The shell is unified exec (`exec_command` + `write_stdin`): Codex
+        // 0.162 ignores `unified_exec = false` outside managed requirements.
         'shell_tool = true',
         ...[
-            'unified_exec',
             'shell_snapshot',
             'apps',
             'plugins',
@@ -308,10 +309,9 @@ function spawnCodex(
         let timedOut = false;
         let stdoutTruncated = false;
         let turnLimit = false;
-        let toolRounds = 0;
-        let inToolRound = false;
-        const calls = new Set<string>();
-        const pendingCalls = new Set<string>();
+        const rounds = new ToolRounds();
+        /** Lines from this index on belong to a round past the budget: kept in the log, not in the trace. */
+        let cutLine: number | null = null;
         let settled = false;
         let grace: NodeJS.Timeout | undefined;
         const killer = setTimeout(() => {
@@ -327,7 +327,8 @@ function spawnCodex(
             stdout += decoder.end();
             stderr += errDecoder.end();
             const rawStdout = redact(stdout);
-            const parsed = parseCodexEvents(rawStdout, lineTimes, Date.now());
+            const traced = cutLine === null ? rawStdout : rawStdout.split('\n').slice(0, cutLine).join('\n');
+            const parsed = parseCodexEvents(traced, lineTimes, Date.now());
             const diagnostics = redact([stderr, ...parsed.errors].join('\n'));
             const missing =
                 expected &&
@@ -365,7 +366,8 @@ function spawnCodex(
                     timedOut,
                     stdoutTruncated,
                     numTurns: parsed.numTurns,
-                    toolRounds,
+                    // Rounds the trace holds; a call past the budget opened none.
+                    toolRounds: Math.min(rounds.count, maxTurns),
                     usage: parsed.usage,
                     usageScope: 'session',
                     costUsd: null,
@@ -395,24 +397,29 @@ function spawnCodex(
                 const event = parseCodexLine(line);
                 const item = event?.item as { id?: string; type?: string } | undefined;
                 // Shell commands count toward the turn budget like MCP calls.
-                if ((item?.type !== 'mcp_tool_call' && item?.type !== 'command_execution') || !item.id) continue;
-                if (!calls.has(item.id) && !turnLimit) {
-                    calls.add(item.id);
-                    pendingCalls.add(item.id);
-                    if (!inToolRound) {
-                        inToolRound = true;
-                        toolRounds++;
-                    }
+                if (!item?.id || (item.type !== 'mcp_tool_call' && item.type !== 'command_execution')) continue;
+                if (turnLimit) {
+                    // Events already in the pipe after the kill: a call past the
+                    // budget and everything after it stay out of the trace.
+                    if (cutLine === null && rounds.start(item.id)) cutLine = lineTimes.length - 1;
+                    continue;
                 }
-                if (event?.type === 'item.completed' && pendingCalls.delete(item.id) && pendingCalls.size === 0) {
-                    inToolRound = false;
-                    // Exec has no max-turns option. Preserve the last allowed
-                    // round's results before stopping. Stream delivery can race
-                    // the next model call, so this is not an exact billing cap.
-                    if (toolRounds >= maxTurns) {
-                        turnLimit = true;
-                        killProcessTree(child);
-                    }
+                // Exec has no max-turns option. A call that would open a round
+                // past the budget stops the session; the trace keeps the rounds
+                // before it. Stream delivery can race the next model call, so
+                // this is not an exact billing cap.
+                if (rounds.start(item.id) && rounds.count > maxTurns) {
+                    turnLimit = true;
+                    cutLine = lineTimes.length - 1;
+                    killProcessTree(child);
+                    continue;
+                }
+                // The last allowed round has all its results: stop before the
+                // next model call. A command that never ends (unified exec keeps
+                // it running) never completes its round; the next call does.
+                if (event?.type === 'item.completed' && rounds.complete(item.id) && rounds.count >= maxTurns) {
+                    turnLimit = true;
+                    killProcessTree(child);
                 }
             }
         });

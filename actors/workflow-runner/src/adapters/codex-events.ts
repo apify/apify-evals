@@ -62,6 +62,45 @@ export function codexSkillsRead(ndjson: string, skillSet: string[]): string[] {
     return [...read].sort();
 }
 
+/**
+ * Tool rounds, the unit of the turn budget, by the rule the trace uses for
+ * generations: calls started together form one round, and a call that starts
+ * after any call of the current round returned opens the next one. A call that
+ * is still running (unified exec keeps a long command alive) does not hold the
+ * round open. Codex emits no item for `write_stdin` or for a refused
+ * escalation request, so those cost no round.
+ */
+export class ToolRounds {
+    count = 0;
+    private open = false;
+    private returned = false;
+    private readonly seen = new Set<string>();
+    /** Calls of the current round that have not returned. */
+    private pending = new Set<string>();
+
+    /** Record a call's first event; true when it opens a new round. */
+    start(id: string): boolean {
+        if (this.seen.has(id)) return false;
+        this.seen.add(id);
+        if (this.open && !this.returned) {
+            this.pending.add(id);
+            return false;
+        }
+        this.count++;
+        this.open = true;
+        this.returned = false;
+        this.pending = new Set([id]);
+        return true;
+    }
+
+    /** Record a call's result; true when every call of the current round has returned. */
+    complete(id: string): boolean {
+        if (!this.pending.delete(id)) return false;
+        this.returned = true;
+        return this.pending.size === 0;
+    }
+}
+
 export interface ParsedCodexSession {
     conversation: ConversationEntry[];
     timeline: TimelineEvent[];
@@ -88,6 +127,7 @@ export function parseCodexEvents(
     const calls = new Set<string>();
     const completedItems = new Set<string>();
     let current: AssistantTurn | undefined;
+    const rounds = new ToolRounds();
     let finalResult = '';
     let usage: Record<string, number> | null = null;
     let completed = false;
@@ -138,6 +178,7 @@ export function parseCodexEvents(
         } else if (item.type === 'mcp_tool_call' && typeof item.server === 'string' && typeof item.tool === 'string') {
             if (!calls.has(item.id)) {
                 calls.add(item.id);
+                rounds.start(item.id);
                 const name = codexToolName(item.server, item.tool);
                 turn(t).toolUses.push({ id: item.id, name, input: item.arguments });
                 conversation.push({
@@ -148,6 +189,7 @@ export function parseCodexEvents(
                 });
             }
             if (isCompleted) {
+                rounds.complete(item.id);
                 const content = toolContent(item);
                 const result = object(item.result);
                 const isError =
@@ -161,11 +203,13 @@ export function parseCodexEvents(
             // extraction reads shell commands of both harnesses the same way.
             if (!calls.has(item.id)) {
                 calls.add(item.id);
+                rounds.start(item.id);
                 const input = { command: item.command };
                 turn(t).toolUses.push({ id: item.id, name: 'Bash', input });
                 conversation.push({ role: 'assistant', type: 'tool_call', tool: 'Bash', input: capToolInput(input) });
             }
             if (isCompleted) {
+                rounds.complete(item.id);
                 const content = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
                 const isError =
                     item.status === 'failed' ||
@@ -191,7 +235,7 @@ export function parseCodexEvents(
         finalResult,
         usage,
         numTurns: turns.length,
-        toolRounds: turns.filter((e) => e.toolUses.length > 0).length,
+        toolRounds: rounds.count,
         completed,
         failed,
         errors,

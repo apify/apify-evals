@@ -317,7 +317,6 @@ process.stdin.on('end', () => {
         expect(captured.envKeys).not.toContain('UNRELATED_SECRET');
         expect(captured.config).toContain('wire_api = "responses"');
         expect(captured.config).toContain('shell_tool = true');
-        expect(captured.config).toContain('unified_exec = false');
         expect(captured.config).toContain('inherit = "none"');
         expect(captured.config).toContain('web_search = "disabled"');
         expect(captured.config).toContain('approval_policy = "never"');
@@ -439,6 +438,45 @@ process.stdin.on('end', () => {
         expect(result.metrics).toMatchObject({ subtype: 'error_max_turns', toolRounds: 1, timedOut: false });
         expect(result.harnessBroke).toBe(false);
         expect(sessionInfra(result).ok).toBe(true);
+    });
+
+    it('stops at the turn budget when a shell command never completes', async () => {
+        // Unified exec keeps `sleep`/`tail -f` running: item.started, no item.completed.
+        ctx.harness.maxTurns = 2;
+        const cmd = (id: string, command: string, done: boolean) => ({
+            type: done ? 'item.completed' : 'item.started',
+            item: {
+                id,
+                type: 'command_execution',
+                command,
+                aggregated_output: done ? 'ok' : '',
+                exit_code: done ? 0 : null,
+                status: done ? 'completed' : 'in_progress',
+            },
+        });
+        const events =
+            jsonl(
+                { type: 'thread.started', thread_id: 't' },
+                { type: 'turn.started' },
+                cmd('long', 'sleep 25', false),
+                cmd('r2', 'echo r2', false),
+                cmd('r2', 'echo r2', true),
+                cmd('r3', 'echo r3', false),
+                cmd('r3', 'echo r3', true),
+                cmd('r4', 'echo r4', false),
+                cmd('r4', 'echo r4', true),
+            ) + '\n';
+        stub(`process.stdout.write(${JSON.stringify(events)}); setInterval(() => {}, 1000);`);
+        const result = await runCodex(ctx);
+        expect(result.metrics).toMatchObject({ subtype: 'error_max_turns', toolRounds: 2, timedOut: false });
+        expect(result.harnessBroke).toBe(false);
+        // The trace holds the same two rounds; the third is only in the raw log.
+        const traced = result.timeline.filter((e) => e.kind === 'assistant' && e.toolUses.length > 0);
+        expect(traced.map((e) => (e.kind === 'assistant' ? e.toolUses.map((u) => u.id) : []))).toEqual([
+            ['long', 'r2'],
+            ['r3'],
+        ]);
+        expect(result.rawStdout).toContain('echo r4');
     });
 
     it('keeps parallel tools in one budget round and retains both results', async () => {
