@@ -7,6 +7,7 @@ import { Actor, log } from 'apify';
 
 import { killTrackedChildren } from './adapters/shared.js';
 import {
+    assertHarnessSupport,
     LANGFUSE_CREDENTIALS,
     judgeLangfuseInput,
     resolveHealthThreshold,
@@ -283,15 +284,12 @@ const mcpProblems = [
     ),
 ];
 if (mcpProblems.length > 0) throw new Error(mcpProblems.join('\n'));
-if (baseHarness.kind === 'codex') {
-    if (skillSets.some((set) => set.length > 0)) throw new Error('Codex harness does not support skill sets');
-    if (selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify')) {
-        throw new Error('Codex harness supports only the Apify MCP server');
-    }
-    if (surfaces.some((surface) => surface.kind !== 'mcp')) {
-        throw new Error('Codex harness supports only MCP surfaces (its shell tools are off)');
-    }
-}
+// Every matrix entry, not only the base harness (config.ts HARNESS_SUPPORT).
+assertHarnessSupport(entries, {
+    skillSets,
+    foreignMcp: selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify'),
+    surfaceKinds: surfaces.map((surface) => surface.kind),
+});
 const safeRepeats = Math.max(1, Math.min(10, Math.floor(repeats)));
 // Repeats: each repeat is its own experiment item, so every average (compare
 // view, dashboards) already accounts for it and flaky scenarios show as x/N.

@@ -97,10 +97,16 @@ export function assertSkillsExist(sets: string[][], root: string): void {
     }
 }
 
-/** Copy the skill set into the session directory as project skills. */
-export function installSkills(home: string, set: string[], root: string): void {
+/** Where Claude Code discovers project skills, relative to its working directory. */
+export const CLAUDE_SKILLS_DIR = join('.claude', 'skills');
+
+/**
+ * Copy the skill set into the session as project skills. `skillsDir` is where
+ * the harness discovers them, relative to `home` (each adapter passes its own).
+ */
+export function installSkills(home: string, set: string[], root: string, skillsDir = CLAUDE_SKILLS_DIR): void {
     if (set.length === 0) return;
-    const target = join(home, '.claude', 'skills');
+    const target = join(home, skillsDir);
     mkdirSync(target, { recursive: true });
     for (const name of set) {
         const src = join(root, name);

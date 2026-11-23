@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_HEALTH_THRESHOLD,
     judgeLangfuseInput,
+    assertHarnessSupport,
     resolveModelEntries,
     resolveHealthThreshold,
     resolveTrigger,
@@ -114,5 +115,39 @@ describe('resolveModelEntries', () => {
         expect(() => resolveModelEntries([{ harness: 'codex' }], base)).toThrow(/without a model id/);
         expect(() => resolveModelEntries([null as never], base)).toThrow(/without a model id/);
         expect(() => resolveModelEntries([{ model: 'x', kind: 'codex' } as never], base)).toThrow(/unknown keys kind/);
+    });
+});
+
+describe('assertHarnessSupport', () => {
+    const plan = { skillSets: [[]] as string[][], foreignMcp: false, surfaceKinds: ['mcp'] };
+
+    it('accepts what every harness in the matrix supports', () => {
+        expect(() => assertHarnessSupport([{ model: 'a', kind: 'codex' }], plan)).not.toThrow();
+        expect(() =>
+            assertHarnessSupport([{ model: 'a', kind: 'claude-code' }], { ...plan, skillSets: [[], ['x']] }),
+        ).not.toThrow();
+    });
+
+    it('checks matrix entries, not only the base harness', () => {
+        // A codex entry inside a Claude Code run must not run its skills arm without skills.
+        expect(() =>
+            assertHarnessSupport(
+                [
+                    { model: 'anthropic/claude-haiku-5.5', kind: 'claude-code' },
+                    { model: 'openai/gpt-6-luna', kind: 'codex' },
+                ],
+                { ...plan, skillSets: [[], ['apify-ultimate-scraper']] },
+            ),
+        ).toThrow(/codex harness does not support skill sets/);
+    });
+
+    it('names every unsupported feature', () => {
+        expect(() =>
+            assertHarnessSupport([{ model: 'a', kind: 'codex' }], {
+                skillSets: [['x']],
+                foreignMcp: true,
+                surfaceKinds: ['mcp', 'api'],
+            }),
+        ).toThrow(/skill sets.*Apify MCP server.*MCP surfaces/);
     });
 });

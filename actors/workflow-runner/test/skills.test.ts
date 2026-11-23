@@ -108,6 +108,17 @@ describe('skills on disk', () => {
         }
     });
 
+    it('installs into the directory the harness names', () => {
+        const home = mkdtempSync(join(tmpdir(), 'skills-home-'));
+        try {
+            installSkills(home, ['alpha'], root, join('.agents', 'skills'));
+            expect(existsSync(join(home, '.agents', 'skills', 'alpha', 'SKILL.md'))).toBe(true);
+            expect(existsSync(join(home, '.claude'))).toBe(false);
+        } finally {
+            rmSync(home, { recursive: true, force: true });
+        }
+    });
+
     it('does nothing for the no-skills variant', () => {
         const home = mkdtempSync(join(tmpdir(), 'skills-home-'));
         try {

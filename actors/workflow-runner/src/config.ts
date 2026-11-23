@@ -46,6 +46,52 @@ export interface ModelEntry {
 }
 
 export const HARNESS_KINDS = ['claude-code', 'codex'] as const;
+export type HarnessKind = (typeof HARNESS_KINDS)[number];
+
+/**
+ * What each harness can run. A harness that gains a feature flips its flag
+ * here; `assertHarnessSupport` refuses an unsupported combination before any
+ * session is paid for, so a variant never runs silently without its skills.
+ */
+export interface HarnessSupport {
+    /** Agent skills (skill sets) are installed where the harness discovers them. */
+    skills: boolean;
+    /** MCP servers other than the Apify one (a profile's own `mcp`). */
+    foreignMcp: boolean;
+    /** Surfaces that are not MCP (the API surface needs a shell and curl). */
+    nonMcpSurfaces: boolean;
+}
+
+export const HARNESS_SUPPORT: Record<HarnessKind, HarnessSupport> = {
+    'claude-code': { skills: true, foreignMcp: true, nonMcpSurfaces: true },
+    codex: { skills: false, foreignMcp: false, nonMcpSurfaces: false },
+};
+
+/**
+ * Refuse a run whose matrix asks a harness for something it cannot do. Checks
+ * every model entry, not only the base harness: a `{model, harness: "codex"}`
+ * entry in a Claude Code run must not run its skills arm without skills.
+ */
+export function assertHarnessSupport(
+    entries: ModelEntry[],
+    plan: { skillSets: string[][]; foreignMcp: boolean; surfaceKinds: string[] },
+): void {
+    const problems: string[] = [];
+    for (const kind of new Set(entries.map((e) => e.kind))) {
+        const support = HARNESS_SUPPORT[kind as HarnessKind];
+        if (!support) continue; // resolveModelEntries already refused unknown kinds
+        if (!support.skills && plan.skillSets.some((set) => set.length > 0)) {
+            problems.push(`${kind} harness does not support skill sets`);
+        }
+        if (!support.foreignMcp && plan.foreignMcp) {
+            problems.push(`${kind} harness supports only the Apify MCP server`);
+        }
+        if (!support.nonMcpSurfaces && plan.surfaceKinds.some((k) => k !== 'mcp')) {
+            problems.push(`${kind} harness supports only MCP surfaces`);
+        }
+    }
+    if (problems.length > 0) throw new Error(problems.join('; '));
+}
 
 /** OpenAI ids, pinned or alias (`openai/gpt-6-luna`, `~openai/gpt-luna-latest`). */
 export const isOpenAiModel = (model: string): boolean => /^~?openai\//.test(model);
