@@ -39,25 +39,34 @@ function toolContent(item: JsonObject): string {
     return JSON.stringify(item.error ?? item.result ?? null);
 }
 
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
- * Injected skills whose `SKILL.md` the agent opened. Codex emits no skill event:
- * it lists skills in the prompt and the model reads the file with whatever tool
- * it has (a shell command, or an MCP tool given the path), so look for
- * `<name>/SKILL.md` in the commands and tool arguments.
+ * Injected skills whose `SKILL.md` the agent read. Codex emits no skill event:
+ * it lists skills in the prompt by path and the model reads the file with its
+ * shell. A skill counts when a command that succeeded names its `SKILL.md`
+ * (`.../<name>/SKILL.md`, or `cd .../<name> && cat SKILL.md`) and its output
+ * shows the file's frontmatter `name:` line, so `ls`, `test -f`, `wc` or a
+ * failed `cat` do not count. MCP calls (a URL that names a SKILL.md) do not.
  */
 export function codexSkillsRead(ndjson: string, skillSet: string[]): string[] {
     if (skillSet.length === 0) return [];
     const read = new Set<string>();
     for (const line of ndjson.split('\n')) {
-        const item = object(parseCodexLine(line)?.item);
-        if (!item) continue;
-        const text =
-            item.type === 'command_execution' && typeof item.command === 'string'
-                ? item.command
-                : item.type === 'mcp_tool_call'
-                  ? JSON.stringify(item.arguments ?? null)
-                  : '';
-        for (const name of skillSet) if (text.includes(`${name}/SKILL.md`)) read.add(name);
+        const event = parseCodexLine(line);
+        const item = object(event?.item);
+        if (event?.type !== 'item.completed' || item?.type !== 'command_execution' || item.exit_code !== 0) continue;
+        const command = typeof item.command === 'string' ? item.command : '';
+        const output = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
+        for (const name of skillSet) {
+            const n = escapeRe(name);
+            // A path segment: not part of a longer name such as foo-bar for bar.
+            const names =
+                new RegExp(`(?:^|[\\s/'"=])${n}/SKILL\\.md\\b`).test(command) ||
+                (new RegExp(`(?:^|[\\s/'"=])${n}/?(?:[\\s'";&|)]|$)`).test(command) && /\bSKILL\.md\b/.test(command));
+            const body = new RegExp(`^name:\\s*['"]?${n}['"]?\\s*$`, 'm').test(output);
+            if (names && body) read.add(name);
+        }
     }
     return [...read].sort();
 }

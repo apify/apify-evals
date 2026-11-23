@@ -202,37 +202,69 @@ describe('Codex event parser', () => {
         expect(parsed.toolRounds).toBe(2);
     });
 
-    it('records which injected skills the agent opened', () => {
-        const events = jsonl(
-            {
+    describe('which injected skills the agent read', () => {
+        const body = (name: string) => `---\nname: ${name}\ndescription: test\n---\n# ${name}\n`;
+        const run = (command: string, output: string, exitCode = 0) =>
+            jsonl({
                 type: 'item.completed',
                 item: {
-                    id: 'c1',
+                    id: 'c',
                     type: 'command_execution',
-                    command: "/bin/bash -lc 'cat /tmp/s/home/.agents/skills/alpha/SKILL.md'",
-                    aggregated_output: 'body',
-                    exit_code: 0,
-                    status: 'completed',
+                    command,
+                    aggregated_output: output,
+                    exit_code: exitCode,
+                    status: exitCode === 0 ? 'completed' : 'failed',
                 },
-            },
-            {
-                type: 'item.started',
+            });
+        const read = (events: string, skills = ['alpha', 'bar', 'foo-bar']) => codexSkillsRead(events, skills);
+
+        it.each([
+            ['cat on the full path', "/bin/sh -c 'cat /h/.agents/skills/alpha/SKILL.md'", body('alpha'), ['alpha']],
+            ['cat after cd', "/bin/sh -c 'cd /h/.agents/skills/alpha && cat SKILL.md'", body('alpha'), ['alpha']],
+            ['sed of the file', 'sed -n 1,200p ~/.agents/skills/bar/SKILL.md', body('bar'), ['bar']],
+            ['a suffix name only', 'cat ~/.agents/skills/foo-bar/SKILL.md', body('foo-bar'), ['foo-bar']],
+        ])('counts %s', (_name, command, output, expected) => {
+            expect(read(run(command, output))).toEqual(expected);
+        });
+
+        it.each([
+            ['ls of the path', 'ls -la ~/.agents/skills/alpha/SKILL.md', '-rw-r--r-- 1 u u 70 alpha/SKILL.md'],
+            ['test -f', 'test -f ~/.agents/skills/alpha/SKILL.md && echo yes', 'yes'],
+            ['wc', 'wc -l ~/.agents/skills/alpha/SKILL.md', '5 /h/.agents/skills/alpha/SKILL.md'],
+            ['a body without the command naming the file', 'echo hi', body('alpha')],
+        ])('ignores %s', (_name, command, output) => {
+            expect(read(run(command, output))).toEqual([]);
+        });
+
+        it('ignores a failed read', () => {
+            expect(read(run('cat ~/.agents/skills/alpha/SKILL.md', `${body('alpha')}\ncat: write error`, 1))).toEqual(
+                [],
+            );
+        });
+
+        it('ignores MCP arguments, such as a URL that names the file', () => {
+            const events = jsonl({
+                type: 'item.completed',
                 item: {
                     id: 'm1',
                     type: 'mcp_tool_call',
-                    server: 'fs',
-                    tool: 'read',
-                    arguments: { path: '/tmp/s/home/.agents/skills/beta/SKILL.md' },
+                    server: 'apify',
+                    tool: 'apify--web-fetch',
+                    arguments: { url: 'https://github.com/apify/agent-skills/blob/main/skills/alpha/SKILL.md' },
+                    result: { content: [{ type: 'text', text: body('alpha') }] },
                 },
-            },
-            {
-                type: 'item.completed',
-                item: { id: 'a', type: 'agent_message', text: 'skills/gamma/SKILL.md is only mentioned' },
-            },
-        );
-        expect(codexSkillsRead(events, ['alpha', 'beta', 'gamma'])).toEqual(['alpha', 'beta']);
-        expect(codexSkillsRead(events, [])).toEqual([]);
-        expect(codexSkillsRead(fixture, ['alpha'])).toEqual([]);
+            });
+            expect(read(events)).toEqual([]);
+        });
+
+        it('does not take bar from foo-bar', () => {
+            expect(read(run('cat ~/.agents/skills/foo-bar/SKILL.md', body('foo-bar')), ['bar'])).toEqual([]);
+        });
+
+        it('reads nothing without injected skills', () => {
+            expect(read(run('cat ~/.agents/skills/alpha/SKILL.md', body('alpha')), [])).toEqual([]);
+            expect(read(fixture, ['alpha'])).toEqual([]);
+        });
     });
 });
 
@@ -351,6 +383,8 @@ process.stdin.on('end', () => {
                     id: 'c1',
                     type: 'command_execution',
                     command: 'cat ~/.agents/skills/alpha/SKILL.md',
+                    aggregated_output: '---\nname: alpha\ndescription: t\n---\nbody\n',
+                    exit_code: 0,
                     status: 'completed',
                 },
             });
