@@ -60,7 +60,7 @@ export function redactSecrets(text: string, secrets: string[]): string {
 
 /** Skill directory names in Codex's `failed to load skill <dir>/SKILL.md: <reason>` errors. */
 export function skillLoadFailures(stderr: string): string[] {
-    return [...stderr.matchAll(/failed to load skill (\S+)\/SKILL\.md/g)].map((m) => m[1].split('/').at(-1) as string);
+    return [...stderr.matchAll(/failed to load skill (.+?)\/SKILL\.md:/g)].map((m) => m[1].split('/').at(-1) as string);
 }
 
 const SANDBOX_PROBE_MARKER = 'codex-sandbox-probe-ok';

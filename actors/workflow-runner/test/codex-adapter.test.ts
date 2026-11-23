@@ -8,7 +8,13 @@ import { infraStatus, surfacesOfCall, type Evidence } from '@apify-evals/contrac
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { codexSkillsRead, parseCodexEvents, unwrapShellCommand } from '../src/adapters/codex-events.js';
-import { codexAuthSecrets, codexShellPath, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
+import {
+    codexAuthSecrets,
+    codexShellPath,
+    probeCodexSandbox,
+    runCodex,
+    skillLoadFailures,
+} from '../src/adapters/codex.js';
 import { killTrackedChildren } from '../src/adapters/shared.js';
 import { extractFromTools } from '../src/evidence.js';
 
@@ -809,6 +815,19 @@ process.stdin.on('end', () => {
         } finally {
             rmSync(codexHome, { recursive: true, force: true });
         }
+    });
+
+    it('reads the skill directory of a load failure, also from a path with spaces', () => {
+        const line = (path: string) =>
+            `2026-11-23T03:10:58Z ERROR codex_core::session::session: failed to load skill ${path}/SKILL.md: missing YAML frontmatter delimited by ---`;
+        expect(
+            skillLoadFailures(
+                [
+                    line('/tmp/eval-codex-a/home/.agents/skills/alpha'),
+                    line('/Users/Jane Doe/x/.agents/skills/beta two'),
+                ].join('\n'),
+            ),
+        ).toEqual(['alpha', 'beta two']);
     });
 
     it('finds the secret values of a Codex login', () => {
