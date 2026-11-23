@@ -704,6 +704,47 @@ process.stdin.on('end', () => {
         expect(result.stderr).toContain('ENOENT');
     });
 
+    it('redacts a login token that Codex refreshed during the session', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'codex-login-'));
+        const login = (access: string) => JSON.stringify({ tokens: { access_token: access } });
+        writeFileSync(join(codexHome, 'auth.json'), login('old-access-token-0123456789'));
+        vi.stubEnv('CODEX_HOME', codexHome);
+        try {
+            ctx.useOpenRouterProxy = false;
+            // Codex refreshes the login (written through the session's link), then the agent prints it.
+            stub(`fs.writeFileSync(home + '/auth.json', ${JSON.stringify(login('new-access-token-9876543210'))});
+                const now = fs.readFileSync(home + '/auth.json', 'utf8');
+                process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'a', type: 'agent_message', text: now } }) + '\\n' + fixture);
+                process.stderr.write(now);`);
+            const result = await runCodex(ctx);
+            const everything = JSON.stringify(result);
+            expect(everything).not.toContain('new-access-token-9876543210');
+            expect(everything).toContain('[REDACTED]');
+        } finally {
+            rmSync(codexHome, { recursive: true, force: true });
+        }
+    });
+
+    it('does not keep the prefix of a token cut by the stdout or stderr cap', async () => {
+        const token = 'cut-token-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        // The cap falls inside the token: its first half arrives, the rest is dropped.
+        stub(`const half = (t) => t.slice(0, 20);
+            process.stdout.write(fixture + 'x'.repeat(${10 * 1024 * 1024} - Buffer.byteLength(fixture) - 10));
+            process.stderr.write('e'.repeat(1990));
+            setTimeout(() => {
+                process.stdout.write(half(process.env.APIFY_TOKEN));
+                process.stderr.write(half(process.env.APIFY_TOKEN));
+                setTimeout(() => {
+                    process.stdout.write(process.env.APIFY_TOKEN.slice(20) + '\\n');
+                    process.stderr.write(process.env.APIFY_TOKEN.slice(20) + '\\n');
+                }, 1000);
+            }, 1500);`);
+        const result = await runCodex({ ...ctx, apifyToken: token });
+        expect(result.metrics.stdoutTruncated).toBe(true);
+        expect(result.rawStdout).not.toContain(token.slice(0, 10));
+        expect(result.stderr).not.toContain(token.slice(0, 10));
+    });
+
     it('redacts the local Codex login from everything the session returns', async () => {
         // Local mode links the developer's auth.json into CODEX_HOME; the shell can read it.
         const codexHome = mkdtempSync(join(tmpdir(), 'codex-login-'));
