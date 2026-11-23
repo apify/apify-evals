@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import type { ConversationEntry } from '@apify-evals/contract';
 
 import type { TimelineEvent } from '../harness.js';
@@ -39,6 +42,170 @@ function toolContent(item: JsonObject): string {
     return JSON.stringify(item.error ?? item.result ?? null);
 }
 
+/**
+ * One POSIX shell word made only of quoting (single quotes, double quotes,
+ * backslashes), or null when `text` is not exactly one such word. A word the
+ * shell would expand (`$`, a backtick, `$'...'`) or join (backslash-newline)
+ * is null too: the unwrapper does not evaluate the shell.
+ */
+function shellWord(text: string): string | null {
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        const c = text[i];
+        if (/\s/.test(c) || c === '$' || c === '`') return null;
+        if (c === "'") {
+            const end = text.indexOf("'", i + 1);
+            if (end < 0) return null;
+            out += text.slice(i + 1, end);
+            i = end + 1;
+        } else if (c === '"') {
+            i++;
+            while (i < text.length && text[i] !== '"') {
+                if (text[i] === '$' || text[i] === '`') return null;
+                if (text[i] === '\\' && i + 1 < text.length) {
+                    if (text[i + 1] === '\n') return null;
+                    if ('"\\$`'.includes(text[i + 1])) i++;
+                }
+                out += text[i++];
+            }
+            if (i >= text.length) return null;
+            i++;
+        } else if (c === '\\' && i + 1 < text.length) {
+            if (text[i + 1] === '\n') return null;
+            out += text[i + 1];
+            i += 2;
+        } else {
+            out += c;
+            i++;
+        }
+    }
+    return out;
+}
+
+/**
+ * The command the agent wrote. Codex runs it as `/bin/zsh -c '<command>'`
+ * (`-lc` with a login shell); the evidence (`apify call`, `curl
+ * api.apify.com`) is read from the agent's own command, as for Claude Code.
+ */
+export function unwrapShellCommand(command: string): string {
+    const m = /^(?:\S*\/)?(?:ba|z|da)?sh\s+-l?c\s+([\s\S]+)$/.exec(command.trim());
+    return (m && shellWord(m[1])) ?? command;
+}
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The first two non-empty lines after a SKILL.md's frontmatter (one when the
+ * body has one): proof that its body was shown, not only a generic heading.
+ */
+export function skillBodyMarker(skillMd: string): string[] {
+    const lines = skillMd.split(/\r?\n/);
+    let start = 0;
+    if (lines[0]?.trim() === '---') {
+        const close = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
+        start = close < 0 ? lines.length : close + 1;
+    }
+    return lines
+        .slice(start)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 2);
+}
+
+/**
+ * Every output line as printed and without a line-number prefix (`nl -ba`,
+ * `cat -n`, `grep -n`), so a body line that itself starts with a number
+ * (`2026 edition`) matches under plain `cat` too.
+ */
+function outputLines(output: string): Set<string> {
+    const out = new Set<string>();
+    for (const line of output.split(/\r?\n/)) {
+        out.add(line.trim());
+        out.add(line.replace(/^\s*\d+(?:\t|:|\s+\|?\s?)/, '').trim());
+    }
+    return out;
+}
+
+/**
+ * Injected skills whose `SKILL.md` the agent read. Codex emits no skill event:
+ * it lists skills in the prompt by path and the model reads the file with its
+ * shell. A skill counts when a command that succeeded names its `SKILL.md`
+ * (`.../<name>/SKILL.md`, or `cd .../<name> && cat SKILL.md`) and its output
+ * shows the body: the first two non-empty lines after the frontmatter of the
+ * file installed in `skillsDir`, as printed or behind a line number. `ls`, `test -f`, `wc`,
+ * `head -3` or `grep ^name:` (frontmatter only) and a failed `cat` do not
+ * count. MCP calls (a URL that names a SKILL.md) do not count either.
+ */
+export function codexSkillsRead(ndjson: string, skillSet: string[], skillsDir: string): string[] {
+    if (skillSet.length === 0) return [];
+    const markers = new Map<string, string[]>();
+    for (const name of skillSet) {
+        try {
+            const marker = skillBodyMarker(readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf8'));
+            if (marker.length > 0) markers.set(name, marker);
+        } catch {
+            /* not installed: never read */
+        }
+    }
+    const read = new Set<string>();
+    for (const line of ndjson.split('\n')) {
+        const event = parseCodexLine(line);
+        const item = object(event?.item);
+        if (event?.type !== 'item.completed' || item?.type !== 'command_execution' || item.exit_code !== 0) continue;
+        const command = typeof item.command === 'string' ? item.command : '';
+        const output = outputLines(typeof item.aggregated_output === 'string' ? item.aggregated_output : '');
+        for (const [name, marker] of markers) {
+            const n = escapeRe(name);
+            // A path segment: not part of a longer name such as foo-bar for bar.
+            const names =
+                new RegExp(`(?:^|[\\s/'"=])${n}/SKILL\\.md\\b`).test(command) ||
+                (new RegExp(`(?:^|[\\s/'"=])${n}/?(?:[\\s'";&|)]|$)`).test(command) && /\bSKILL\.md\b/.test(command));
+            if (names && marker.every((bodyLine) => output.has(bodyLine))) read.add(name);
+        }
+    }
+    return [...read].sort();
+}
+
+/**
+ * Tool rounds, the unit of the turn budget, by the rule the trace uses for
+ * generations: calls started together form one round, and a call that starts
+ * after any call of the current round returned opens the next one. A call that
+ * is still running (unified exec keeps a long command alive) does not hold the
+ * round open. Codex emits no item for `write_stdin` or for a refused
+ * escalation request, so those cost no round.
+ */
+export class ToolRounds {
+    count = 0;
+    private open = false;
+    private returned = false;
+    private readonly seen = new Set<string>();
+    /** Calls of the current round that have not returned. */
+    private pending = new Set<string>();
+
+    /** Record a call's first event; true when it opens a new round. */
+    start(id: string): boolean {
+        if (this.seen.has(id)) return false;
+        this.seen.add(id);
+        if (this.open && !this.returned) {
+            this.pending.add(id);
+            return false;
+        }
+        this.count++;
+        this.open = true;
+        this.returned = false;
+        this.pending = new Set([id]);
+        return true;
+    }
+
+    /** Record a call's result; true when every call of the current round has returned. */
+    complete(id: string): boolean {
+        if (!this.pending.delete(id)) return false;
+        this.returned = true;
+        return this.pending.size === 0;
+    }
+}
+
 export interface ParsedCodexSession {
     conversation: ConversationEntry[];
     timeline: TimelineEvent[];
@@ -65,6 +232,7 @@ export function parseCodexEvents(
     const calls = new Set<string>();
     const completedItems = new Set<string>();
     let current: AssistantTurn | undefined;
+    const rounds = new ToolRounds();
     let finalResult = '';
     let usage: Record<string, number> | null = null;
     let completed = false;
@@ -115,6 +283,7 @@ export function parseCodexEvents(
         } else if (item.type === 'mcp_tool_call' && typeof item.server === 'string' && typeof item.tool === 'string') {
             if (!calls.has(item.id)) {
                 calls.add(item.id);
+                rounds.start(item.id);
                 const name = codexToolName(item.server, item.tool);
                 turn(t).toolUses.push({ id: item.id, name, input: item.arguments });
                 conversation.push({
@@ -125,10 +294,32 @@ export function parseCodexEvents(
                 });
             }
             if (isCompleted) {
+                rounds.complete(item.id);
                 const content = toolContent(item);
                 const result = object(item.result);
                 const isError =
                     item.status === 'failed' || item.error != null || Boolean(result?.isError ?? result?.is_error);
+                timeline.push({ kind: 'tool_result', t, toolUseId: item.id, content, isError });
+                conversation.push({ role: 'tool', type: 'tool_result', preview: content.slice(0, TOOL_RESULT_CAP) });
+                current = undefined;
+            }
+        } else if (item.type === 'command_execution' && typeof item.command === 'string') {
+            // Recorded as `Bash`, the name Claude Code uses, so the evidence
+            // extraction reads shell commands of both harnesses the same way.
+            if (!calls.has(item.id)) {
+                calls.add(item.id);
+                rounds.start(item.id);
+                const input = { command: unwrapShellCommand(item.command) };
+                turn(t).toolUses.push({ id: item.id, name: 'Bash', input });
+                conversation.push({ role: 'assistant', type: 'tool_call', tool: 'Bash', input: capToolInput(input) });
+            }
+            if (isCompleted) {
+                rounds.complete(item.id);
+                const content = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
+                const isError =
+                    item.status === 'failed' ||
+                    item.status === 'declined' ||
+                    (typeof item.exit_code === 'number' && item.exit_code !== 0);
                 timeline.push({ kind: 'tool_result', t, toolUseId: item.id, content, isError });
                 conversation.push({ role: 'tool', type: 'tool_result', preview: content.slice(0, TOOL_RESULT_CAP) });
                 current = undefined;
@@ -149,7 +340,7 @@ export function parseCodexEvents(
         finalResult,
         usage,
         numTurns: turns.length,
-        toolRounds: turns.filter((e) => e.toolUses.length > 0).length,
+        toolRounds: rounds.count,
         completed,
         failed,
         errors,

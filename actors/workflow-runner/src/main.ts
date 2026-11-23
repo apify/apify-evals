@@ -7,6 +7,7 @@ import { Actor, log } from 'apify';
 
 import { killTrackedChildren } from './adapters/shared.js';
 import {
+    assertHarnessSupport,
     LANGFUSE_CREDENTIALS,
     judgeLangfuseInput,
     resolveHealthThreshold,
@@ -150,7 +151,8 @@ const { LangfuseClient } = await import('@langfuse/client');
 const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
-const { CODEX_PROVIDER } = await import('./adapters/codex.js');
+const { CODEX_PROVIDER, codexSandboxMode, probeCodexSandbox } = await import('./adapters/codex.js');
+const { OPENCODE_PROVIDER } = await import('./adapters/opencode.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
 const { preflightModels } = await import('./preflight.js');
@@ -283,15 +285,12 @@ const mcpProblems = [
     ),
 ];
 if (mcpProblems.length > 0) throw new Error(mcpProblems.join('\n'));
-if (baseHarness.kind === 'codex') {
-    if (skillSets.some((set) => set.length > 0)) throw new Error('Codex harness does not support skill sets');
-    if (selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify')) {
-        throw new Error('Codex harness supports only the Apify MCP server');
-    }
-    if (surfaces.some((surface) => surface.kind !== 'mcp')) {
-        throw new Error('Codex harness supports only MCP surfaces (its shell tools are off)');
-    }
-}
+// Every matrix entry, not only the base harness (config.ts HARNESS_SUPPORT).
+assertHarnessSupport(entries, {
+    skillSets,
+    foreignMcp: selected.some((i) => meta(i).mcp && meta(i).mcp?.name !== 'apify'),
+    surfaceKinds: surfaces.map((surface) => surface.kind),
+});
 const safeRepeats = Math.max(1, Math.min(10, Math.floor(repeats)));
 // Repeats: each repeat is its own experiment item, so every average (compare
 // view, dashboards) already accounts for it and flaky scenarios show as x/N.
@@ -391,14 +390,29 @@ if (!skipPreflight) {
             );
         }
     }
+    // Codex sessions read skills (and run any command) through the shell. In
+    // the read-only sandbox (off Apify) a sandbox that cannot start fails
+    // every command; on Apify the shell runs unsandboxed (codexSandboxMode).
+    if (entries.some((e) => e.kind === 'codex') && codexSandboxMode() === 'read-only') {
+        const failure = await probeCodexSandbox();
+        if (failure) problems.push(`Codex sandbox cannot run a shell command: ${failure}`);
+        else log.info('preflight: Codex read-only sandbox runs shell commands');
+    }
     if (useOpenRouterProxy) {
         // Every model in the matrix, not only the first: a bad second id would
         // otherwise surface after the first model's full run.
         // Each entry pings through its own harness's endpoint.
         for (const entry of entries) {
             const codex = entry.kind === 'codex';
+            // OpenCode calls the proxy's chat completions endpoint itself, so the ping
+            // takes the path its sessions take; Claude Code shares that endpoint here.
+            const url = codex
+                ? `${CODEX_PROVIDER.base_url}/responses`
+                : entry.kind === 'opencode'
+                  ? `${OPENCODE_PROVIDER.baseURL}/chat/completions`
+                  : `${OPENROUTER_PROXY_URL}/v1/chat/completions`;
             const pre = await preflightModels([entry.model], {
-                url: codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
+                url,
                 apifyToken,
                 codex,
             });

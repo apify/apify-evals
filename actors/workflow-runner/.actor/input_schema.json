@@ -15,7 +15,7 @@
         "model": {
             "title": "Model",
             "type": "string",
-            "description": "OpenRouter model id the agent runs on, through the Apify proxy (no API key needed). Any id OpenRouter serves works, including moving aliases such as ~anthropic/claude-haiku-latest or ~openai/gpt-luna-latest; the concrete model behind an alias is recorded on the experiment as resolvedModel. The harness override selects Claude Code (default) or Codex.",
+            "description": "OpenRouter model id the agent runs on, through the Apify proxy (no API key needed). Any id OpenRouter serves works, including moving aliases such as ~anthropic/claude-haiku-latest or ~openai/gpt-luna-latest; the concrete model behind an alias is recorded on the experiment as resolvedModel. The harness override selects Claude Code (default), Codex or OpenCode.",
             "editor": "textfield",
             "default": "anthropic/claude-haiku-4.5",
             "prefill": "anthropic/claude-haiku-4.5"
@@ -85,7 +85,7 @@
         "models": {
             "title": "Model matrix (optional)",
             "type": "array",
-            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set. An entry is a model id, or {\"model\": \"...\", \"harness\": \"codex\"} to run that model on Codex instead of Claude Code. OpenAI models must use Codex. Each id is preflighted and resolved before any session starts.",
+            "description": "Run the same scenarios on several models, one experiment per model, sequentially. Overrides Model when set. An entry is a model id, or {\"model\": \"...\", \"harness\": \"codex\"} to run that model on Codex, or {\"model\": \"...\", \"harness\": \"opencode\"} to run it on OpenCode, instead of Claude Code. OpenCode runs any OpenRouter model (Gemini, Grok, Kimi, GLM, Minimax, Anthropic, OpenAI) and supports skill sets and the api surface; its agent gets read, glob, grep and skill in every arm, the scenario's MCP tools, shell only with allowBash and web fetch only on the api surface, and maxTurns tool rounds (a forced summary after the limit is kept out of the scored answer). An OpenCode session needs about 450 MB of memory. OpenAI models must use Codex or OpenCode. Each id is preflighted and resolved before any session starts.",
             "editor": "json",
             "default": [],
             "sectionCaption": "Advanced",
@@ -108,7 +108,7 @@
         "concurrency": {
             "title": "Parallel agent sessions",
             "type": "integer",
-            "description": "Sessions running at once inside this Actor run. 4 per 4 GB of memory is safe; 16 fits in 8 GB.",
+            "description": "Sessions running at once inside this Actor run. 4 per 4 GB of memory is safe; 16 fits in 8 GB. OpenCode sessions need about 450 MB each: use at most 8 per 4 GB.",
             "default": 4,
             "minimum": 1,
             "maximum": 50
@@ -192,7 +192,7 @@
         "harness": {
             "title": "Harness override (JSON)",
             "type": "object",
-            "description": "{kind, model, maxTurns}. kind selects claude-code (default) or codex. Example: {\"kind\":\"codex\",\"model\":\"openai/gpt-5-mini\",\"maxTurns\":12}. Codex uses MCP only, disables shell tools, and stops after maxTurns completed tool-call rounds; scenario metadata.maxTurns takes precedence.",
+            "description": "{kind, model, maxTurns}. kind selects claude-code (default), codex or opencode. Example: {\"kind\":\"codex\",\"model\":\"openai/gpt-5-mini\",\"maxTurns\":12}. On Codex every variant has the shell tool (MCP surfaces only; on Apify the shell runs without the Codex sandbox, so it can write files and use the network without an Apify token, see the README), and a session makes at most maxTurns model calls, as Claude Code's --max-turns (context compaction is not counted). OpenCode runs any OpenRouter model with the read, glob, grep and skill tools plus the scenario's MCP tools, and stops after maxTurns tool rounds. Scenario metadata.maxTurns takes precedence.",
             "editor": "json",
             "nullable": true
         },

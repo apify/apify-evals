@@ -24,6 +24,7 @@ import { trace } from '@opentelemetry/api';
 import { Actor, log } from 'apify';
 
 import { runCodex } from './adapters/codex.js';
+import { runOpenCode } from './adapters/opencode.js';
 import {
     capToolInput,
     EXIT_GRACE_MS,
@@ -578,9 +579,19 @@ function runClaudeCodeOnce(
 
             // Agent exhausted turns or hit our timeout: an eval result, not breakage.
             const ranOutOfTurns = subtype === 'error_max_turns';
-            const harnessBroke =
+            const harnessBrokeOtherwise =
                 Boolean(spawnError) ||
                 (!timedOut && !ranOutOfTurns && !mcpToolsMissing && finalResult === null && exitCode !== 0);
+            // Which of the injected skills Claude Code actually loaded (its init
+            // event lists them). A skills variant must never pass as a no-skills
+            // run: a missing skill breaks the session as infrastructure, the
+            // same rule as the Codex and OpenCode adapters. No init event at
+            // all is already a broken (or timed-out) session.
+            const skillsLoaded = skills ? skills.filter((name) => skillSet.includes(name)) : [];
+            const skillsNotLoaded = skills ? skillSet.filter((name) => !skillsLoaded.includes(name)) : [];
+            const harnessBroke = harnessBrokeOtherwise || skillsNotLoaded.length > 0;
+            const skillsError =
+                skillsNotLoaded.length > 0 ? `injected skills not loaded: ${skillsNotLoaded.join(', ')}\n` : '';
 
             resolve({
                 output: finalResult ?? lastAssistantText(conversation),
@@ -593,8 +604,7 @@ function runClaudeCodeOnce(
                     harness: harness.kind,
                     model: harness.model,
                     exitCode,
-                    subtype,
-                    isError,
+                    ...(skillsError ? { subtype: 'error_skills', isError: true } : { subtype, isError }),
                     timedOut,
                     stdoutTruncated,
                     durationMs: Date.now() - started,
@@ -607,11 +617,10 @@ function runClaudeCodeOnce(
                     mcpToolCount,
                     mcpToolsMissing,
                     ...(mcp ? { mcpServer: mcp.name } : {}),
-                    // Which of the injected skills Claude Code actually loaded.
-                    skillsLoaded: skills ? skills.filter((name) => skillSet.includes(name)) : [],
+                    skillsLoaded,
                 },
                 harnessBroke,
-                stderr: redact(spawnError ?? errOut).slice(0, STDERR_CAP),
+                stderr: (skillsError + redact(spawnError ?? errOut)).slice(0, STDERR_CAP),
             });
         };
 
@@ -654,6 +663,7 @@ function runClaudeCodeOnce(
 const ADAPTERS: Record<string, (ctx: SessionContext & { prompt: string }) => Promise<AdapterResult>> = {
     'claude-code': runClaudeCode,
     codex: runCodex,
+    opencode: runOpenCode,
 };
 
 /** Validate harness config up front so a bad input fails fast, before any

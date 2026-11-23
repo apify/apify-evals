@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_HEALTH_THRESHOLD,
     judgeLangfuseInput,
+    assertHarnessSupport,
     resolveModelEntries,
     resolveHealthThreshold,
     resolveTrigger,
@@ -103,6 +104,21 @@ describe('resolveModelEntries', () => {
         expect(resolveModelEntries(['a', 'a', { model: 'a' }], base)).toEqual([{ model: 'a', kind: 'claude-code' }]);
     });
 
+    it('runs any OpenRouter model on OpenCode, OpenAI ones included', () => {
+        expect(
+            resolveModelEntries(
+                [
+                    { model: 'openai/gpt-6-luna', harness: 'opencode' },
+                    { model: 'z-ai/glm-5.3', harness: 'opencode' },
+                ],
+                base,
+            ),
+        ).toEqual([
+            { model: 'openai/gpt-6-luna', kind: 'opencode' },
+            { model: 'z-ai/glm-5.3', kind: 'opencode' },
+        ]);
+    });
+
     it('refuses an OpenAI model on Claude Code and an unknown harness', () => {
         expect(() => resolveModelEntries(['~openai/gpt-luna-latest'], base)).toThrow(
             /cannot run on the claude-code harness/,
@@ -114,5 +130,56 @@ describe('resolveModelEntries', () => {
         expect(() => resolveModelEntries([{ harness: 'codex' }], base)).toThrow(/without a model id/);
         expect(() => resolveModelEntries([null as never], base)).toThrow(/without a model id/);
         expect(() => resolveModelEntries([{ model: 'x', kind: 'codex' } as never], base)).toThrow(/unknown keys kind/);
+    });
+});
+
+describe('assertHarnessSupport', () => {
+    const plan = { skillSets: [[]] as string[][], foreignMcp: false, surfaceKinds: ['mcp'] };
+
+    it('accepts what every harness in the matrix supports', () => {
+        expect(() => assertHarnessSupport([{ model: 'a', kind: 'codex' }], plan)).not.toThrow();
+        expect(() =>
+            assertHarnessSupport([{ model: 'a', kind: 'claude-code' }], { ...plan, skillSets: [[], ['x']] }),
+        ).not.toThrow();
+    });
+
+    it('checks matrix entries, not only the base harness', () => {
+        // A codex entry inside a Claude Code run must not run its API arm on MCP.
+        expect(() =>
+            assertHarnessSupport(
+                [
+                    { model: 'anthropic/claude-haiku-5.5', kind: 'claude-code' },
+                    { model: 'openai/gpt-6-luna', kind: 'codex' },
+                ],
+                { ...plan, surfaceKinds: ['mcp', 'api'] },
+            ),
+        ).toThrow(/codex harness supports only MCP surfaces/);
+        // Codex runs skill sets: its shell reads SKILL.md (adapters/codex.ts).
+        expect(() =>
+            assertHarnessSupport([{ model: 'openai/gpt-6-luna', kind: 'codex' }], {
+                ...plan,
+                skillSets: [[], ['apify-ultimate-scraper']],
+            }),
+        ).not.toThrow();
+    });
+
+    it('runs OpenCode with skill sets and the API surface, but only the Apify MCP server', () => {
+        const entries = [{ model: 'google/gemini-3.8-flash', kind: 'opencode' }];
+        expect(() =>
+            assertHarnessSupport(entries, { skillSets: [[], ['x']], foreignMcp: false, surfaceKinds: ['mcp', 'api'] }),
+        ).not.toThrow();
+        expect(() => assertHarnessSupport(entries, { ...plan, foreignMcp: true })).toThrow(
+            /opencode harness supports only the Apify MCP server/,
+        );
+    });
+
+    it('names every unsupported feature', () => {
+        expect(() =>
+            assertHarnessSupport([{ model: 'a', kind: 'codex' }], {
+                skillSets: [['x']],
+                foreignMcp: true,
+                surfaceKinds: ['mcp', 'api'],
+            }),
+        ).toThrow(/^codex harness supports only the Apify MCP server; codex harness supports only MCP surfaces$/);
     });
 });

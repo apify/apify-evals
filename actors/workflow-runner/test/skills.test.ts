@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
     assertSkillsExist,
     availableSkills,
+    CODEX_SKILLS_DIR,
     expandSkillCombinations,
     installSkills,
     parseSkillSet,
@@ -103,6 +104,17 @@ describe('skills on disk', () => {
             );
             expect(existsSync(join(home, '.claude', 'skills', 'alpha', 'reference', 'notes.md'))).toBe(true);
             expect(existsSync(join(home, '.claude', 'skills', 'beta'))).toBe(false);
+        } finally {
+            rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it('installs into the directory the harness names (Codex: $HOME/.agents/skills)', () => {
+        const home = mkdtempSync(join(tmpdir(), 'skills-home-'));
+        try {
+            installSkills(home, ['alpha'], root, CODEX_SKILLS_DIR);
+            expect(existsSync(join(home, '.agents', 'skills', 'alpha', 'SKILL.md'))).toBe(true);
+            expect(existsSync(join(home, '.claude'))).toBe(false);
         } finally {
             rmSync(home, { recursive: true, force: true });
         }

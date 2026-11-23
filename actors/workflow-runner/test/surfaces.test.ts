@@ -95,6 +95,17 @@ describe('Claude Code session setup per surface', () => {
         expect(args).toContain('--strict-mcp-config');
     });
 
+    it('keeps the bundled skills and only the project settings in every variant', () => {
+        // Claude Code 2.1.300 lists its bundled skills (simplify, claude-api, ...)
+        // with `--setting-sources project`, and drops the user's ~/.claude
+        // skills, settings and plugins; checked on the init event in the image.
+        // `--disable-slash-commands` would remove the bundled skills too.
+        const args = buildClaudeArgs({ prompt: 'p', meta: {}, harness, mcpConfigPath: null });
+        expect(args[args.indexOf('--setting-sources') + 1]).toBe('project');
+        expect(args).not.toContain('--disable-slash-commands');
+        expect(args).not.toContain('--bare');
+    });
+
     it('gives the session the surface env and the curl marker home', () => {
         const env = buildClaudeEnv({
             home: '/tmp/session',
