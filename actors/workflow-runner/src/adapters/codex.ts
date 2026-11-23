@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -13,7 +13,16 @@ import { toolsUrl } from '../artifacts.js';
 import type { AdapterResult, SessionContext } from '../harness.js';
 import { availableSkills, CODEX_SKILLS_DIR, installSkills } from '../skills.js';
 import { codexSkillsRead, parseCodexEvents, parseCodexLine, ToolRounds } from './codex-events.js';
-import { EXIT_GRACE_MS, killProcessTree, MAX_STDOUT_BYTES, STDERR_CAP, snapshotWorkspace } from './shared.js';
+import { startModelRelay, type ModelRelay } from './codex-relay.js';
+import {
+    EXIT_GRACE_MS,
+    killProcessTree,
+    MAX_STDOUT_BYTES,
+    STDERR_CAP,
+    snapshotWorkspace,
+    trackChild,
+    untrackChild,
+} from './shared.js';
 
 /** Kept together so the provider can change without touching process handling. */
 export const CODEX_PROVIDER = {
@@ -93,7 +102,11 @@ type CodexContext = Pick<
     SessionContext,
     'item' | 'harness' | 'mcpUrl' | 'apifyToken' | 'useOpenRouterProxy' | 'perItemTimeoutSecs'
 > &
-    Partial<Pick<SessionContext, 'skillSet' | 'skillsRoot'>> & { prompt: string };
+    Partial<Pick<SessionContext, 'skillSet' | 'skillsRoot'>> & {
+        prompt: string;
+        /** Where the model relay sends model calls; CODEX_PROVIDER.base_url unless a test or smoke run says otherwise. */
+        modelUpstream?: string;
+    };
 
 /** Codex exec has no tools/list event. Independently check the exact MCP URL
  * and enforce required=true in Codex, so its own initialization must also
@@ -119,10 +132,33 @@ async function listMcpTools(ctx: CodexContext, signal: AbortSignal): Promise<num
     }
 }
 
-/** The shell's PATH: the system tools (cat, ls, grep, find, curl) and node, nothing from the developer. */
+/** The shell's PATH in the image: the system tools (cat, ls, grep, find, curl) and node. */
 export const CODEX_SHELL_PATH = '/usr/local/bin:/usr/bin:/bin';
 
-function buildConfig(ctx: CodexContext, home: string): string {
+/**
+ * The shell's PATH. On Apify (the image) the system directories hold every
+ * tool. Off Apify, node and the apify CLI usually live elsewhere (Homebrew,
+ * nvm), so the directories where the runner's own `node` and `apify` resolve
+ * are appended; nothing else from the developer's PATH. Both are the same for
+ * every variant of a run.
+ */
+export function codexShellPath(env: Record<string, string | undefined> = process.env): string {
+    if (env.APIFY_IS_AT_HOME === '1') return CODEX_SHELL_PATH;
+    const dirs = CODEX_SHELL_PATH.split(':');
+    const add = (dir: string | undefined) => {
+        if (dir && !dirs.includes(dir)) dirs.push(dir);
+    };
+    add(dirname(process.execPath));
+    for (const dir of (env.PATH ?? '').split(delimiter)) {
+        if (dir && existsSync(join(dir, 'apify'))) {
+            add(dir);
+            break;
+        }
+    }
+    return dirs.join(':');
+}
+
+function buildConfig(ctx: CodexContext, home: string, modelBaseUrl: string | null): string {
     // JSON strings are valid TOML basic strings, including quoted URLs and ids.
     const q = JSON.stringify;
     const lines = [
@@ -158,13 +194,16 @@ function buildConfig(ctx: CodexContext, home: string): string {
         'inherit = "none"',
         // With nothing inherited the shell has no HOME (`~` does not expand)
         // and only Codex's own PATH entry; set both to the session's.
-        `set = { HOME = ${q(home)}, PATH = ${q(CODEX_SHELL_PATH)} }`,
+        `set = { HOME = ${q(home)}, PATH = ${q(codexShellPath())} }`,
     ];
     if (ctx.useOpenRouterProxy) {
         lines.unshift('model_provider = "apify"');
         lines.push(
             '[model_providers.apify]',
-            ...Object.entries(CODEX_PROVIDER).map(([key, value]) => `${key} = ${q(value)}`),
+            // Model calls go through the session's relay, which counts them.
+            ...Object.entries({ ...CODEX_PROVIDER, base_url: modelBaseUrl ?? CODEX_PROVIDER.base_url }).map(
+                ([key, value]) => `${key} = ${q(value)}`,
+            ),
         );
     }
     const tools = ctx.item.metadata?.tools;
@@ -276,12 +315,18 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
     mkdirSync(home);
     mkdirSync(work);
     const skillSet = ctx.skillSet ?? [];
+    const maxTurns = ctx.item.metadata?.maxTurns ?? ctx.harness.maxTurns;
+    // Through the proxy every model call passes the session's relay, which
+    // enforces the turn budget; a local login talks to OpenAI directly.
+    const relay = ctx.useOpenRouterProxy
+        ? await startModelRelay({ upstream: ctx.modelUpstream ?? CODEX_PROVIDER.base_url, maxCalls: maxTurns })
+        : null;
     try {
         // Skills change only the files in HOME, never config.toml: the
         // no-skills variant stays the exact setup of the daily baseline.
         installSkills(home, skillSet, ctx.skillsRoot ?? '', CODEX_SKILLS_DIR);
-        writeFileSync(join(home, 'config.toml'), buildConfig(ctx, home), { mode: 0o600 });
-        const secrets = [ctx.apifyToken];
+        writeFileSync(join(home, 'config.toml'), buildConfig(ctx, home, relay?.url ?? null), { mode: 0o600 });
+        let secrets = () => [ctx.apifyToken];
         if (!ctx.useOpenRouterProxy) {
             // Reuse only local login, never the developer's MCP servers, skills,
             // or config. No credentials are copied into the temporary directory,
@@ -290,17 +335,31 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
             const auth = join(process.env.CODEX_HOME ?? join(process.env.HOME ?? '', '.codex'), 'auth.json');
             if (existsSync(auth)) {
                 symlinkSync(auth, join(home, 'auth.json'));
-                try {
-                    secrets.push(...codexAuthSecrets(JSON.parse(readFileSync(auth, 'utf8'))));
-                } catch {
-                    /* unreadable login: Codex fails to authenticate and says so */
-                }
+                // Read at the start and again at the end: Codex may refresh
+                // the tokens mid-session, and both generations can be printed.
+                const readLogin = (): string[] => {
+                    try {
+                        return codexAuthSecrets(JSON.parse(readFileSync(auth, 'utf8')));
+                    } catch {
+                        return []; // unreadable login: Codex fails to authenticate and says so
+                    }
+                };
+                const atStart = readLogin();
+                secrets = () => [ctx.apifyToken, ...atStart, ...readLogin()];
             }
             log.warningOnce(
                 'Local Codex sessions (useOpenRouterProxy: false) give the agent a shell that can read any file the developer can, under a read-only sandbox. The Codex login values are redacted from session output; other files are not.',
             );
         }
-        const result = await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected, secrets);
+        const result = await spawnCodex(ctx, {
+            home,
+            work,
+            timeoutMs: remaining(),
+            mcpToolCount,
+            expected,
+            secrets,
+            relay,
+        });
         if (ctx.item.metadata?.allowBash) result.workspaceFiles = snapshotWorkspace(work);
         // Codex has no init event that lists skills (Claude Code's `skills`):
         // loaded = injected, present where Codex discovers them, and not named
@@ -311,18 +370,32 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         result.metrics.skillsRead = codexSkillsRead(result.rawStdout, skillSet);
         return result;
     } finally {
+        await relay?.close();
         rmSync(root, { recursive: true, force: true });
     }
 }
 
+interface SpawnOptions {
+    home: string;
+    work: string;
+    timeoutMs: number;
+    mcpToolCount: number | null;
+    expected: boolean;
+    /** Values to redact from everything the session returns; read again at the end. */
+    secrets: () => string[];
+    /** Counts model calls and enforces the turn budget; null for a local login (item-order fallback). */
+    relay: ModelRelay | null;
+}
+
+/** Cut text at its last newline: a value split by a size cap must not leave its prefix behind. */
+function cutAtLine(text: string): string {
+    const end = text.lastIndexOf('\n');
+    return end < 0 ? '' : text.slice(0, end + 1);
+}
+
 function spawnCodex(
     ctx: CodexContext,
-    home: string,
-    work: string,
-    timeoutMs: number,
-    mcpToolCount: number | null,
-    expected: boolean,
-    secrets: string[],
+    { home, work, timeoutMs, mcpToolCount, expected, secrets, relay }: SpawnOptions,
 ): Promise<AdapterResult> {
     return new Promise((resolve) => {
         const startedAt = Date.now();
@@ -354,6 +427,8 @@ function spawnCodex(
                 stdio: ['pipe', 'pipe', 'pipe'],
             },
         );
+        // The Actor's abort handler kills every tracked session.
+        trackChild(child);
         const decoder = new StringDecoder('utf8');
         const errDecoder = new StringDecoder('utf8');
         let stdout = '';
@@ -365,6 +440,7 @@ function spawnCodex(
         let stdoutTruncated = false;
         let turnLimit = false;
         let errLines = '';
+        let stderrCapped = false;
         const skillsFailed = new Set<string>();
         const rounds = new ToolRounds();
         /** Lines from this index on belong to a round past the budget: kept in the log, not in the trace. */
@@ -375,15 +451,22 @@ function spawnCodex(
             timedOut = true;
             killProcessTree(child);
         }, timeoutMs);
-        const ordered = [...new Set(secrets.filter(Boolean))].sort((a, b) => b.length - a.length);
-        const redact = (s: string) => redactSecrets(s, ordered);
+        if (relay) {
+            relay.onRefused = () => {
+                turnLimit = true;
+                killProcessTree(child);
+            };
+        }
         const settle = (exitCode: number | null, spawnError?: string) => {
             if (settled) return;
             settled = true;
+            untrackChild(child);
             clearTimeout(killer);
             clearTimeout(grace);
-            stdout += decoder.end();
-            stderr += errDecoder.end();
+            const ordered = [...new Set(secrets().filter(Boolean))].sort((a, b) => b.length - a.length);
+            const redact = (s: string) => redactSecrets(s, ordered);
+            stdout = stdoutTruncated ? cutAtLine(stdout) : stdout + decoder.end();
+            stderr = stderrCapped ? cutAtLine(stderr) : stderr + errDecoder.end();
             const rawStdout = redact(stdout);
             const traced = cutLine === null ? rawStdout : rawStdout.split('\n').slice(0, cutLine).join('\n');
             const parsed = parseCodexEvents(traced, lineTimes, Date.now());
@@ -423,9 +506,11 @@ function spawnCodex(
                     isError: harnessBroke || timedOut || missing,
                     timedOut,
                     stdoutTruncated,
-                    numTurns: parsed.numTurns,
-                    // Rounds the trace holds; a call past the budget opened none.
-                    toolRounds: Math.min(rounds.count, maxTurns),
+                    // Model calls as the relay counted them; without a relay the
+                    // trace's own grouping and the item-order rounds (approximate).
+                    numTurns: relay ? relay.calls : parsed.numTurns,
+                    toolRounds: relay ? relay.toolCalls : Math.min(rounds.count, maxTurns),
+                    turnCounting: relay ? 'model-calls' : 'item-order',
                     usage: parsed.usage,
                     usageScope: 'session',
                     costUsd: null,
@@ -453,6 +538,9 @@ function spawnCodex(
                 const line = lineBuffer.slice(0, newline);
                 lineBuffer = lineBuffer.slice(newline + 1);
                 lineTimes.push(Date.now());
+                // The relay counts model calls exactly; item order is only the
+                // fallback for a local login, whose model calls bypass it.
+                if (relay) continue;
                 const event = parseCodexLine(line);
                 const item = event?.item as { id?: string; type?: string } | undefined;
                 // Shell commands count toward the turn budget like MCP calls.
@@ -484,6 +572,7 @@ function spawnCodex(
         });
         child.stderr.on('data', (data: Buffer) => {
             if (stderr.length < STDERR_CAP) stderr += errDecoder.write(data);
+            else stderrCapped = true;
             // Past the stderr cap too: Codex logs each skill it cannot load.
             errLines += data.toString('utf8');
             const lines = errLines.split('\n');

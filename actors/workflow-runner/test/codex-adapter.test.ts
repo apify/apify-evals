@@ -1,4 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,7 +8,7 @@ import { infraStatus, surfacesOfCall, type Evidence } from '@apify-evals/contrac
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { codexSkillsRead, parseCodexEvents, unwrapShellCommand } from '../src/adapters/codex-events.js';
-import { codexAuthSecrets, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
+import { codexAuthSecrets, codexShellPath, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
 import { extractFromTools } from '../src/evidence.js';
 
 const mcp = vi.hoisted(() => ({ listTools: vi.fn(), connect: vi.fn(), close: vi.fn() }));
@@ -360,7 +362,9 @@ process.stdin.on('end', () => {
             mcpToolCount: 1,
             mcpExpected: true,
             mcpRestarts: 0,
-            numTurns: 2,
+            // The stub makes no model call through the relay.
+            numTurns: 0,
+            turnCounting: 'model-calls',
         });
         expect(result.timeline).toHaveLength(3);
         const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
@@ -384,7 +388,7 @@ process.stdin.on('end', () => {
         // The shell gets the session HOME and a system PATH, never a login shell.
         expect(captured.config).toContain('allow_login_shell = false');
         expect(captured.config).toContain(
-            `set = { HOME = ${JSON.stringify(captured.home)}, PATH = "/usr/local/bin:/usr/bin:/bin" }`,
+            `set = { HOME = ${JSON.stringify(captured.home)}, PATH = ${JSON.stringify(codexShellPath())} }`,
         );
         expect(captured.config.indexOf('allow_login_shell')).toBeLessThan(captured.config.indexOf('['));
         expect(captured.config).toContain('web_search = "disabled"');
@@ -431,10 +435,10 @@ process.stdin.on('end', () => {
             expect(withSkills.skillBody).toContain('body');
             expect(withSkills.workEntries).toEqual([]);
             // Only the skill files differ between the variants, never the Codex config.
-            // The session HOME is a fresh temporary path in every session.
-            expect(withSkills.config.replaceAll(withSkills.home, '<home>')).toBe(
-                plain.config.replaceAll(plain.home, '<home>'),
-            );
+            // The session HOME and the relay port are fresh in every session.
+            const normalize = (c: { config: string; home: string }) =>
+                c.config.replaceAll(c.home, '<home>').replace(/127\.0\.0\.1:\d+/, '<relay>');
+            expect(normalize(withSkills)).toBe(normalize(plain));
             expect(result.metrics).toMatchObject({ skillsLoaded: ['alpha'], skillsRead: ['alpha'] });
             expect(result.harnessBroke).toBe(false);
         } finally {
@@ -519,88 +523,101 @@ process.stdin.on('end', () => {
         expect(sessionInfra(result).ok).toBe(false);
     });
 
-    it('scores max-turn exhaustion without treating the killed process as broken', async () => {
-        ctx.item.metadata!.maxTurns = 1;
-        const next = jsonl({
-            type: 'item.started',
-            item: { id: 'extra', type: 'mcp_tool_call', server: 'apify', tool: 'search-actors', arguments: {} },
+    describe('turn budget through the model relay', () => {
+        let upstream: Server;
+        let requests: number;
+        beforeEach(async () => {
+            requests = 0;
+            // Fake provider: every model call answers with two parallel tool calls.
+            upstream = createServer((req, res) => {
+                req.resume();
+                req.on('end', () => {
+                    requests++;
+                    res.writeHead(200, { 'content-type': 'text/event-stream' });
+                    const send = (event: object) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+                    send({ type: 'response.created', response: { id: `r${requests}` } });
+                    for (const i of [0, 1]) {
+                        send({
+                            type: 'response.output_item.done',
+                            item: { type: 'function_call', name: 'exec_command', call_id: `c${requests}_${i}` },
+                        });
+                    }
+                    send({ type: 'response.completed', response: { id: `r${requests}` } });
+                    res.end();
+                });
+            });
+            await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+            ctx.modelUpstream = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+            ctx.item = { metadata: {} };
         });
-        stub(`process.stdout.write(fixture + ${JSON.stringify(`${next}\n`)}); setInterval(() => {}, 1000);`);
-        const result = await runCodex(ctx);
-        expect(result.metrics).toMatchObject({ subtype: 'error_max_turns', toolRounds: 1, timedOut: false });
-        expect(result.harnessBroke).toBe(false);
-        expect(sessionInfra(result).ok).toBe(true);
+        afterEach(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
+
+        // Like Codex: call the model at the configured base_url until refused,
+        // print one shell command per tool call, never finish on its own.
+        const modelLoop = `
+            const config = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
+            const base = /base_url = "([^"]+)"/.exec(config)[1];
+            let n = 0;
+            const next = async () => {
+                const res = await fetch(base + '/responses', { method: 'POST', body: '{}' });
+                const text = await res.text();
+                if (res.status !== 200) { process.stdout.write(JSON.stringify({ type: 'error', message: text }) + '\\n'); return; }
+                for (const i of [0, 1]) {
+                    const item = { id: 'i' + n + '_' + i, type: 'command_execution', command: 'sleep 300', aggregated_output: '', exit_code: null, status: 'in_progress' };
+                    process.stdout.write(JSON.stringify({ type: 'item.started', item }) + '\\n');
+                }
+                n++;
+                next();
+            };
+            process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 't' }) + '\\n');
+            next();
+            setInterval(() => {}, 1000);`;
+
+        it('allows maxTurns model calls and stops the session at the next one', async () => {
+            ctx.harness.maxTurns = 3;
+            stub(modelLoop);
+            const result = await runCodex(ctx);
+            expect(requests).toBe(3);
+            expect(result.metrics).toMatchObject({
+                subtype: 'error_max_turns',
+                numTurns: 3,
+                toolRounds: 3,
+                turnCounting: 'model-calls',
+                timedOut: false,
+            });
+            expect(result.harnessBroke).toBe(false);
+            expect(sessionInfra(result).ok).toBe(true);
+            // Never-ending commands do not hide the calls: all six are in the trace.
+            expect(result.metrics.toolCalls).toBe(6);
+            const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+            expect(captured.config).toMatch(/base_url = "http:\/\/127\.0\.0\.1:\d+"/);
+        });
     });
 
-    it('stops at the turn budget when a shell command never completes', async () => {
-        // Unified exec keeps `sleep`/`tail -f` running: item.started, no item.completed.
-        ctx.harness.maxTurns = 2;
-        const cmd = (id: string, command: string, done: boolean) => ({
-            type: done ? 'item.completed' : 'item.started',
-            item: {
-                id,
-                type: 'command_execution',
-                command,
-                aggregated_output: done ? 'ok' : '',
-                exit_code: done ? 0 : null,
-                status: done ? 'completed' : 'in_progress',
-            },
-        });
-        const events =
-            jsonl(
-                { type: 'thread.started', thread_id: 't' },
-                { type: 'turn.started' },
-                cmd('long', 'sleep 25', false),
-                cmd('r2', 'echo r2', false),
-                cmd('r2', 'echo r2', true),
-                cmd('r3', 'echo r3', false),
-                cmd('r3', 'echo r3', true),
-                cmd('r4', 'echo r4', false),
-                cmd('r4', 'echo r4', true),
-            ) + '\n';
-        stub(`process.stdout.write(${JSON.stringify(events)}); setInterval(() => {}, 1000);`);
-        const result = await runCodex(ctx);
-        expect(result.metrics).toMatchObject({ subtype: 'error_max_turns', toolRounds: 2, timedOut: false });
-        expect(result.harnessBroke).toBe(false);
-        // The trace holds the same two rounds; the third is only in the raw log.
-        const traced = result.timeline.filter((e) => e.kind === 'assistant' && e.toolUses.length > 0);
-        expect(traced.map((e) => (e.kind === 'assistant' ? e.toolUses.map((u) => u.id) : []))).toEqual([
-            ['long', 'r2'],
-            ['r3'],
-        ]);
-        expect(result.rawStdout).toContain('echo r4');
-    });
-
-    it('keeps parallel tools in one budget round and retains both results', async () => {
-        ctx.harness.maxTurns = 1;
-        const tool = (id: string) => ({
-            id,
-            type: 'mcp_tool_call',
-            server: 'apify',
-            tool: 'search-actors',
-            arguments: {},
-        });
-        const initial =
-            jsonl(
-                { type: 'item.started', item: tool('a') },
-                { type: 'item.started', item: tool('b') },
-                {
-                    type: 'item.completed',
-                    item: { ...tool('a'), result: { content: [{ type: 'text', text: 'a' }] }, status: 'completed' },
-                },
-            ) + '\n';
-        const last =
-            jsonl({
-                type: 'item.completed',
-                item: { ...tool('b'), result: { content: [{ type: 'text', text: 'b' }] }, status: 'completed' },
-            }) + '\n';
-        stub(
-            `process.stdout.write(${JSON.stringify(initial)}); setTimeout(() => process.stdout.write(${JSON.stringify(last)}), 30); setInterval(() => {}, 1000);`,
-        );
-        const result = await runCodex(ctx);
-        expect(result.metrics).toMatchObject({ subtype: 'error_max_turns', toolRounds: 1, toolCalls: 2 });
-        expect(result.timeline.filter((e) => e.kind === 'tool_result')).toHaveLength(2);
-        expect(sessionInfra(result).ok).toBe(true);
+    it('falls back to item order for a local login, replaying a recorded Codex session', async () => {
+        // Recorded with codex 0.162.1: `echo a` returned, then `sleep 300` started.
+        const codexHome = mkdtempSync(join(tmpdir(), 'codex-login-'));
+        vi.stubEnv('CODEX_HOME', codexHome);
+        try {
+            ctx.useOpenRouterProxy = false;
+            ctx.item = { metadata: {} };
+            ctx.harness.maxTurns = 1;
+            const real = readFileSync(new URL('./fixtures/codex-shell-real.jsonl', import.meta.url), 'utf8');
+            stub(`process.stdout.write(${JSON.stringify(real)}); setInterval(() => {}, 1000);`);
+            const result = await runCodex(ctx);
+            expect(result.metrics).toMatchObject({
+                subtype: 'error_max_turns',
+                toolRounds: 1,
+                turnCounting: 'item-order',
+            });
+            expect(result.harnessBroke).toBe(false);
+            // The trace keeps the allowed round; the rest stays in the raw log.
+            const calls = result.timeline.flatMap((e) => (e.kind === 'assistant' ? e.toolUses : []));
+            expect(calls.map((c) => (c.input as { command: string }).command)).toEqual(['echo a']);
+            expect(result.rawStdout).toContain('sleep 301');
+        } finally {
+            rmSync(codexHome, { recursive: true, force: true });
+        }
     });
 
     it('includes MCP discovery in the timeout and closes its transport', async () => {
