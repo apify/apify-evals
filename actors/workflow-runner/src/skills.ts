@@ -101,6 +101,14 @@ export function assertSkillsExist(sets: string[][], root: string): void {
 export const CLAUDE_SKILLS_DIR = join('.claude', 'skills');
 
 /**
+ * Where Codex discovers user skills, relative to `$HOME` (the session HOME is
+ * also its CODEX_HOME). Codex 0.162 also reads the deprecated
+ * `$CODEX_HOME/skills`, and `<cwd>/.agents/skills` as repo skills; the HOME
+ * location keeps the skills out of the workspace snapshot.
+ */
+export const CODEX_SKILLS_DIR = join('.agents', 'skills');
+
+/**
  * Copy the skill set into the session as project skills. `skillsDir` is where
  * the harness discovers them, relative to `home` (each adapter passes its own).
  */

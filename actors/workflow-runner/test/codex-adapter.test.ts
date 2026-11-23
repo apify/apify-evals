@@ -1,11 +1,11 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { infraStatus, type Evidence } from '@apify-evals/contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { parseCodexEvents } from '../src/adapters/codex-events.js';
+import { codexSkillsRead, parseCodexEvents } from '../src/adapters/codex-events.js';
 import { runCodex } from '../src/adapters/codex.js';
 import { extractFromTools } from '../src/evidence.js';
 
@@ -158,6 +158,39 @@ describe('Codex event parser', () => {
             usage: { input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 1 },
         });
     });
+
+    it('records which injected skills the agent opened', () => {
+        const events = jsonl(
+            {
+                type: 'item.completed',
+                item: {
+                    id: 'c1',
+                    type: 'command_execution',
+                    command: "/bin/bash -lc 'cat /tmp/s/home/.agents/skills/alpha/SKILL.md'",
+                    aggregated_output: 'body',
+                    exit_code: 0,
+                    status: 'completed',
+                },
+            },
+            {
+                type: 'item.started',
+                item: {
+                    id: 'm1',
+                    type: 'mcp_tool_call',
+                    server: 'fs',
+                    tool: 'read',
+                    arguments: { path: '/tmp/s/home/.agents/skills/beta/SKILL.md' },
+                },
+            },
+            {
+                type: 'item.completed',
+                item: { id: 'a', type: 'agent_message', text: 'skills/gamma/SKILL.md is only mentioned' },
+            },
+        );
+        expect(codexSkillsRead(events, ['alpha', 'beta', 'gamma'])).toEqual(['alpha', 'beta']);
+        expect(codexSkillsRead(events, [])).toEqual([]);
+        expect(codexSkillsRead(fixture, ['alpha'])).toEqual([]);
+    });
 });
 
 describe('Codex process adapter (stub executable, no network)', () => {
@@ -198,6 +231,11 @@ process.stdin.on('end', () => {
         args: process.argv.slice(2), prompt, cwd: process.cwd(), home,
         config: fs.readFileSync(home + '/config.toml', 'utf8'),
         envKeys: Object.keys(process.env),
+        skills: fs.existsSync(home + '/.agents/skills') ? fs.readdirSync(home + '/.agents/skills') : [],
+        skillBody: fs.existsSync(home + '/.agents/skills/alpha/SKILL.md')
+            ? fs.readFileSync(home + '/.agents/skills/alpha/SKILL.md', 'utf8')
+            : null,
+        workEntries: fs.readdirSync(process.cwd()),
     }));
     ${body}
 });
@@ -245,6 +283,43 @@ process.stdin.on('end', () => {
         expect(existsSync(captured.home)).toBe(false);
         expect(existsSync(captured.cwd)).toBe(false);
         expect(mcp.close).toHaveBeenCalledOnce();
+    });
+
+    it('installs skills where Codex discovers them and keeps the config of the no-skills variant', async () => {
+        const skillsRoot = mkdtempSync(join(tmpdir(), 'codex-skills-root-'));
+        try {
+            for (const name of ['alpha', 'beta']) {
+                mkdirSync(join(skillsRoot, name, 'references'), { recursive: true });
+                writeFileSync(join(skillsRoot, name, 'SKILL.md'), `---\nname: ${name}\ndescription: t\n---\nbody\n`);
+                writeFileSync(join(skillsRoot, name, 'references', 'notes.md'), 'notes');
+            }
+            const read = jsonl({
+                type: 'item.completed',
+                item: {
+                    id: 'c1',
+                    type: 'command_execution',
+                    command: 'cat ~/.agents/skills/alpha/SKILL.md',
+                    status: 'completed',
+                },
+            });
+            stub(`process.stdout.write(${JSON.stringify(`${read}\n`)} + fixture);`);
+            const baseline = await runCodex(ctx);
+            const plain = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+            expect(plain.skills).toEqual([]);
+            expect(baseline.metrics).toMatchObject({ skillsLoaded: [], skillsRead: [] });
+
+            const result = await runCodex({ ...ctx, skillSet: ['alpha'], skillsRoot });
+            const withSkills = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+            expect(withSkills.skills).toEqual(['alpha']);
+            expect(withSkills.skillBody).toContain('body');
+            expect(withSkills.workEntries).toEqual([]);
+            // Only the skill files differ between the variants, never the Codex config.
+            expect(withSkills.config).toBe(plain.config);
+            expect(result.metrics).toMatchObject({ skillsLoaded: ['alpha'], skillsRead: ['alpha'] });
+            expect(result.harnessBroke).toBe(false);
+        } finally {
+            rmSync(skillsRoot, { recursive: true, force: true });
+        }
     });
 
     it('retries zero MCP tools once before spawning', async () => {

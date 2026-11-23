@@ -39,6 +39,29 @@ function toolContent(item: JsonObject): string {
     return JSON.stringify(item.error ?? item.result ?? null);
 }
 
+/**
+ * Injected skills whose `SKILL.md` the agent opened. Codex emits no skill event:
+ * it lists skills in the prompt and the model reads the file with whatever tool
+ * it has (a shell command, or an MCP tool given the path), so look for
+ * `<name>/SKILL.md` in the commands and tool arguments.
+ */
+export function codexSkillsRead(ndjson: string, skillSet: string[]): string[] {
+    if (skillSet.length === 0) return [];
+    const read = new Set<string>();
+    for (const line of ndjson.split('\n')) {
+        const item = object(parseCodexLine(line)?.item);
+        if (!item) continue;
+        const text =
+            item.type === 'command_execution' && typeof item.command === 'string'
+                ? item.command
+                : item.type === 'mcp_tool_call'
+                  ? JSON.stringify(item.arguments ?? null)
+                  : '';
+        for (const name of skillSet) if (text.includes(`${name}/SKILL.md`)) read.add(name);
+    }
+    return [...read].sort();
+}
+
 export interface ParsedCodexSession {
     conversation: ConversationEntry[];
     timeline: TimelineEvent[];

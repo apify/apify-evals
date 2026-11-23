@@ -11,7 +11,8 @@ import { log } from 'apify';
 
 import { toolsUrl } from '../artifacts.js';
 import type { AdapterResult, SessionContext } from '../harness.js';
-import { parseCodexEvents, parseCodexLine } from './codex-events.js';
+import { availableSkills, CODEX_SKILLS_DIR, installSkills } from '../skills.js';
+import { codexSkillsRead, parseCodexEvents, parseCodexLine } from './codex-events.js';
 import { EXIT_GRACE_MS, killProcessTree, MAX_STDOUT_BYTES, STDERR_CAP, snapshotWorkspace } from './shared.js';
 
 /** Kept together so the provider can change without touching process handling. */
@@ -26,7 +27,8 @@ export const CODEX_PROVIDER = {
 type CodexContext = Pick<
     SessionContext,
     'item' | 'harness' | 'mcpUrl' | 'apifyToken' | 'useOpenRouterProxy' | 'perItemTimeoutSecs'
-> & { prompt: string };
+> &
+    Partial<Pick<SessionContext, 'skillSet' | 'skillsRoot'>> & { prompt: string };
 
 /** Codex exec has no tools/list event. Independently check the exact MCP URL
  * and enforce required=true in Codex, so its own initialization must also
@@ -193,7 +195,11 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
     const work = join(root, 'work');
     mkdirSync(home);
     mkdirSync(work);
+    const skillSet = ctx.skillSet ?? [];
     try {
+        // Skills change only the files in HOME, never config.toml: the
+        // no-skills variant stays the exact setup of the daily baseline.
+        installSkills(home, skillSet, ctx.skillsRoot ?? '', CODEX_SKILLS_DIR);
         writeFileSync(join(home, 'config.toml'), buildConfig(ctx), { mode: 0o600 });
         if (!ctx.useOpenRouterProxy) {
             // Reuse only local login, never the developer's MCP servers, skills,
@@ -203,6 +209,12 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         }
         const result = await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected);
         if (ctx.item.metadata?.allowBash) result.workspaceFiles = snapshotWorkspace(work);
+        // Codex has no init event that lists skills (Claude Code's `skills`),
+        // so record the injected skills present where Codex discovers them,
+        // and the ones whose SKILL.md the agent opened.
+        const installed = new Set(availableSkills(join(home, CODEX_SKILLS_DIR)));
+        result.metrics.skillsLoaded = skillSet.filter((name) => installed.has(name));
+        result.metrics.skillsRead = codexSkillsRead(result.rawStdout, skillSet);
         return result;
     } finally {
         rmSync(root, { recursive: true, force: true });
