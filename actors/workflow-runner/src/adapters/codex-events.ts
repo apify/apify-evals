@@ -39,6 +39,47 @@ function toolContent(item: JsonObject): string {
     return JSON.stringify(item.error ?? item.result ?? null);
 }
 
+/** One POSIX shell word (quotes and backslashes), or null when `text` is not exactly one word. */
+function shellWord(text: string): string | null {
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        const c = text[i];
+        if (/\s/.test(c)) return null;
+        if (c === "'") {
+            const end = text.indexOf("'", i + 1);
+            if (end < 0) return null;
+            out += text.slice(i + 1, end);
+            i = end + 1;
+        } else if (c === '"') {
+            i++;
+            while (i < text.length && text[i] !== '"') {
+                if (text[i] === '\\' && i + 1 < text.length && '"\\$`\n'.includes(text[i + 1])) i++;
+                out += text[i++];
+            }
+            if (i >= text.length) return null;
+            i++;
+        } else if (c === '\\' && i + 1 < text.length) {
+            out += text[i + 1];
+            i += 2;
+        } else {
+            out += c;
+            i++;
+        }
+    }
+    return out;
+}
+
+/**
+ * The command the agent wrote. Codex runs it as `/bin/zsh -c '<command>'`
+ * (`-lc` with a login shell); the evidence (`apify call`, `curl
+ * api.apify.com`) is read from the agent's own command, as for Claude Code.
+ */
+export function unwrapShellCommand(command: string): string {
+    const m = /^(?:\S*\/)?(?:ba|z|da)?sh\s+-l?c\s+([\s\S]+)$/.exec(command.trim());
+    return (m && shellWord(m[1])) ?? command;
+}
+
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
@@ -213,7 +254,7 @@ export function parseCodexEvents(
             if (!calls.has(item.id)) {
                 calls.add(item.id);
                 rounds.start(item.id);
-                const input = { command: item.command };
+                const input = { command: unwrapShellCommand(item.command) };
                 turn(t).toolUses.push({ id: item.id, name: 'Bash', input });
                 conversation.push({ role: 'assistant', type: 'tool_call', tool: 'Bash', input: capToolInput(input) });
             }

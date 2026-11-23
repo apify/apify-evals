@@ -2,10 +2,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { infraStatus, type Evidence } from '@apify-evals/contract';
+import { infraStatus, surfacesOfCall, type Evidence } from '@apify-evals/contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { codexSkillsRead, parseCodexEvents } from '../src/adapters/codex-events.js';
+import { codexSkillsRead, parseCodexEvents, unwrapShellCommand } from '../src/adapters/codex-events.js';
 import { codexAuthSecrets, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
 import { extractFromTools } from '../src/evidence.js';
 
@@ -187,7 +187,7 @@ describe('Codex event parser', () => {
             ),
         );
         expect(parsed.timeline[0]).toMatchObject({
-            toolUses: [{ id: 'c1', name: 'Bash', input: { command: "/bin/bash -lc 'cat SKILL.md'" } }],
+            toolUses: [{ id: 'c1', name: 'Bash', input: { command: 'cat SKILL.md' } }],
         });
         expect(parsed.timeline[1]).toMatchObject({ kind: 'tool_result', content: 'skill body', isError: false });
         expect(parsed.timeline[3]).toMatchObject({ kind: 'tool_result', isError: true });
@@ -200,6 +200,37 @@ describe('Codex event parser', () => {
             'text',
         ]);
         expect(parsed.toolRounds).toBe(2);
+    });
+
+    it.each([
+        ["/bin/zsh -c 'apify call apify/web-scraper'", 'apify call apify/web-scraper'],
+        ['/bin/bash -lc \'echo "HOME=[$HOME]"; ls ~\'', 'echo "HOME=[$HOME]"; ls ~'],
+        ["/bin/sh -c 'echo '\\''quoted'\\'''", "echo 'quoted'"],
+        ["/bin/sh -c 'echo '\"'\"'x'\"'\"''", "echo 'x'"],
+        ['/bin/sh -c "curl -s \\"https://api.apify.com/v2/store\\""', 'curl -s "https://api.apify.com/v2/store"'],
+        ['cat SKILL.md', 'cat SKILL.md'],
+        ["/bin/sh -c 'unterminated", "/bin/sh -c 'unterminated"],
+        ["/bin/sh -c 'a' 'b'", "/bin/sh -c 'a' 'b'"],
+    ])('reads the agent command out of %s', (wrapped, command) => {
+        expect(unwrapShellCommand(wrapped)).toBe(command);
+    });
+
+    it('classifies a wrapped shell command by the agent command', () => {
+        const parsed = parseCodexEvents(
+            jsonl({
+                type: 'item.completed',
+                item: {
+                    id: 'c',
+                    type: 'command_execution',
+                    command: "/bin/zsh -c 'apify call apify/web-scraper'",
+                    aggregated_output: '',
+                    exit_code: 0,
+                    status: 'completed',
+                },
+            }),
+        );
+        const calls = parsed.timeline.flatMap((e) => (e.kind === 'assistant' ? e.toolUses : []));
+        expect(surfacesOfCall(calls[0].name, calls[0].input)).toEqual(['cli']);
     });
 
     describe('which injected skills the agent read', () => {
