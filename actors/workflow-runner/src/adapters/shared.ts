@@ -63,6 +63,14 @@ export function descendantPids(root: number, parents = parentPids()): number[] {
  * Descendants in their own session (Codex runs shell commands in a PTY, which
  * starts a new session) are outside the group: kill them by pid first, or a
  * `sleep`/`tail -f` the agent started keeps running after the session.
+ *
+ * Best effort, by design without native helpers. Two gaps remain: a process
+ * whose parent already exited is reparented to PID 1 (or a subreaper) and is
+ * no longer a descendant, so it survives (`nohup cmd & exit`); and a process
+ * forked between the process-table read and the kills is missed. Production
+ * relies on the session's sandbox (bubblewrap on Linux kills its PID
+ * namespace with the sandboxed command) and on the container ending with the
+ * Actor run for those.
  */
 export function killProcessTree(child: ChildProcess): void {
     if (child.pid) {

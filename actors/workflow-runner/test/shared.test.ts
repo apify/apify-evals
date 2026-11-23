@@ -91,6 +91,20 @@ describe('killProcessTree', () => {
         expect(alive(child.pid as number)).toBe(false);
     });
 
+    it('leaves an unrelated sibling process alive', async () => {
+        const sibling = spawnSleeper();
+        const child = spawnSleeper();
+        try {
+            await delay(200);
+            killProcessTree(child);
+            await delay(300);
+            expect(alive(child.pid as number)).toBe(false);
+            expect(alive(sibling.pid as number)).toBe(true);
+        } finally {
+            killProcessTree(sibling);
+        }
+    });
+
     it('walks parent links to every depth', () => {
         const parents = new Map([
             [2, 1],
