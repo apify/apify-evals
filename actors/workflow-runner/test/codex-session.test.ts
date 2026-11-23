@@ -30,7 +30,7 @@ vi.mock('../src/evidence.js', async (importOriginal) => ({
 
 describe('Codex wiring into the unchanged session pipeline', () => {
     it('registers both harnesses and rejects unknown adapters', () => {
-        for (const kind of ['claude-code', 'codex']) {
+        for (const kind of ['claude-code', 'codex', 'opencode']) {
             expect(() => validateHarness({ kind, model: 'test-model', maxTurns: 12 })).not.toThrow();
         }
         expect(() => validateHarness({ kind: 'missing', model: 'test-model', maxTurns: 12 })).toThrow(
