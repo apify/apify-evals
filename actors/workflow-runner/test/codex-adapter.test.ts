@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { infraStatus, surfacesOfCall, type Evidence } from '@apify-evals/contract';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -856,6 +856,32 @@ process.stdin.on('end', () => {
         expect(result.rawStdout).not.toContain(ctx.apifyToken);
         expect(result.stderr).not.toContain(ctx.apifyToken);
         expect(sessionInfra(result).ok).toBe(false);
+    });
+});
+
+describe('Codex shell PATH', () => {
+    it('is the system PATH of the image on Apify', () => {
+        expect(codexShellPath({ APIFY_IS_AT_HOME: '1', PATH: '/opt/homebrew/bin:/usr/bin' })).toBe(
+            '/usr/local/bin:/usr/bin:/bin',
+        );
+    });
+
+    it('adds only the directories of node and the apify CLI off Apify', () => {
+        const bin = mkdtempSync(join(tmpdir(), 'apify-cli-'));
+        try {
+            writeFileSync(join(bin, 'apify'), '');
+            const path = codexShellPath({ PATH: ['/opt/elsewhere/bin', bin, '/opt/more'].join(':') });
+            expect(path.split(':')).toEqual([
+                '/usr/local/bin',
+                '/usr/bin',
+                '/bin',
+                ...new Set(
+                    [dirname(process.execPath), bin].filter((d) => !['/usr/local/bin', '/usr/bin', '/bin'].includes(d)),
+                ),
+            ]);
+        } finally {
+            rmSync(bin, { recursive: true, force: true });
+        }
     });
 });
 
