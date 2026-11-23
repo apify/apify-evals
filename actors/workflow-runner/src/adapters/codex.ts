@@ -309,18 +309,51 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         };
     }
 
+    // Through the proxy every model call passes the session's relay, which
+    // enforces the turn budget; a local login talks to OpenAI directly. A
+    // relay that cannot start fails this session, never the whole run.
+    let relay: ModelRelay | null = null;
+    if (ctx.useOpenRouterProxy) {
+        try {
+            relay = await startModelRelay({
+                upstream: ctx.modelUpstream ?? CODEX_PROVIDER.base_url,
+                maxCalls: ctx.item.metadata?.maxTurns ?? ctx.harness.maxTurns,
+            });
+        } catch (error) {
+            return {
+                output: '',
+                conversation: [],
+                timeline: [],
+                startedAt: Date.now(),
+                rawStdout: '',
+                harnessBroke: true,
+                stderr: `Codex model relay could not start: ${(error as Error).message}`.slice(0, STDERR_CAP),
+                metrics: {
+                    harness: ctx.harness.kind,
+                    model: ctx.harness.model,
+                    exitCode: null,
+                    subtype: 'error_session',
+                    isError: true,
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    numTurns: 0,
+                    usage: null,
+                    costUsd: null,
+                    toolCalls: 0,
+                    mcpToolCount,
+                    mcpToolsMissing: false,
+                    mcpServers: [],
+                },
+            };
+        }
+    }
+
     const root = mkdtempSync(join(tmpdir(), 'eval-codex-'));
     const home = join(root, 'home');
     const work = join(root, 'work');
     mkdirSync(home);
     mkdirSync(work);
     const skillSet = ctx.skillSet ?? [];
-    const maxTurns = ctx.item.metadata?.maxTurns ?? ctx.harness.maxTurns;
-    // Through the proxy every model call passes the session's relay, which
-    // enforces the turn budget; a local login talks to OpenAI directly.
-    const relay = ctx.useOpenRouterProxy
-        ? await startModelRelay({ upstream: ctx.modelUpstream ?? CODEX_PROVIDER.base_url, maxCalls: maxTurns })
-        : null;
     try {
         // Skills change only the files in HOME, never config.toml: the
         // no-skills variant stays the exact setup of the daily baseline.
@@ -511,6 +544,10 @@ function spawnCodex(
                     numTurns: relay ? relay.calls : parsed.numTurns,
                     toolRounds: relay ? relay.toolCalls : Math.min(rounds.count, maxTurns),
                     turnCounting: relay ? 'model-calls' : 'item-order',
+                    // Compaction and other non-turn model requests, and requests without a readable kind.
+                    ...(relay
+                        ? { modelRequestsUncounted: relay.uncounted, modelRequestsUnlabelled: relay.unlabelled }
+                        : {}),
                     usage: parsed.usage,
                     usageScope: 'session',
                     costUsd: null,

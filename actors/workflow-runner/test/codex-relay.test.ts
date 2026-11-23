@@ -41,13 +41,15 @@ function post(
 ): Promise<{ status: number; headers: IncomingMessage['headers']; body: string }> {
     return new Promise((resolve, reject) => {
         const req = request(`${relay!.url}${path}`, { method: 'POST', headers }, (res) => {
-            let text = '';
+            const chunks: Buffer[] = [];
             res.on('data', (d: Buffer) => {
-                text += d;
+                chunks.push(d);
                 onChunk?.(String(d));
             });
             // 'close' also covers a stream the relay cut off.
-            res.on('close', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }));
+            res.on('close', () =>
+                resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString() }),
+            );
             res.on('error', () => undefined);
         });
         req.on('error', reject);
@@ -215,5 +217,105 @@ describe('Codex model relay', () => {
         await relay.close();
         await inFlight;
         await expect(post('/responses', '{}')).rejects.toThrow(/ECONNREFUSED/);
+    });
+
+    const meta = (kind: string) => ({ 'x-codex-turn-metadata': JSON.stringify({ request_kind: kind, turn_id: 't1' }) });
+
+    it('counts turns and passes compaction through uncounted', async () => {
+        // Codex auto-compaction is a POST /responses ending in response.completed too.
+        const base = await startUpstream((_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.end(sse(call(0)) + sse(completed));
+        });
+        relay = await startModelRelay({ upstream: base, maxCalls: 2 });
+        for (const kind of ['turn', 'compaction', 'turn', 'compaction']) {
+            expect((await post('/responses', '{}', meta(kind))).status).toBe(200);
+        }
+        expect(relay).toMatchObject({ calls: 2, uncounted: 2, unlabelled: 0, refused: false });
+        // The budget is spent by turns only.
+        expect((await post('/responses', '{}', meta('turn'))).status).toBe(400);
+        expect((await post('/responses', '{}', meta('compaction'))).status).toBe(200);
+    });
+
+    it('counts a request without a readable request kind as a turn and records it', async () => {
+        const base = await startUpstream((_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.end(sse(message) + sse(completed));
+        });
+        relay = await startModelRelay({ upstream: base, maxCalls: 5 });
+        await post('/responses', '{}');
+        await post('/responses', '{}', { 'x-codex-turn-metadata': 'not json' });
+        await post('/responses', '{}', { 'x-codex-turn-metadata': '{"turn_id":"t"}' });
+        expect(relay).toMatchObject({ calls: 3, unlabelled: 3, uncounted: 0 });
+    });
+
+    it.each([
+        ['split into 7-byte chunks', '\n', 7],
+        ['CRLF line ends, 7-byte chunks', '\r\n', 7],
+        ['split inside a multi-byte character', '\n', 3],
+    ])('reads the stream %s', async (_name, eol, size) => {
+        const event = (e: object) => `event: x${eol}data: ${JSON.stringify(e)}${eol}${eol}`;
+        const body =
+            event({ type: 'response.created', response: { id: 'r' } }) +
+            event({ type: 'response.output_text.delta', delta: 'žluťoučký kůň' }) +
+            event(call(0)) +
+            event(completed);
+        const base = await startUpstream(async (_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            const bytes = Buffer.from(body);
+            for (let i = 0; i < bytes.length; i += size) {
+                res.write(bytes.subarray(i, i + size));
+                await new Promise((resolve) => setTimeout(resolve, 1));
+            }
+            res.end();
+        });
+        relay = await startModelRelay({ upstream: base, maxCalls: 5 });
+        const reply = await post('/responses', '{}', meta('turn'));
+        expect(reply.body).toBe(body);
+        expect(relay).toMatchObject({ calls: 1, toolCalls: 1 });
+    });
+
+    it('holds a budget slot for a turn still streaming', async () => {
+        let finish: (() => void)[] = [];
+        const base = await startUpstream((_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.write(sse({ type: 'response.created', response: { id: 'r' } }));
+            finish.push(() => res.end(sse(message) + sse(completed)));
+        });
+        relay = await startModelRelay({ upstream: base, maxCalls: 1 });
+        // Two parallel turns with one slot left: the second is refused.
+        const first = post('/responses', '{}', meta('turn'));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const second = await post('/responses', '{}', meta('turn'));
+        expect(second.status).toBe(400);
+        finish.forEach((f) => f());
+        finish = [];
+        expect((await first).status).toBe(200);
+        expect(relay).toMatchObject({ calls: 1, refused: true });
+        expect(seen).toHaveLength(1);
+    });
+
+    it('gives the slot back when a turn fails', async () => {
+        let n = 0;
+        const base = await startUpstream((_req, res) => {
+            if (n++ === 0) {
+                res.writeHead(500);
+                res.end('boom');
+                return;
+            }
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.end(sse(message) + sse(completed));
+        });
+        relay = await startModelRelay({ upstream: base, maxCalls: 1 });
+        expect((await post('/responses', '{}', meta('turn'))).status).toBe(500);
+        expect((await post('/responses', '{}', meta('turn'))).status).toBe(200);
+        expect(relay.calls).toBe(1);
+    });
+
+    it('rejects instead of crashing when it cannot listen', async () => {
+        // TEST-NET-3: not an address of this machine (EADDRNOTAVAIL).
+        await expect(
+            startModelRelay({ upstream: 'http://127.0.0.1:9', maxCalls: 1, host: '203.0.113.1' }),
+        ).rejects.toThrow(/EADDRNOTAVAIL|EINVAL/);
     });
 });
