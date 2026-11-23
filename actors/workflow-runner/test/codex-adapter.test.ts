@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 
 import { codexSkillsRead, parseCodexEvents, unwrapShellCommand } from '../src/adapters/codex-events.js';
 import { codexAuthSecrets, codexShellPath, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
+import { killTrackedChildren } from '../src/adapters/shared.js';
 import { extractFromTools } from '../src/evidence.js';
 
 const mcp = vi.hoisted(() => ({ listTools: vi.fn(), connect: vi.fn(), close: vi.fn() }));
@@ -696,6 +697,20 @@ process.stdin.on('end', () => {
         const result = await runCodex(ctx);
         expect(result.harnessBroke).toBe(true);
         expect(sessionInfra(result).ok).toBe(false);
+    });
+
+    it('registers the session so the Actor abort handler kills it', async () => {
+        ctx.perItemTimeoutSecs = 30;
+        stub('process.stdout.write(fixture); setInterval(() => {}, 1000);');
+        const t0 = Date.now();
+        const session = runCodex(ctx);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(killTrackedChildren()).toBe(1);
+        const result = await session;
+        expect(Date.now() - t0).toBeLessThan(10_000);
+        expect(result.metrics.timedOut).toBe(false);
+        // Settled sessions leave the registry.
+        expect(killTrackedChildren()).toBe(0);
     });
 
     it('handles a missing executable', async () => {
