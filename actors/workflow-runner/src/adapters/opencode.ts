@@ -62,7 +62,10 @@ export const OPENCODE_SKILLS_DIR = join('.config', 'opencode', 'skills');
 /** The proxy key, under a name no Apify tool reads (Claude Code gets it as ANTHROPIC_AUTH_TOKEN). */
 export const LLM_KEY_ENV = 'OPENCODE_EVAL_LLM_KEY';
 
-/** MCP secrets go to the server under neutral names, so the agent's shell gets no `APIFY_TOKEN` from them. */
+/**
+ * MCP secrets go to the server under neutral names. The agent's shell still has them, like the
+ * LLM key, but not under `APIFY_TOKEN`, the name the Apify CLI and SDK read.
+ */
 export const mcpSecretEnv = (name: string): string => `OPENCODE_EVAL_MCP_${name}`;
 
 /**
@@ -237,7 +240,8 @@ export function buildOpenCodeEnv(opts: {
     const { home } = opts;
     return {
         // The surface and the MCP secrets first, so they cannot override the isolation below.
-        // APIFY_TOKEN reaches the agent's shell only when the surface sets it (the api
+        // The run token is in the agent's shell as OPENCODE_EVAL_LLM_KEY (like Claude Code's
+        // ANTHROPIC_AUTH_TOKEN), but under APIFY_TOKEN only when the surface sets it (the api
         // surface does), the same as on Claude Code.
         ...(opts.surface?.env ?? {}),
         ...(opts.extra ?? {}),
@@ -552,6 +556,15 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
                     if (mcpToolCount === 0) mcpFailure = 'MCP server exposed no tools';
                 }
             }
+            // Skill discovery runs in the background after boot. Wait for the injected skills,
+            // so a skills arm never runs as a no-skills arm.
+            for (let i = 0; i < SKILL_WAIT_POLLS && missingSkills(ctx.skillSet, skills).length > 0; i++) {
+                await sleep(250);
+                const listed = (await getJson(server, '/api/skill', AbortSignal.timeout(5_000))) as {
+                    data?: { id?: string }[];
+                };
+                skills = listed.data?.map((s) => String(s.id)) ?? skills;
+            }
         } catch (error) {
             if (server) stopServer(server.child);
             server = null;
@@ -560,6 +573,19 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
                 timedOut,
                 harnessBroke: !timedOut,
             });
+        }
+        const notFound = missingSkills(ctx.skillSet, skills);
+        if (notFound.length > 0 && !mcpFailure) {
+            return earlyResult(
+                ctx,
+                mcp?.name ?? null,
+                `OpenCode did not discover the injected skills: ${notFound.join(', ')}`,
+                {
+                    timedOut: false,
+                    harnessBroke: true,
+                    skillsMissing: true,
+                },
+            );
         }
         if (mcpFailure || Date.now() >= deadline) {
             return earlyResult(ctx, mcp?.name ?? null, redact(mcpFailure ?? 'Session timed out'), {
@@ -576,19 +602,27 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
         // OpenCode also logs a dropped config entry when it reloads the config later.
         const late = configDiagnosticsFromLog(serverLog());
         if (late.length > 0) {
+            // The measurement ran with a config OpenCode changed; keep what happened to the
+            // session (its subtype) and record why it does not count.
             result.harnessBroke = true;
-            result.metrics.subtype = 'error_session';
             result.metrics.isError = true;
-            result.stderr = `OpenCode rejected the session config: ${late.join('; ')}\n${result.stderr}`.slice(
-                0,
-                STDERR_CAP,
-            );
+            result.metrics.configDiagnostics = late;
+            result.stderr = `${result.stderr}\nOpenCode rejected the session config: ${late.join('; ')}`
+                .trim()
+                .slice(0, STDERR_CAP);
         }
         // Skill discovery finishes after the directory boots; by now it has.
         const listed = (await getJson(server, '/api/skill', AbortSignal.timeout(5_000)).catch(() => null)) as {
             data?: { id?: string }[];
         } | null;
         if (listed?.data) skills = listed.data.map((s) => String(s.id));
+        const lost = missingSkills(ctx.skillSet, skills);
+        if (lost.length > 0) {
+            result.harnessBroke = true;
+            result.metrics.isError = true;
+            result.metrics.subtype = 'error_skills';
+            result.stderr = `${result.stderr}\nOpenCode did not list the injected skills: ${lost.join(', ')}`.trim();
+        }
         Object.assign(result.metrics, {
             mcpToolCount: expected ? mcpToolCount : null,
             mcpServers: mcp ? [{ name: mcp.name, status: 'connected' }] : [],
@@ -606,6 +640,41 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
     }
 }
 
+const SKILL_WAIT_POLLS = 20;
+
+/** Injected skills OpenCode has not listed; all of them while the list is unknown. */
+export function missingSkills(skillSet: string[], listed: string[] | null): string[] {
+    return skillSet.filter((name) => !listed?.includes(name));
+}
+
+function sessionIdOf(stdout: string): string | null {
+    return /"sessionID":"(ses_[^"]+)"/.exec(stdout)?.[1] ?? null;
+}
+
+/**
+ * Whether the session is waiting to retry a failed model call: its last
+ * assistant message carries a `retry` state (OpenCode 2.2.6). null when the
+ * server cannot tell, which counts as not retrying.
+ */
+export async function providerRetrying(
+    server: { url: string; auth: string },
+    sessionId: string | null,
+): Promise<boolean | null> {
+    if (!sessionId) return null;
+    try {
+        const res = await fetch(`${server.url}/api/session/${encodeURIComponent(sessionId)}/context`, {
+            headers: { Authorization: server.auth },
+            signal: AbortSignal.timeout(3_000),
+        });
+        if (!res.ok) return null;
+        const body = (await res.json()) as { data?: { type?: string; retry?: unknown }[] };
+        const last = body.data?.findLast((m) => m.type === 'assistant');
+        return Boolean(last && last.retry != null);
+    } catch {
+        return null;
+    }
+}
+
 function readFileSafe(path: string): string {
     try {
         return readFileSync(path, 'utf8');
@@ -618,7 +687,7 @@ function earlyResult(
     ctx: OpenCodeContext,
     mcpName: string | null,
     message: string,
-    opts: { timedOut: boolean; harnessBroke: boolean; mcpMissing?: boolean },
+    opts: { timedOut: boolean; harnessBroke: boolean; mcpMissing?: boolean; skillsMissing?: boolean },
 ): AdapterResult {
     return {
         output: '',
@@ -632,13 +701,15 @@ function earlyResult(
             harness: ctx.harness.kind,
             model: ctx.harness.model,
             exitCode: null,
-            subtype: opts.mcpMissing
-                ? 'error_mcp_startup'
-                : opts.timedOut
-                  ? 'error_timeout'
-                  : opts.harnessBroke
-                    ? 'error_session'
-                    : 'success',
+            subtype: opts.skillsMissing
+                ? 'error_skills'
+                : opts.mcpMissing
+                  ? 'error_mcp_startup'
+                  : opts.timedOut
+                    ? 'error_timeout'
+                    : opts.harnessBroke
+                      ? 'error_session'
+                      : 'success',
             isError: true,
             timedOut: opts.timedOut,
             stdoutTruncated: false,
@@ -686,10 +757,17 @@ function spawnRun(
         let stdoutTruncated = false;
         let settled = false;
         let grace: NodeJS.Timeout | undefined;
+        let retryingAtKill: boolean | null = null;
         const killer = setTimeout(() => {
             timedOut = true;
-            killProcessTree(child);
-            killProcessTree(server.child);
+            // Ask the server what the session is doing before killing it: OpenCode prints a
+            // tool call only when the tool finishes, so the output alone cannot tell a
+            // provider that is still failing from an early retry followed by a long tool.
+            void providerRetrying(server, sessionIdOf(stdout)).then((retrying) => {
+                retryingAtKill = retrying;
+                killProcessTree(child);
+                killProcessTree(server.child);
+            });
         }, timeoutMs);
         const settle = (exitCode: number | null, spawnError?: string) => {
             if (settled) return;
@@ -709,8 +787,8 @@ function spawnRun(
             // OpenCode runs one more step without tools after the limit and stops itself.
             const turnLimit = parsed.reachedStepLimit;
             // OpenCode retries a failing provider until the session is killed. A timeout
-            // with retries after the last finished step is the provider, not the agent.
-            const providerStuck = timedOut && parsed.retryTail > 0;
+            // while the server reports the session in a retry is the provider, not the agent.
+            const providerStuck = timedOut && retryingAtKill === true;
             const harnessBroke =
                 Boolean(spawnError) ||
                 providerStuck ||
@@ -753,6 +831,7 @@ function spawnRun(
                     toolCalls: parsed.conversation.filter((c) => c.type === 'tool_call').length,
                     skillsUsed: parsed.skillsUsed,
                     providerRetries: parsed.retries.length,
+                    ...(timedOut ? { providerRetryingAtKill: retryingAtKill } : {}),
                     ...(parsed.sessionId ? { openCodeSessionId: parsed.sessionId } : {}),
                 },
             });

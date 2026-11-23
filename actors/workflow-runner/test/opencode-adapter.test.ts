@@ -314,7 +314,7 @@ describe('OpenCode session config', () => {
         );
     });
 
-    it('points every config, data and temp location into the session and keeps APIFY_TOKEN out', () => {
+    it('points every config, data and temp location into the session and keeps the token out of APIFY_TOKEN', () => {
         vi.stubEnv('UNRELATED_SECRET', 'must-not-inherit');
         const env = buildOpenCodeEnv({ home: '/s/home', tmp: '/s/tmp', apifyToken: 'tok', password: 'pw' });
         expect(env).toMatchObject({
@@ -399,7 +399,17 @@ describe('runOpenCode process handling', () => {
      * server log; `run` records what it got and prints `runOutput`.
      */
     function stub(
-        opts: { mcpStatus?: string; runOutput?: string; runBody?: string; logLines?: string[]; lateLog?: string } = {},
+        opts: {
+            mcpStatus?: string;
+            runOutput?: string;
+            runBody?: string;
+            logLines?: string[];
+            lateLog?: string;
+            /** What GET /api/session/<id>/context answers; 404 without it. */
+            context?: unknown;
+            /** OpenCode never lists the injected skills. */
+            hideSkills?: boolean;
+        } = {},
     ): void {
         const script = `#!${process.execPath}
 const fs = require('node:fs');
@@ -420,7 +430,8 @@ if (cmd === 'serve') {
         if (req.headers.authorization !== auth) { res.writeHead(401).end(); return; }
         res.setHeader('content-type', 'application/json');
         if (req.url === '/api/mcp') res.end(JSON.stringify({ data: [{ name: 'apify', status: { status: ${JSON.stringify(opts.mcpStatus ?? 'connected')}, error: 'down "retryAfter":0' } }] }));
-        else if (req.url === '/api/skill') res.end(JSON.stringify({ data: [{ id: 'opencode' }, ...listSkills().map((id) => ({ id }))] }));
+        else if (req.url === '/api/skill') res.end(JSON.stringify({ data: [{ id: 'opencode' }, ...(${Boolean(opts.hideSkills)} ? [] : listSkills()).map((id) => ({ id }))] }));
+        else if (/^\\/api\\/session\\/[^/]+\\/context$/.test(req.url) && ${JSON.stringify(opts.context ?? null)} !== null) res.end(JSON.stringify(${JSON.stringify(opts.context ?? null)}));
         else res.writeHead(404).end('{}');
     });
     server.listen(0, '127.0.0.1', () => process.stdout.write(JSON.stringify({ url: 'http://127.0.0.1:' + server.address().port }) + '\\n'));
@@ -483,7 +494,7 @@ if (cmd === 'serve') {
         expect(existsSync(captured.cwd)).toBe(false);
     });
 
-    it('gives the agent shell no APIFY_TOKEN on the mcp surface, also with Bash', async () => {
+    it('does not expose the token as APIFY_TOKEN on the mcp surface, also with Bash', async () => {
         stub();
         await runOpenCode({ ...ctx, item: { metadata: { tools: ['call-actor'], allowBash: true } } });
         const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
@@ -572,7 +583,37 @@ if (cmd === 'serve') {
         const result = await runOpenCode(ctx);
         expect(result.harnessBroke).toBe(true);
         expect(result.stderr).toContain('$.agents.build');
+        expect(result.metrics).toMatchObject({
+            subtype: 'success',
+            configDiagnostics: ['$.agents.build: skipped malformed recognized value'],
+        });
     });
+
+    it('keeps the timeout subtype when the late config check also fires', async () => {
+        stub({
+            lateLog:
+                'level=WARN message="configuration normalization diagnostic" path=$.agents.build kind=invalid action="skipped malformed recognized value"',
+            runBody: `process.stdout.write(${JSON.stringify(fixture('call-actor'))}); setInterval(() => {}, 1000);`,
+        });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.metrics).toMatchObject({ subtype: 'error_timeout', timedOut: true });
+        expect(result.metrics.configDiagnostics).toEqual(['$.agents.build: skipped malformed recognized value']);
+        expect(result.harnessBroke).toBe(true);
+    });
+
+    it('never runs a skills arm without its skills', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'opencode-skills-'));
+        mkdirSync(join(root, 'apify-ultimate-scraper'));
+        writeFileSync(join(root, 'apify-ultimate-scraper', 'SKILL.md'), '---\nname: x\ndescription: y\n---\n');
+        stub({ hideSkills: true });
+        const result = await runOpenCode({ ...ctx, skillSet: ['apify-ultimate-scraper'], skillsRoot: root });
+        expect(result.harnessBroke).toBe(true);
+        expect(result.metrics).toMatchObject({ subtype: 'error_skills' });
+        expect(result.stderr).toContain('apify-ultimate-scraper');
+        // Refused before the prompt was sent.
+        expect(existsSync(join(dir, 'capture.json'))).toBe(false);
+        rmSync(root, { recursive: true, force: true });
+    }, 30_000);
 
     it('scores a step-limit session as max turns, not as broken', async () => {
         stub({ runOutput: fixture('max-steps') });
@@ -592,11 +633,48 @@ if (cmd === 'serve') {
     });
 
     it('treats a timeout while the provider keeps failing as broken, not as an agent result', async () => {
-        stub({ runBody: `process.stdout.write(${JSON.stringify(fixture('retry'))}); setInterval(() => {}, 1000);` });
+        stub({
+            runBody: `process.stdout.write(${JSON.stringify(fixture('retry'))}); setInterval(() => {}, 1000);`,
+            // The session context of 2.2.6 while it waits for the next attempt.
+            context: { data: [{ type: 'user' }, { type: 'assistant', content: [], retry: { attempt: 4 } }] },
+        });
         const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
         expect(result.harnessBroke).toBe(true);
-        expect(result.metrics).toMatchObject({ timedOut: true, subtype: 'error_provider' });
+        expect(result.metrics).toMatchObject({
+            timedOut: true,
+            subtype: 'error_provider',
+            providerRetryingAtKill: true,
+        });
         expect(result.stderr).toContain('retrying: ECONNREFUSED');
+    });
+
+    it('scores an early retry followed by a long tool as a timeout', async () => {
+        // A retry at the start of the step, then the provider answered and a tool ran
+        // past the timeout: OpenCode prints the tool only when it finishes.
+        stub({
+            runBody: `process.stdout.write(${JSON.stringify(fixture('retry').split('\n').slice(0, 2).join('\n') + '\n')}); setInterval(() => {}, 1000);`,
+            context: {
+                data: [
+                    { type: 'user' },
+                    { type: 'assistant', content: [{ type: 'tool', name: 'shell', state: { status: 'running' } }] },
+                ],
+            },
+        });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({
+            timedOut: true,
+            subtype: 'error_timeout',
+            providerRetries: 1,
+            providerRetryingAtKill: false,
+        });
+    });
+
+    it('scores a timeout as a timeout when the server cannot say whether it is retrying', async () => {
+        stub({ runBody: `process.stdout.write(${JSON.stringify(fixture('retry'))}); setInterval(() => {}, 1000);` });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({ subtype: 'error_timeout', providerRetryingAtKill: null });
     });
 
     it('scores a plain timeout as a timeout and keeps the partial session', async () => {
@@ -628,8 +706,9 @@ if (cmd === 'serve') {
 });
 
 /**
- * Against the real CLI: config and skills planted in a directory above the
- * session must not reach the agent. Runs when the pinned `opencode` is on PATH.
+ * Against the real CLI, with a scripted chat-completions model. They run when
+ * the pinned `opencode` is on PATH; with REQUIRE_REAL_OPENCODE=1 (CI) a missing
+ * or different CLI fails instead of skipping.
  */
 const PINNED_OPENCODE = '2.2.6';
 const realVersion = (() => {
@@ -639,13 +718,91 @@ const realVersion = (() => {
         return '';
     }
 })();
+const haveRealCli = realVersion.includes(PINNED_OPENCODE);
 
-describe.skipIf(!realVersion.includes(PINNED_OPENCODE))('OpenCode isolation (real CLI)', () => {
+describe.runIf(process.env.REQUIRE_REAL_OPENCODE === '1' && !haveRealCli)('OpenCode real CLI (required)', () => {
+    it(`has opencode ${PINNED_OPENCODE} on PATH`, () => {
+        expect.fail(`REQUIRE_REAL_OPENCODE=1 but \`opencode --version\` printed "${realVersion}"`);
+    });
+});
+
+type Step = { text: string } | { tool: string; args: (body: string) => unknown };
+
+describe.skipIf(!haveRealCli)('OpenCode isolation and skills (real CLI)', () => {
     let parent: string;
     let model: Server;
-    const requests: { tools: string[]; system: string }[] = [];
+    let script: Step[] = [];
+    let requests: { tools: string[]; body: string }[] = [];
     beforeEach(async () => {
         parent = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-parent-')));
+        requests = [];
+        model = createServer((req, res) => {
+            let body = '';
+            req.on('data', (c) => (body += c));
+            req.on('end', () => {
+                const parsed = JSON.parse(body) as { tools?: { function: { name: string } }[] };
+                if (!parsed.tools?.length) {
+                    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+                    return;
+                }
+                requests.push({ tools: parsed.tools.map((t) => t.function.name), body });
+                const step = script[Math.min(requests.length - 1, script.length - 1)];
+                res.writeHead(200, { 'content-type': 'text/event-stream' });
+                const chunk = (delta: unknown, finish: string | null) =>
+                    res.write(
+                        `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
+                    );
+                if ('tool' in step) {
+                    const args = JSON.stringify(step.args(body));
+                    chunk(
+                        {
+                            role: 'assistant',
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    id: `call_${requests.length}`,
+                                    type: 'function',
+                                    function: { name: step.tool, arguments: args },
+                                },
+                            ],
+                        },
+                        null,
+                    );
+                    chunk({}, 'tool_calls');
+                } else {
+                    chunk({ role: 'assistant', content: step.text }, null);
+                    chunk({}, 'stop');
+                }
+                res.end('data: [DONE]\n\n');
+            });
+        });
+        await new Promise<void>((resolve) => model.listen(0, '127.0.0.1', resolve));
+        const port = (model.address() as { port: number }).port;
+        vi.stubEnv('OPENCODE_EVAL_BASE_URL', `http://127.0.0.1:${port}/v1`);
+        vi.stubEnv('APIFY_IS_AT_HOME', '');
+        // The session directory is created under `parent`.
+        vi.stubEnv('TMPDIR', parent);
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        model.close();
+        rmSync(parent, { recursive: true, force: true });
+    });
+
+    const session = (skillSet: string[], skillsRoot: string) =>
+        runOpenCode({
+            prompt: 'hello',
+            item: { metadata: { maxTurns: 4 } },
+            harness: { kind: 'opencode', model: 'x/y', maxTurns: 4 },
+            mcpUrl: 'https://mcp.invalid',
+            apifyToken: 'test-token-not-a-secret',
+            mcpEnv: {},
+            skillSet,
+            skillsRoot,
+            perItemTimeoutSecs: 60,
+        });
+
+    it('ignores config, skills and instructions in the directories above the session', async () => {
         const skill = (base: string, name: string) => {
             mkdirSync(join(parent, base, name), { recursive: true });
             writeFileSync(
@@ -664,59 +821,42 @@ describe.skipIf(!realVersion.includes(PINNED_OPENCODE))('OpenCode isolation (rea
                 permissions: [{ action: 'websearch', resource: '*', effect: 'allow' }],
             }),
         );
-        model = createServer((req, res) => {
-            let body = '';
-            req.on('data', (c) => (body += c));
-            req.on('end', () => {
-                const parsed = JSON.parse(body) as {
-                    tools?: { function: { name: string } }[];
-                    messages: { role: string; content: string }[];
-                };
-                if (parsed.tools?.length)
-                    requests.push({
-                        tools: parsed.tools.map((t) => t.function.name),
-                        system: JSON.stringify(parsed.messages),
-                    });
-                res.writeHead(200, { 'content-type': 'text/event-stream' });
-                const chunk = (delta: unknown, finish: string | null) =>
-                    res.write(
-                        `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
-                    );
-                chunk({ role: 'assistant', content: 'ok' }, null);
-                chunk({}, 'stop');
-                res.end('data: [DONE]\n\n');
-            });
-        });
-        await new Promise<void>((resolve) => model.listen(0, '127.0.0.1', resolve));
-        const port = (model.address() as { port: number }).port;
-        vi.stubEnv('OPENCODE_EVAL_BASE_URL', `http://127.0.0.1:${port}/v1`);
-        vi.stubEnv('APIFY_IS_AT_HOME', '');
-        // The session directory is created under the planted directory.
-        vi.stubEnv('TMPDIR', parent);
-    });
-    afterEach(() => {
-        vi.unstubAllEnvs();
-        model.close();
-        rmSync(parent, { recursive: true, force: true });
-    });
-
-    it('ignores config, skills and instructions in the directories above the session', async () => {
-        const result = await runOpenCode({
-            prompt: 'hello',
-            item: { metadata: { maxTurns: 2 } },
-            harness: { kind: 'opencode', model: 'x/y', maxTurns: 2 },
-            mcpUrl: 'https://mcp.invalid',
-            apifyToken: 'test-token-not-a-secret',
-            mcpEnv: {},
-            skillSet: [],
-            skillsRoot: '/nonexistent',
-            perItemTimeoutSecs: 60,
-        });
+        script = [{ text: 'ok' }];
+        const result = await session([], '/nonexistent');
         expect(result.harnessBroke).toBe(false);
         expect(result.output).toBe('ok');
         expect(requests).toHaveLength(1);
         expect(requests[0].tools.sort()).toEqual(['glob', 'grep', 'read', 'skill']);
-        expect(requests[0].system).not.toContain('planted');
-        expect(requests[0].system).not.toContain('PLANTED-INSTRUCTION');
+        expect(requests[0].body).not.toContain('planted');
+        expect(requests[0].body).not.toContain('PLANTED-INSTRUCTION');
+    }, 90_000);
+
+    it('discovers an injected skill and lets the agent read its reference file', async () => {
+        const skillsRoot = join(parent, 'skills-source');
+        mkdirSync(join(skillsRoot, 'project-codeword'), { recursive: true });
+        writeFileSync(
+            join(skillsRoot, 'project-codeword', 'SKILL.md'),
+            '---\nname: project-codeword\ndescription: Use for the secret project codeword.\n---\nThe codeword is TANGERINE-PELICAN-7731.\n',
+        );
+        writeFileSync(join(skillsRoot, 'project-codeword', 'reference.md'), 'Second codeword: MANGO-OTTER-4410\n');
+        script = [
+            { tool: 'skill', args: () => ({ id: 'project-codeword' }) },
+            {
+                tool: 'read',
+                args: (body) => ({ path: /<file>([^<]+reference\.md)<\/file>/.exec(body.replaceAll('\\/', '/'))?.[1] }),
+            },
+            { text: 'done' },
+        ];
+        const result = await session(['project-codeword'], skillsRoot);
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({ skillsLoaded: ['project-codeword'], skillsUsed: ['project-codeword'] });
+        // Listed in the system prompt from the first request on.
+        expect(requests[0].body).toContain('project-codeword');
+        const results = result.timeline.filter((e) => e.kind === 'tool_result');
+        expect(results[0]).toMatchObject({ isError: false });
+        expect(results[0].kind === 'tool_result' && results[0].content).toContain('TANGERINE-PELICAN-7731');
+        expect(results[1]).toMatchObject({ isError: false });
+        expect(results[1].kind === 'tool_result' && results[1].content).toContain('MANGO-OTTER-4410');
+        expect(result.output).toBe('done');
     }, 90_000);
 });
