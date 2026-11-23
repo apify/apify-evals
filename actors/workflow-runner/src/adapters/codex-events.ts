@@ -95,25 +95,36 @@ export function unwrapShellCommand(command: string): string {
 
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** The first non-empty line after a SKILL.md's frontmatter: proof that its body was shown. */
-export function skillBodyMarker(skillMd: string): string | null {
+/**
+ * The first two non-empty lines after a SKILL.md's frontmatter (one when the
+ * body has one): proof that its body was shown, not only a generic heading.
+ */
+export function skillBodyMarker(skillMd: string): string[] {
     const lines = skillMd.split(/\r?\n/);
     let start = 0;
     if (lines[0]?.trim() === '---') {
         const close = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
         start = close < 0 ? lines.length : close + 1;
     }
-    return (
-        lines
-            .slice(start)
-            .find((line) => line.trim() !== '')
-            ?.trim() ?? null
-    );
+    return lines
+        .slice(start)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 2);
 }
 
-/** Output lines without a line-number prefix (`nl -ba`, `cat -n`, `grep -n`). */
-function outputLines(output: string): string[] {
-    return output.split(/\r?\n/).map((line) => line.replace(/^\s*\d+(?:\t|:|\s+\|?\s?)/, '').trim());
+/**
+ * Every output line as printed and without a line-number prefix (`nl -ba`,
+ * `cat -n`, `grep -n`), so a body line that itself starts with a number
+ * (`2026 edition`) matches under plain `cat` too.
+ */
+function outputLines(output: string): Set<string> {
+    const out = new Set<string>();
+    for (const line of output.split(/\r?\n/)) {
+        out.add(line.trim());
+        out.add(line.replace(/^\s*\d+(?:\t|:|\s+\|?\s?)/, '').trim());
+    }
+    return out;
 }
 
 /**
@@ -121,18 +132,18 @@ function outputLines(output: string): string[] {
  * it lists skills in the prompt by path and the model reads the file with its
  * shell. A skill counts when a command that succeeded names its `SKILL.md`
  * (`.../<name>/SKILL.md`, or `cd .../<name> && cat SKILL.md`) and its output
- * shows the body: the first non-empty line after the frontmatter of the file
- * installed in `skillsDir`, also behind a line number. `ls`, `test -f`, `wc`,
+ * shows the body: the first two non-empty lines after the frontmatter of the
+ * file installed in `skillsDir`, as printed or behind a line number. `ls`, `test -f`, `wc`,
  * `head -3` or `grep ^name:` (frontmatter only) and a failed `cat` do not
  * count. MCP calls (a URL that names a SKILL.md) do not count either.
  */
 export function codexSkillsRead(ndjson: string, skillSet: string[], skillsDir: string): string[] {
     if (skillSet.length === 0) return [];
-    const markers = new Map<string, string>();
+    const markers = new Map<string, string[]>();
     for (const name of skillSet) {
         try {
             const marker = skillBodyMarker(readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf8'));
-            if (marker) markers.set(name, marker);
+            if (marker.length > 0) markers.set(name, marker);
         } catch {
             /* not installed: never read */
         }
@@ -150,7 +161,7 @@ export function codexSkillsRead(ndjson: string, skillSet: string[], skillsDir: s
             const names =
                 new RegExp(`(?:^|[\\s/'"=])${n}/SKILL\\.md\\b`).test(command) ||
                 (new RegExp(`(?:^|[\\s/'"=])${n}/?(?:[\\s'";&|)]|$)`).test(command) && /\bSKILL\.md\b/.test(command));
-            if (names && output.includes(marker)) read.add(name);
+            if (names && marker.every((bodyLine) => output.has(bodyLine))) read.add(name);
         }
     }
     return [...read].sort();

@@ -265,6 +265,11 @@ describe('Codex event parser', () => {
             });
         // The installed skills, as the session has them on disk.
         const installed = mkdtempSync(join(tmpdir(), 'codex-installed-'));
+        mkdirSync(join(installed, 'dated'));
+        writeFileSync(
+            join(installed, 'dated', 'SKILL.md'),
+            '---\nname: dated\ndescription: d\n---\n2026 edition of the guide\n\n## Overview\nStep one\n',
+        );
         for (const name of ['alpha', 'bar', 'foo-bar', 'beta']) {
             mkdirSync(join(installed, name));
             // beta: the file of the recorded session below.
@@ -335,6 +340,23 @@ describe('Codex event parser', () => {
             // codex 0.162.1: `nl -ba ~/.agents/skills/beta/SKILL.md` among parallel commands.
             const real = readFileSync(new URL('./fixtures/codex-shell-real.jsonl', import.meta.url), 'utf8');
             expect(read(real, ['beta'])).toEqual(['beta']);
+        });
+
+        it('reads a body that starts with a number, printed with or without line numbers', () => {
+            const text = '---\nname: dated\ndescription: d\n---\n2026 edition of the guide\n\n## Overview\nStep one\n';
+            const numbered = text
+                .split('\n')
+                .map((line, i) => `${String(i + 1).padStart(6)}\t${line}`)
+                .join('\n');
+            expect(read(run('cat ~/.agents/skills/dated/SKILL.md', text), ['dated'])).toEqual(['dated']);
+            expect(read(run('nl -ba ~/.agents/skills/dated/SKILL.md', numbered), ['dated'])).toEqual(['dated']);
+        });
+
+        it('needs the first two body lines, not one generic heading', () => {
+            expect(read(run('cat ~/.agents/skills/dated/SKILL.md', '## Overview\n'), ['dated'])).toEqual([]);
+            expect(read(run('cat ~/.agents/skills/dated/SKILL.md', '2026 edition of the guide\n'), ['dated'])).toEqual(
+                [],
+            );
         });
 
         it('reads nothing without injected skills', () => {
