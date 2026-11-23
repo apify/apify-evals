@@ -35,18 +35,25 @@ RUN npm install --global @openai/codex@0.162.1 --audit=false \
     && codex --version
 
 # OpenCode 2.x is published as @opencode/cli (the opencode-ai package is the 1.x line).
-# Its postinstall links the binary of a platform package. In this image npm did not
-# install the matching optional dependency, so the postinstall fell back to its own
-# nested registry install (about 3 minutes). Name the musl package for this CPU
-# explicitly so the install is the same on every build. On an x64 CPU without AVX2
-# the postinstall still fetches the -baseline-musl build itself.
+# The package is a launcher; its postinstall links the binary of a platform package
+# and picks it on the build host. Done by hand here, so every build gets the same one:
+# - The musl build named for this CPU. npm on this image does not pick it: it puts the
+#   glibc build (about 250 MB, unusable here) under cli/node_modules, even with
+#   --omit=optional, and the postinstall then downloads the musl one itself.
+# - On x64 the baseline build. The default x64 build needs AVX2, and the postinstall
+#   checks AVX2 on the build host, not on the host that later runs the image, where a
+#   CPU without AVX2 would crash it with SIGILL. Baseline runs on every x64 CPU.
+# --ignore-scripts skips the postinstall; the link and the cleanup replace it.
 RUN case "$(uname -m)" in \
-        x86_64) platform=linux-x64-musl ;; \
+        x86_64) platform=linux-x64-baseline-musl ;; \
         aarch64) platform=linux-arm64-musl ;; \
         *) echo "no OpenCode build for $(uname -m)" && exit 1 ;; \
     esac \
-    && npm install --global --allow-scripts=@opencode/cli --audit=false \
+    && npm install --global --omit=optional --ignore-scripts --audit=false \
         @opencode/cli@2.2.6 "@opencode/cli-${platform}@2.2.6" \
+    && root="$(npm root -g)" \
+    && ln -f "$root/@opencode/cli-${platform}/bin/opencode" "$root/@opencode/cli/bin/opencode.exe" \
+    && rm -rf "$root/@opencode/cli/node_modules" \
     && opencode --version
 
 COPY package*.json ./
