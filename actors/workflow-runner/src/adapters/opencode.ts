@@ -8,11 +8,15 @@
  * MCP server reports `connected`: `opencode run --standalone` waits at most 2
  * seconds for MCP and then sends the first model call without the tools.
  *
- * Isolation: HOME, the XDG directories, OPENCODE_CONFIG and
- * OPENCODE_CONFIG_DIR all point into the session directory, so no global
- * config, skills, plugins, MCP servers or credentials of the machine reach the
- * agent. Built-in skills and tools that ship inside the binary stay as they
- * are, except the tools the permission list below denies.
+ * Isolation: HOME, TMPDIR, the XDG directories, OPENCODE_CONFIG and
+ * OPENCODE_CONFIG_DIR all point into the session directory, and project
+ * config discovery is off (it walks every ancestor directory up to `/` for
+ * opencode.json, .opencode, .agents, .claude and AGENTS.md). So no config,
+ * skills, plugins, MCP servers or credentials of the machine reach the agent;
+ * only the managed config paths OpenCode always reads (/etc/opencode on
+ * Linux, /Library/Application Support/opencode and the MDM preferences on
+ * macOS) cannot be turned off. Built-in skills and tools that ship inside the
+ * binary stay as they are, except the tools the permission list denies.
  */
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -48,8 +52,18 @@ export const OPENCODE_PROVIDER = {
     baseURL: 'https://openrouter.apify.actor/api/v1',
 } as const;
 
-/** Where OpenCode discovers project skills, relative to its working directory. */
-export const OPENCODE_SKILLS_DIR = join('.opencode', 'skills');
+/**
+ * Where the injected skills go, relative to the session home: the skills
+ * directory of OPENCODE_CONFIG_DIR. Project skills (`<cwd>/.opencode/skills`)
+ * are not read, because project config discovery is off.
+ */
+export const OPENCODE_SKILLS_DIR = join('.config', 'opencode', 'skills');
+
+/** The proxy key, under a name no Apify tool reads (Claude Code gets it as ANTHROPIC_AUTH_TOKEN). */
+export const LLM_KEY_ENV = 'OPENCODE_EVAL_LLM_KEY';
+
+/** MCP secrets go to the server under neutral names, so the agent's shell gets no `APIFY_TOKEN` from them. */
+export const mcpSecretEnv = (name: string): string => `OPENCODE_EVAL_MCP_${name}`;
 
 /**
  * Built-in tools every session gets, in both arms of a skills comparison: the
@@ -90,11 +104,11 @@ export function openCodeSteps(meta: DatasetItemMetadata, harness: HarnessConfig)
 
 const PLACEHOLDER = /\$\{([A-Z][A-Z0-9_]*)\}/g;
 
-/** `${VAR}` placeholders become OpenCode `{env:VAR}` references, so the config file holds no secret. */
+/** `${VAR}` placeholders become OpenCode `{env:...}` references, so the config file holds no secret. */
 function envRefs(value: string, vars: Set<string>): string {
     return value.replace(PLACEHOLDER, (_, name: string) => {
         vars.add(name);
-        return `{env:${name}}`;
+        return `{env:${mcpSecretEnv(name)}}`;
     });
 }
 
@@ -103,7 +117,7 @@ export interface OpenCodeMcp {
     config: Record<string, unknown>;
     /** Permission actions that let the agent call the server's tools. */
     actions: string[];
-    /** Environment variables the config references. */
+    /** Runner variables the config needs (each passed as mcpSecretEnv(name)). */
     envVars: string[];
 }
 
@@ -158,11 +172,17 @@ export function openCodePermissions(opts: {
     mcpActions: string[];
     bash: boolean;
     webFetch: boolean;
+    /** The injected skills' directory, outside the working directory; readable in every arm. */
+    skillsDir?: string;
 }): PermissionRule[] {
     const allow = (action: string): PermissionRule => ({ action, resource: '*', effect: 'allow' });
     return [
         { action: '*', resource: '*', effect: 'deny' },
         ...OPENCODE_BASE_TOOLS.map(allow),
+        // Skill reference files live outside the working directory.
+        ...(opts.skillsDir
+            ? [{ action: 'external_directory', resource: `${opts.skillsDir}/*`, effect: 'allow' } as PermissionRule]
+            : []),
         // The shell can reach any path anyway; without this, paths outside the
         // working directory (curl -o /tmp/...) would be refused.
         ...(opts.bash ? [allow('shell'), allow('external_directory')] : []),
@@ -178,6 +198,7 @@ export function buildOpenCodeConfig(opts: {
     mcp: OpenCodeMcp | null;
     bash: boolean;
     webFetch: boolean;
+    skillsDir?: string;
 }): Record<string, unknown> {
     return {
         $schema: 'https://opencode.ai/config.json',
@@ -189,7 +210,7 @@ export function buildOpenCodeConfig(opts: {
             [OPENCODE_PROVIDER.id]: {
                 npm: OPENCODE_PROVIDER.npm,
                 name: OPENCODE_PROVIDER.name,
-                options: { baseURL: opts.baseURL, apiKey: '{env:APIFY_TOKEN}' },
+                options: { baseURL: opts.baseURL, apiKey: `{env:${LLM_KEY_ENV}}` },
                 models: { [opts.model]: { name: opts.model } },
             },
         },
@@ -198,6 +219,7 @@ export function buildOpenCodeConfig(opts: {
             mcpActions: opts.mcp?.actions ?? [],
             bash: opts.bash,
             webFetch: opts.webFetch,
+            skillsDir: opts.skillsDir,
         }),
         agents: { build: { steps: opts.steps } },
     };
@@ -205,6 +227,8 @@ export function buildOpenCodeConfig(opts: {
 
 export function buildOpenCodeEnv(opts: {
     home: string;
+    /** The session's own temp directory (OpenCode steers the agent to $TMPDIR/opencode). */
+    tmp: string;
     apifyToken: string;
     password: string;
     surface?: ResolvedSurface;
@@ -213,10 +237,12 @@ export function buildOpenCodeEnv(opts: {
     const { home } = opts;
     return {
         // The surface and the MCP secrets first, so they cannot override the isolation below.
+        // APIFY_TOKEN reaches the agent's shell only when the surface sets it (the api
+        // surface does), the same as on Claude Code.
         ...(opts.surface?.env ?? {}),
         ...(opts.extra ?? {}),
         PATH: process.env.PATH,
-        TMPDIR: process.env.TMPDIR,
+        TMPDIR: opts.tmp,
         HOME: home,
         XDG_CONFIG_HOME: join(home, '.config'),
         XDG_DATA_HOME: join(home, '.local', 'share'),
@@ -229,8 +255,11 @@ export function buildOpenCodeEnv(opts: {
         OPENCODE_DISABLE_MODELS_FETCH: '1',
         OPENCODE_DISABLE_FREE_MODELS: '1',
         OPENCODE_DISABLE_CLAUDE_CODE: '1',
+        // No opencode.json, .opencode, .agents, .claude or AGENTS.md from the working
+        // directory or any directory above it.
+        OPENCODE_DISABLE_PROJECT_CONFIG: '1',
         OPENCODE_PASSWORD: opts.password,
-        APIFY_TOKEN: opts.apifyToken,
+        [LLM_KEY_ENV]: opts.apifyToken,
     };
 }
 
@@ -274,6 +303,50 @@ export function configDiagnosticsFromLog(logText: string): string[] {
         out.push(`${path}: ${action}`);
     }
     return [...new Set(out)];
+}
+
+/**
+ * The proxy, or OPENCODE_EVAL_BASE_URL for a local run against another
+ * OpenAI-compatible endpoint (a mock model). On the Apify platform the
+ * override is ignored, so a stray variable cannot send a benchmark elsewhere.
+ */
+export function providerBaseUrl(env: Record<string, string | undefined> = process.env): string {
+    const override = env.OPENCODE_EVAL_BASE_URL;
+    if (!override) return OPENCODE_PROVIDER.baseURL;
+    if (env.APIFY_IS_AT_HOME === '1') {
+        log.warningOnce('OPENCODE_EVAL_BASE_URL is ignored on the Apify platform');
+        return OPENCODE_PROVIDER.baseURL;
+    }
+    return override;
+}
+
+/** Peak resident memory of the session's processes together (Linux only, like Claude Code's metric). */
+class RssSampler {
+    private readonly pids = new Set<number>();
+    private peak = 0;
+    private readonly timer: NodeJS.Timeout | null =
+        process.platform === 'linux' ? setInterval(() => this.sample(), 1000) : null;
+
+    add(pid: number | undefined): void {
+        if (pid) this.pids.add(pid);
+    }
+
+    private sample(): void {
+        let total = 0;
+        for (const pid of this.pids) {
+            const m = readFileSafe(`/proc/${pid}/status`).match(/VmRSS:\s+(\d+) kB/);
+            if (m) total += Number(m[1]);
+        }
+        this.peak = Math.max(this.peak, Math.round(total / 1024));
+    }
+
+    stop(): void {
+        if (this.timer) clearInterval(this.timer);
+    }
+
+    peakMb(): number | null {
+        return this.peak || null;
+    }
 }
 
 function restartDelayMs(failure: string): number {
@@ -412,10 +485,12 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'eval-opencode-')));
     const home = join(root, 'home');
     const work = join(root, 'work');
+    const tmp = join(root, 'tmp');
     mkdirSync(home);
     mkdirSync(work);
+    mkdirSync(tmp);
     const password = randomBytes(24).toString('base64url');
-    const mcpSecrets = Object.fromEntries((mcp?.envVars ?? []).map((name) => [name, ctx.mcpEnv[name]]));
+    const mcpSecrets = Object.fromEntries((mcp?.envVars ?? []).map((name) => [mcpSecretEnv(name), ctx.mcpEnv[name]]));
     const secrets = [
         ctx.apifyToken,
         password,
@@ -425,19 +500,21 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
     const redact = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, '[REDACTED]'), text);
     let server: Server | null = null;
     try {
-        installSkills(work, ctx.skillSet, ctx.skillsRoot, OPENCODE_SKILLS_DIR);
+        installSkills(home, ctx.skillSet, ctx.skillsRoot, OPENCODE_SKILLS_DIR);
         if (ctx.runMarker) writeFileSync(join(home, '.curlrc'), curlrc(ctx.runMarker));
         const config = buildOpenCodeConfig({
             model: ctx.harness.model,
-            baseURL: process.env.OPENCODE_EVAL_BASE_URL || OPENCODE_PROVIDER.baseURL,
+            baseURL: providerBaseUrl(),
             steps: openCodeSteps(meta, ctx.harness),
             mcp,
             bash: Boolean(meta.allowBash),
+            skillsDir: join(home, OPENCODE_SKILLS_DIR),
             webFetch: Boolean(ctx.surface?.spec.webFetch),
         });
         writeFileSync(join(home, 'opencode.json'), JSON.stringify(config, null, 2), { mode: 0o600 });
         const env = buildOpenCodeEnv({
             home,
+            tmp,
             apifyToken: ctx.apifyToken,
             password,
             surface: ctx.surface,
@@ -492,7 +569,21 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
             });
         }
 
-        const result = await spawnRun(ctx, server, env, work, remaining(), redact, mcp?.name ?? null);
+        const rss = new RssSampler();
+        rss.add(server.child.pid);
+        const result = await spawnRun(ctx, server, env, work, remaining(), redact, mcp?.name ?? null, rss);
+        rss.stop();
+        // OpenCode also logs a dropped config entry when it reloads the config later.
+        const late = configDiagnosticsFromLog(serverLog());
+        if (late.length > 0) {
+            result.harnessBroke = true;
+            result.metrics.subtype = 'error_session';
+            result.metrics.isError = true;
+            result.stderr = `OpenCode rejected the session config: ${late.join('; ')}\n${result.stderr}`.slice(
+                0,
+                STDERR_CAP,
+            );
+        }
         // Skill discovery finishes after the directory boots; by now it has.
         const listed = (await getJson(server, '/api/skill', AbortSignal.timeout(5_000)).catch(() => null)) as {
             data?: { id?: string }[];
@@ -505,6 +596,7 @@ async function runOpenCodeOnce(ctx: OpenCodeContext, deadline: number, expected:
             ...(mcp ? { mcpServer: mcp.name } : {}),
             // Which of the injected skills OpenCode discovered, and which skills the agent loaded.
             skillsLoaded: skills ? skills.filter((name) => ctx.skillSet.includes(name)) : [],
+            peakChildRssMb: rss.peakMb(),
         });
         if (meta.allowBash) result.workspaceFiles = snapshotWorkspace(work);
         return result;
@@ -571,6 +663,7 @@ function spawnRun(
     timeoutMs: number,
     redact: (s: string) => string,
     mcpName: string | null,
+    rss: RssSampler,
 ): Promise<AdapterResult> {
     return new Promise((resolve) => {
         const startedAt = Date.now();
@@ -582,6 +675,7 @@ function spawnRun(
             stdio: ['pipe', 'pipe', 'pipe'],
         });
         trackChild(child);
+        rss.add(child.pid);
         const decoder = new StringDecoder('utf8');
         const errDecoder = new StringDecoder('utf8');
         let stdout = '';
@@ -610,11 +704,16 @@ function spawnRun(
                 mcpServers: mcpName ? [mcpName] : [],
                 lineTimes,
                 fallbackTime: Date.now(),
+                maxTurns,
             });
-            // OpenCode runs the last allowed step without tools and stops itself.
-            const turnLimit = parsed.numTurns > maxTurns;
+            // OpenCode runs one more step without tools after the limit and stops itself.
+            const turnLimit = parsed.reachedStepLimit;
+            // OpenCode retries a failing provider until the session is killed. A timeout
+            // with retries after the last finished step is the provider, not the agent.
+            const providerStuck = timedOut && parsed.retryTail > 0;
             const harnessBroke =
                 Boolean(spawnError) ||
+                providerStuck ||
                 (!timedOut && (exitCode !== 0 || parsed.numTurns === 0 || parsed.errors.length > 0));
             resolve({
                 output: parsed.finalResult,
@@ -633,13 +732,15 @@ function spawnRun(
                     harness: ctx.harness.kind,
                     model: ctx.harness.model,
                     exitCode,
-                    subtype: timedOut
-                        ? 'error_timeout'
-                        : harnessBroke
-                          ? 'error_session'
-                          : turnLimit
-                            ? 'error_max_turns'
-                            : 'success',
+                    subtype: providerStuck
+                        ? 'error_provider'
+                        : timedOut
+                          ? 'error_timeout'
+                          : harnessBroke
+                            ? 'error_session'
+                            : turnLimit
+                              ? 'error_max_turns'
+                              : 'success',
                     isError: harnessBroke || timedOut,
                     timedOut,
                     stdoutTruncated,
@@ -649,7 +750,6 @@ function spawnRun(
                     usageScope: 'session',
                     // OpenCode prices only models it knows; the proxy's custom provider has no prices.
                     costUsd: null,
-                    peakChildRssMb: null,
                     toolCalls: parsed.conversation.filter((c) => c.type === 'tool_call').length,
                     skillsUsed: parsed.skillsUsed,
                     providerRetries: parsed.retries.length,

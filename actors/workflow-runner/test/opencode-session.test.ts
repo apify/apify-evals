@@ -30,7 +30,7 @@ vi.mock('../src/evidence.js', async (importOriginal) => ({
 
 describe('OpenCode wiring into the unchanged session pipeline', () => {
     it('emits generations, MCP observations, contract-valid evidence and check scores', async () => {
-        // Captured from opencode 2.3.2 with a scripted model and the real Apify MCP server.
+        // Captured from opencode 2.2.6 with a scripted model and the real Apify MCP server.
         const fixture = readFileSync(new URL('./fixtures/opencode-call-actor.jsonl', import.meta.url), 'utf8');
         const parsed = parseOpenCodeEvents(fixture, { mcpServers: ['apify'] });
         tracing.adapter.mockResolvedValue({
@@ -87,7 +87,7 @@ describe('OpenCode wiring into the unchanged session pipeline', () => {
         expect(evidence.toolCalls).toEqual([
             { tool: 'mcp__apify__call-actor', input: { actor: 'apify/hello-world', input: {}, waitSecs: 30 } },
         ]);
-        expect(evidence.actorRuns).toMatchObject([{ runId: 'QWAskMNL4ydjKfguF', actor: 'apify/hello-world' }]);
+        expect(evidence.actorRuns).toMatchObject([{ runId: 'ejdoj7PO4ev89Hu3I', actor: 'apify/hello-world' }]);
         expect(evidence.surfacesUsed).toEqual(['mcp']);
         expect(infra).toEqual({ ok: true, reasons: [] });
         expect(writeScore.mock.calls.map(([score]) => [score.name, score.value])).toEqual([
