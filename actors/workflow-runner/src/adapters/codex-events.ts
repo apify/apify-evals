@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import type { ConversationEntry } from '@apify-evals/contract';
 
 import type { TimelineEvent } from '../harness.js';
@@ -82,31 +85,62 @@ export function unwrapShellCommand(command: string): string {
 
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** The first non-empty line after a SKILL.md's frontmatter: proof that its body was shown. */
+export function skillBodyMarker(skillMd: string): string | null {
+    const lines = skillMd.split(/\r?\n/);
+    let start = 0;
+    if (lines[0]?.trim() === '---') {
+        const close = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
+        start = close < 0 ? lines.length : close + 1;
+    }
+    return (
+        lines
+            .slice(start)
+            .find((line) => line.trim() !== '')
+            ?.trim() ?? null
+    );
+}
+
+/** Output lines without a line-number prefix (`nl -ba`, `cat -n`, `grep -n`). */
+function outputLines(output: string): string[] {
+    return output.split(/\r?\n/).map((line) => line.replace(/^\s*\d+(?:\t|:|\s+\|?\s?)/, '').trim());
+}
+
 /**
  * Injected skills whose `SKILL.md` the agent read. Codex emits no skill event:
  * it lists skills in the prompt by path and the model reads the file with its
  * shell. A skill counts when a command that succeeded names its `SKILL.md`
  * (`.../<name>/SKILL.md`, or `cd .../<name> && cat SKILL.md`) and its output
- * shows the file's frontmatter `name:` line, so `ls`, `test -f`, `wc` or a
- * failed `cat` do not count. MCP calls (a URL that names a SKILL.md) do not.
+ * shows the body: the first non-empty line after the frontmatter of the file
+ * installed in `skillsDir`, also behind a line number. `ls`, `test -f`, `wc`,
+ * `head -3` or `grep ^name:` (frontmatter only) and a failed `cat` do not
+ * count. MCP calls (a URL that names a SKILL.md) do not count either.
  */
-export function codexSkillsRead(ndjson: string, skillSet: string[]): string[] {
+export function codexSkillsRead(ndjson: string, skillSet: string[], skillsDir: string): string[] {
     if (skillSet.length === 0) return [];
+    const markers = new Map<string, string>();
+    for (const name of skillSet) {
+        try {
+            const marker = skillBodyMarker(readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf8'));
+            if (marker) markers.set(name, marker);
+        } catch {
+            /* not installed: never read */
+        }
+    }
     const read = new Set<string>();
     for (const line of ndjson.split('\n')) {
         const event = parseCodexLine(line);
         const item = object(event?.item);
         if (event?.type !== 'item.completed' || item?.type !== 'command_execution' || item.exit_code !== 0) continue;
         const command = typeof item.command === 'string' ? item.command : '';
-        const output = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
-        for (const name of skillSet) {
+        const output = outputLines(typeof item.aggregated_output === 'string' ? item.aggregated_output : '');
+        for (const [name, marker] of markers) {
             const n = escapeRe(name);
             // A path segment: not part of a longer name such as foo-bar for bar.
             const names =
                 new RegExp(`(?:^|[\\s/'"=])${n}/SKILL\\.md\\b`).test(command) ||
                 (new RegExp(`(?:^|[\\s/'"=])${n}/?(?:[\\s'";&|)]|$)`).test(command) && /\bSKILL\.md\b/.test(command));
-            const body = new RegExp(`^name:\\s*['"]?${n}['"]?\\s*$`, 'm').test(output);
-            if (names && body) read.add(name);
+            if (names && output.includes(marker)) read.add(name);
         }
     }
     return [...read].sort();

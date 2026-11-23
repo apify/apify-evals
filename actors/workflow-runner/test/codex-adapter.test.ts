@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { infraStatus, surfacesOfCall, type Evidence } from '@apify-evals/contract';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { codexSkillsRead, parseCodexEvents, unwrapShellCommand } from '../src/adapters/codex-events.js';
 import { codexAuthSecrets, codexShellPath, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
@@ -249,13 +249,30 @@ describe('Codex event parser', () => {
                     status: exitCode === 0 ? 'completed' : 'failed',
                 },
             });
-        const read = (events: string, skills = ['alpha', 'bar', 'foo-bar']) => codexSkillsRead(events, skills);
+        // The installed skills, as the session has them on disk.
+        const installed = mkdtempSync(join(tmpdir(), 'codex-installed-'));
+        for (const name of ['alpha', 'bar', 'foo-bar', 'beta']) {
+            mkdirSync(join(installed, name));
+            // beta: the file of the recorded session below.
+            const text = name === 'beta' ? '---\nname: beta\ndescription: b\n---\nbody\n' : body(name);
+            writeFileSync(join(installed, name, 'SKILL.md'), text);
+        }
+        afterAll(() => rmSync(installed, { recursive: true, force: true }));
+        const read = (events: string, skills = ['alpha', 'bar', 'foo-bar']) =>
+            codexSkillsRead(events, skills, installed);
 
         it.each([
             ['cat on the full path', "/bin/sh -c 'cat /h/.agents/skills/alpha/SKILL.md'", body('alpha'), ['alpha']],
             ['cat after cd', "/bin/sh -c 'cd /h/.agents/skills/alpha && cat SKILL.md'", body('alpha'), ['alpha']],
             ['sed of the file', 'sed -n 1,200p ~/.agents/skills/bar/SKILL.md', body('bar'), ['bar']],
             ['a suffix name only', 'cat ~/.agents/skills/foo-bar/SKILL.md', body('foo-bar'), ['foo-bar']],
+            [
+                'nl -ba (line numbers)',
+                'nl -ba ~/.agents/skills/alpha/SKILL.md',
+                '     1\t---\n     2\tname: alpha\n     3\tdescription: test\n     4\t---\n     5\t# alpha\n',
+                ['alpha'],
+            ],
+            ['cat -n', 'cat -n ~/.agents/skills/alpha/SKILL.md', '     5\t# alpha\n', ['alpha']],
         ])('counts %s', (_name, command, output, expected) => {
             expect(read(run(command, output))).toEqual(expected);
         });
@@ -265,6 +282,12 @@ describe('Codex event parser', () => {
             ['test -f', 'test -f ~/.agents/skills/alpha/SKILL.md && echo yes', 'yes'],
             ['wc', 'wc -l ~/.agents/skills/alpha/SKILL.md', '5 /h/.agents/skills/alpha/SKILL.md'],
             ['a body without the command naming the file', 'echo hi', body('alpha')],
+            [
+                'head -3 (frontmatter only)',
+                'head -3 ~/.agents/skills/alpha/SKILL.md',
+                '---\nname: alpha\ndescription: test\n',
+            ],
+            ['grep ^name:', "grep '^name:' ~/.agents/skills/alpha/SKILL.md", 'name: alpha\n'],
         ])('ignores %s', (_name, command, output) => {
             expect(read(run(command, output))).toEqual([]);
         });
@@ -292,6 +315,12 @@ describe('Codex event parser', () => {
 
         it('does not take bar from foo-bar', () => {
             expect(read(run('cat ~/.agents/skills/foo-bar/SKILL.md', body('foo-bar')), ['bar'])).toEqual([]);
+        });
+
+        it('reads the skill a recorded Codex session printed with nl -ba', () => {
+            // codex 0.162.1: `nl -ba ~/.agents/skills/beta/SKILL.md` among parallel commands.
+            const real = readFileSync(new URL('./fixtures/codex-shell-real.jsonl', import.meta.url), 'utf8');
+            expect(read(real, ['beta'])).toEqual(['beta']);
         });
 
         it('reads nothing without injected skills', () => {

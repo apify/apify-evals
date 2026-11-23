@@ -367,7 +367,7 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         const installed = new Set(availableSkills(join(home, CODEX_SKILLS_DIR)));
         const failed = new Set(result.metrics.skillsFailed as string[]);
         result.metrics.skillsLoaded = skillSet.filter((name) => installed.has(name) && !failed.has(name));
-        result.metrics.skillsRead = codexSkillsRead(result.rawStdout, skillSet);
+        result.metrics.skillsRead = codexSkillsRead(result.rawStdout, skillSet, join(home, CODEX_SKILLS_DIR));
         return result;
     } finally {
         await relay?.close();
