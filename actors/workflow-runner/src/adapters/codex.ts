@@ -49,6 +49,11 @@ export function redactSecrets(text: string, secrets: string[]): string {
     return out;
 }
 
+/** Skill directory names in Codex's `failed to load skill <dir>/SKILL.md: <reason>` errors. */
+export function skillLoadFailures(stderr: string): string[] {
+    return [...stderr.matchAll(/failed to load skill (\S+)\/SKILL\.md/g)].map((m) => m[1].split('/').at(-1) as string);
+}
+
 const SANDBOX_PROBE_MARKER = 'codex-sandbox-probe-ok';
 
 /**
@@ -297,11 +302,12 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         }
         const result = await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected, secrets);
         if (ctx.item.metadata?.allowBash) result.workspaceFiles = snapshotWorkspace(work);
-        // Codex has no init event that lists skills (Claude Code's `skills`),
-        // so record the injected skills present where Codex discovers them,
-        // and the ones whose SKILL.md the agent opened.
+        // Codex has no init event that lists skills (Claude Code's `skills`):
+        // loaded = injected, present where Codex discovers them, and not named
+        // in a Codex "failed to load skill" error. Read = SKILL.md shown.
         const installed = new Set(availableSkills(join(home, CODEX_SKILLS_DIR)));
-        result.metrics.skillsLoaded = skillSet.filter((name) => installed.has(name));
+        const failed = new Set(result.metrics.skillsFailed as string[]);
+        result.metrics.skillsLoaded = skillSet.filter((name) => installed.has(name) && !failed.has(name));
         result.metrics.skillsRead = codexSkillsRead(result.rawStdout, skillSet);
         return result;
     } finally {
@@ -358,6 +364,8 @@ function spawnCodex(
         let timedOut = false;
         let stdoutTruncated = false;
         let turnLimit = false;
+        let errLines = '';
+        const skillsFailed = new Set<string>();
         const rounds = new ToolRounds();
         /** Lines from this index on belong to a round past the budget: kept in the log, not in the trace. */
         let cutLine: number | null = null;
@@ -426,6 +434,7 @@ function spawnCodex(
                     mcpToolCount: missing ? 0 : mcpToolCount,
                     mcpServers: expected ? [{ name: 'apify', status: missing ? 'failed' : 'connected' }] : [],
                     mcpToolsMissing: missing,
+                    skillsFailed: [...skillsFailed, ...skillLoadFailures(errLines)].sort(),
                 },
             });
         };
@@ -475,6 +484,11 @@ function spawnCodex(
         });
         child.stderr.on('data', (data: Buffer) => {
             if (stderr.length < STDERR_CAP) stderr += errDecoder.write(data);
+            // Past the stderr cap too: Codex logs each skill it cannot load.
+            errLines += data.toString('utf8');
+            const lines = errLines.split('\n');
+            errLines = lines.pop() ?? '';
+            for (const name of skillLoadFailures(lines.join('\n'))) skillsFailed.add(name);
         });
         child.stdin.on('error', () => {
             /* EPIPE when startup fails before reading the prompt. */

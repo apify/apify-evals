@@ -411,6 +411,24 @@ process.stdin.on('end', () => {
         }
     });
 
+    it('does not count a skill Codex failed to load', async () => {
+        const skillsRoot = mkdtempSync(join(tmpdir(), 'codex-skills-root-'));
+        try {
+            for (const name of ['alpha', 'beta']) {
+                mkdirSync(join(skillsRoot, name));
+                writeFileSync(join(skillsRoot, name, 'SKILL.md'), `---\nname: ${name}\ndescription: t\n---\n`);
+            }
+            // The real 0.162.1 message, padded past the stderr cap the adapter keeps.
+            stub(`process.stderr.write('x'.repeat(3000) + '\\n');
+                process.stderr.write('ERROR codex_core::session::session: failed to load skill ' + home + '/.agents/skills/alpha/SKILL.md: missing YAML frontmatter delimited by ---\\n');
+                process.stdout.write(fixture);`);
+            const result = await runCodex({ ...ctx, skillSet: ['alpha', 'beta'], skillsRoot });
+            expect(result.metrics).toMatchObject({ skillsLoaded: ['beta'], skillsFailed: ['alpha'] });
+        } finally {
+            rmSync(skillsRoot, { recursive: true, force: true });
+        }
+    });
+
     it('retries zero MCP tools once before spawning', async () => {
         mcp.listTools.mockResolvedValueOnce({ tools: [] });
         stub('process.stdout.write(fixture);');
