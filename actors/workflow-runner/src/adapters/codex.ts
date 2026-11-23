@@ -64,8 +64,12 @@ function buildConfig(ctx: CodexContext): string {
         'web_search = "disabled"',
         'project_doc_max_bytes = 0',
         '[features]',
+        // The shell is the only tool that reads a file in Codex: a skill's
+        // SKILL.md and references are listed in the prompt by path, not
+        // inlined. On in every variant, so the variants differ only in the
+        // skill files; the read-only sandbox blocks writes and network.
+        'shell_tool = true',
         ...[
-            'shell_tool',
             'unified_exec',
             'shell_snapshot',
             'apps',
@@ -355,7 +359,8 @@ function spawnCodex(
                 lineTimes.push(Date.now());
                 const event = parseCodexLine(line);
                 const item = event?.item as { id?: string; type?: string } | undefined;
-                if (item?.type !== 'mcp_tool_call' || !item.id) continue;
+                // Shell commands count toward the turn budget like MCP calls.
+                if ((item?.type !== 'mcp_tool_call' && item?.type !== 'command_execution') || !item.id) continue;
                 if (!calls.has(item.id) && !turnLimit) {
                     calls.add(item.id);
                     pendingCalls.add(item.id);

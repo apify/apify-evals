@@ -156,6 +156,25 @@ export function parseCodexEvents(
                 conversation.push({ role: 'tool', type: 'tool_result', preview: content.slice(0, TOOL_RESULT_CAP) });
                 current = undefined;
             }
+        } else if (item.type === 'command_execution' && typeof item.command === 'string') {
+            // Recorded as `Bash`, the name Claude Code uses, so the evidence
+            // extraction reads shell commands of both harnesses the same way.
+            if (!calls.has(item.id)) {
+                calls.add(item.id);
+                const input = { command: item.command };
+                turn(t).toolUses.push({ id: item.id, name: 'Bash', input });
+                conversation.push({ role: 'assistant', type: 'tool_call', tool: 'Bash', input: capToolInput(input) });
+            }
+            if (isCompleted) {
+                const content = typeof item.aggregated_output === 'string' ? item.aggregated_output : '';
+                const isError =
+                    item.status === 'failed' ||
+                    item.status === 'declined' ||
+                    (typeof item.exit_code === 'number' && item.exit_code !== 0);
+                timeline.push({ kind: 'tool_result', t, toolUseId: item.id, content, isError });
+                conversation.push({ role: 'tool', type: 'tool_result', preview: content.slice(0, TOOL_RESULT_CAP) });
+                current = undefined;
+            }
         } else if (item.type === 'error' && isCompleted && typeof item.message === 'string') {
             // Metadata warnings also use item/error. Only turn.failed or a
             // terminal error makes a session fail; warnings alone do not.

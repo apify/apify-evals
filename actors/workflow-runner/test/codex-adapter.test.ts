@@ -159,6 +159,49 @@ describe('Codex event parser', () => {
         });
     });
 
+    it('records shell commands as Bash tool calls with their output', () => {
+        const cmd = (status: string, extra: object = {}) => ({
+            id: 'c1',
+            type: 'command_execution',
+            command: "/bin/bash -lc 'cat SKILL.md'",
+            status,
+            ...extra,
+        });
+        const parsed = parseCodexEvents(
+            jsonl(
+                { type: 'item.started', item: cmd('in_progress', { aggregated_output: '', exit_code: null }) },
+                { type: 'item.completed', item: cmd('completed', { aggregated_output: 'skill body', exit_code: 0 }) },
+                { type: 'item.started', item: { id: 'c2', type: 'command_execution', command: 'touch x' } },
+                {
+                    type: 'item.completed',
+                    item: {
+                        id: 'c2',
+                        type: 'command_execution',
+                        command: 'touch x',
+                        aggregated_output: 'Read-only file system',
+                        exit_code: 1,
+                        status: 'failed',
+                    },
+                },
+                { type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'done' } },
+            ),
+        );
+        expect(parsed.timeline[0]).toMatchObject({
+            toolUses: [{ id: 'c1', name: 'Bash', input: { command: "/bin/bash -lc 'cat SKILL.md'" } }],
+        });
+        expect(parsed.timeline[1]).toMatchObject({ kind: 'tool_result', content: 'skill body', isError: false });
+        expect(parsed.timeline[3]).toMatchObject({ kind: 'tool_result', isError: true });
+        expect(parsed.timeline.filter((e) => e.kind === 'tool_result')).toHaveLength(2);
+        expect(parsed.conversation.map((e) => e.type)).toEqual([
+            'tool_call',
+            'tool_result',
+            'tool_call',
+            'tool_result',
+            'text',
+        ]);
+        expect(parsed.toolRounds).toBe(2);
+    });
+
     it('records which injected skills the agent opened', () => {
         const events = jsonl(
             {
@@ -273,7 +316,11 @@ process.stdin.on('end', () => {
         ]);
         expect(captured.envKeys).not.toContain('UNRELATED_SECRET');
         expect(captured.config).toContain('wire_api = "responses"');
-        expect(captured.config).toContain('shell_tool = false');
+        expect(captured.config).toContain('shell_tool = true');
+        expect(captured.config).toContain('unified_exec = false');
+        expect(captured.config).toContain('inherit = "none"');
+        expect(captured.config).toContain('web_search = "disabled"');
+        expect(captured.config).toContain('approval_policy = "never"');
         expect(captured.config).toContain('sandbox_mode = "read-only"');
         expect(captured.config).toContain('required = true');
         expect(captured.config).toContain('default_tools_approval_mode = "approve"');
