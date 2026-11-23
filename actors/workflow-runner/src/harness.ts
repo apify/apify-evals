@@ -43,6 +43,7 @@ import {
     enrichFromApify,
     extractFromTools,
     findMarkedRuns,
+    runsFromDatasets,
     type SessionWindow,
     summarizeRuns,
     type RawToolCall,
@@ -51,7 +52,18 @@ import {
 } from './evidence.js';
 import { claudeMcpConfig, resolveMcp, type ResolvedMcp } from './mcp.js';
 import { installSkills, skillSetLabel } from './skills.js';
-import { curlrc, surfaceAllowedTools, surfaceItemMetadata, surfacePrompt, type ResolvedSurface } from './surfaces.js';
+import {
+    closeMcpc,
+    connectMcpc,
+    curlrc,
+    installCliShim,
+    mcpcConnectUrl,
+    surfaceAllowedTools,
+    surfaceItemMetadata,
+    surfacePrompt,
+    sessionPath,
+    type ResolvedSurface,
+} from './surfaces.js';
 
 /**
  * Harness adapters (spec D5: one image, discriminator picks the harness).
@@ -90,6 +102,8 @@ export interface SessionContext {
     surface?: ResolvedSurface;
     /** Per-session marker in the curl user agent, for finding API-started runs (set by runSession). */
     runMarker?: string;
+    /** Where the surface's mcpc connects: the scenario's Apify tools (set by runSession, see mcpcConnectUrl). */
+    mcpcUrl?: string;
     useOpenRouterProxy: boolean;
     perItemTimeoutSecs: number;
     /** How the run was started (schedule, manual, api, cli); becomes the `trigger:` trace tag so
@@ -389,12 +403,15 @@ export function buildClaudeEnv(opts: {
     apifyToken: string;
     useOpenRouterProxy: boolean;
     surface?: ResolvedSurface;
+    /** The session's `apify` shim directory (surfaces.ts `installCliShim`), first on PATH. */
+    shimDir?: string;
 }): Record<string, string | undefined> {
-    const { home, harness, apifyToken, useOpenRouterProxy, surface } = opts;
+    const { home, harness, apifyToken, useOpenRouterProxy, surface, shimDir } = opts;
     return {
         // The surface first, so it cannot override the harness settings below.
         ...(surface?.env ?? {}),
-        PATH: process.env.PATH,
+        ...(surface ? { APIFY_CLI_SKIP_UPDATE_CHECK: '1', APIFY_CLI_DISABLE_TELEMETRY: '1' } : {}),
+        PATH: sessionPath(process.env.PATH, shimDir),
         // curl reads $CURL_HOME/.curlrc (the session marker) in both HOME modes.
         CURL_HOME: home,
         // USER/LOGNAME/TMPDIR: required for macOS Keychain auth lookup in local
@@ -455,15 +472,41 @@ export function sessionTimeoutSecs(meta: DatasetItemMetadata | Record<string, un
     return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : fallback;
 }
 
-function runClaudeCodeOnce(
+/**
+ * One session in its own throwaway directory. The surface's command wrappers
+ * go in first, and its mcpc session is connected before the agent starts;
+ * afterwards every mcpc session is closed (each holds a bridge process) and
+ * the directory is removed.
+ */
+async function runClaudeCodeOnce(
     ctx: SessionContext & { prompt: string },
     abortOnMissingMcp: boolean,
+): Promise<AdapterResult> {
+    const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
+    try {
+        const shimDir = ctx.surface ? installCliShim(home, ctx.surface, ctx.runMarker) : undefined;
+        if (ctx.surface?.mcpcBinDir) await connectMcpc(home, ctx.surface, ctx.mcpcUrl ?? ctx.mcpUrl);
+        return await runClaudeCodeIn(ctx, abortOnMissingMcp, home, shimDir);
+    } finally {
+        await closeMcpc(home);
+        try {
+            rmSync(home, { recursive: true, force: true });
+        } catch {
+            /* best effort */
+        }
+    }
+}
+
+function runClaudeCodeIn(
+    ctx: SessionContext & { prompt: string },
+    abortOnMissingMcp: boolean,
+    home: string,
+    shimDir: string | undefined,
 ): Promise<AdapterResult> {
     const { prompt, item, harness, mcpUrl, apifyToken, mcpEnv, skillSet, skillsRoot, useOpenRouterProxy } = ctx;
     const { perItemTimeoutSecs } = ctx;
     return new Promise((resolve) => {
         const started = Date.now();
-        const home = mkdtempSync(join(tmpdir(), 'eval-session-'));
         // The agent works in a clean subdirectory, not in its HOME: what it leaves
         // there is the workspace evidence (CLI / SDK / Actor-building suites).
         const work = join(home, 'work');
@@ -493,7 +536,7 @@ function runClaudeCodeOnce(
             allowedMcpTools: mcp?.allowedTools,
             extraAllowedTools: surfaceAllowedTools(ctx.surface),
         });
-        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy, surface: ctx.surface });
+        const env = buildClaudeEnv({ home, harness, apifyToken, useOpenRouterProxy, surface: ctx.surface, shimDir });
 
         // detached: the child leads its own process group, so the timeout kill
         // reaches grandchildren (Bash tool shells) that share the stdio pipes.
@@ -552,11 +595,6 @@ function runClaudeCodeOnce(
             if (graceTimer) clearTimeout(graceTimer);
             if (rssTimer) clearInterval(rssTimer);
             const workspaceFiles = meta.allowBash ? snapshotWorkspace(work) : undefined;
-            try {
-                rmSync(home, { recursive: true, force: true });
-            } catch {
-                /* best effort */
-            }
 
             // The agent can print a secret from its env (`echo $APIFY_TOKEN`,
             // `curl -v`). Redact before parsing, so the stored log, the tool
@@ -688,11 +726,15 @@ async function collectEvidence(
         to: r.startedAt + Number((r.metrics as { durationMs?: number }).durationMs ?? 0),
         ...(ctx.runMarker ? { marker: ctx.runMarker } : {}),
     };
-    // Runs no output named (run-sync endpoints): curl marks its requests, so
-    // look them up by the marker.
+    // Runs no output named (run-sync endpoints, `apify call -s`): curl and the
+    // session's CLI mark their requests, so look them up by the marker.
     if (ctx.surface?.kind !== 'mcp' || used.includes('api') || used.includes('cli')) {
         const known = new Set(extracted.actorRuns.map((run) => run.runId));
         extracted.actorRuns.push(...(await findMarkedRuns(window, known)));
+    }
+    if (extracted.datasetHints.length > 0) {
+        const known = new Set(extracted.actorRuns.map((run) => run.runId));
+        extracted.actorRuns.push(...(await runsFromDatasets(extracted.datasetHints, known)));
     }
     const enriched = await enrichFromApify(extracted.actorRuns, extracted.datasetsRead, window);
 
@@ -921,6 +963,7 @@ export async function runSession(sessionCtx: SessionContext): Promise<{ output: 
             metadata: surfaceItemMetadata(sessionCtx.item.metadata ?? {}, sessionCtx.surface),
         },
         runMarker: `apify-evals/${randomBytes(8).toString('hex')}`,
+        mcpcUrl: mcpcConnectUrl(sessionCtx.item.metadata ?? {}, sessionCtx.mcpUrl),
     };
     const { item, harness } = ctx;
     const input = item.input as { prompt?: string; query?: string } | string | undefined;
@@ -1001,6 +1044,8 @@ export async function runSession(sessionCtx: SessionContext): Promise<{ output: 
                     surface: ctx.surface?.name ?? 'mcp',
                     surfaceKind: ctx.surface?.kind ?? 'mcp',
                     surfacesUsed: evidence.surfacesUsed ?? [],
+                    ...(ctx.surface?.cliVersion ? { cliVersion: ctx.surface.cliVersion } : {}),
+                    ...(ctx.surface?.mcpcVersion ? { mcpcVersion: ctx.surface.mcpcVersion } : {}),
                     fullLogUrl: logRef.url,
                     fullLogHash: logRef.hash,
                     ...(snapshotRef

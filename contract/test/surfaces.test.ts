@@ -87,6 +87,8 @@ describe('validateSurface', () => {
                 kind: 'cli',
                 mcp: false,
                 bash: true,
+                cli: { package: 'apify-cli', version: '1.7.0' },
+                mcpc: { package: '@apify/mcpc', version: '0.7.0' },
                 env: { APIFY_TOKEN: '${APIFY_TOKEN}' },
             }),
         ).toBe(true);

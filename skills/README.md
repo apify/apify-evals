@@ -10,7 +10,7 @@ A suite lists the skills it may use in `profiles/<suite>.yaml` under
 `agentSkills`; a run picks which of them each experiment gets with the
 `skillSets` input (`none`, `a`, `a+b`, ...) or enumerates every subset with
 `skillCombinations`. Skill sets multiply with surfaces (`surfaces/`):
-`surfaces: [mcp, api]` and `skillSets: [none, apify-ultimate-scraper]` give
+`surfaces: [mcp, cli]` and `skillSets: [none, apify-ultimate-scraper]` give
 four experiments per model.
 
 The runner copies the chosen skills into the session's working directory

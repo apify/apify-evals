@@ -105,10 +105,13 @@ export const agentSpanMetadataSchema = {
         agentSkills: { type: 'array', items: { type: 'string' } },
         skillsLoaded: { type: 'array', items: { type: 'string' } },
         // Surface (contract 1.3): the configured surface (`surfaces/<name>.yaml`),
-        // its kind and the Apify surfaces the agent actually used.
+        // its kind, the Apify surfaces the agent actually used, and the CLI
+        // and mcpc versions on PATH when the surface installs them.
         surface: { type: 'string' },
         surfaceKind: { enum: [...SURFACE_KINDS] },
         surfacesUsed: { type: 'array', items: { enum: [...SURFACE_KINDS] } },
+        cliVersion: { type: 'string' },
+        mcpcVersion: { type: 'string' },
     },
     required: ['harness', 'model', 'harnessBroke', 'fullLogUrl', 'fullLogHash'],
     additionalProperties: true,
@@ -194,9 +197,9 @@ export const mcpServerSchema = {
  * A surface: how the agent reaches Apify (`surfaces/<name>.yaml`). The kind
  * groups variants of one surface (`mcp`, `mcp-staging`), so scenarios and
  * checks name kinds and stay valid when someone adds a variant. The runner
- * builds the session from it: MCP config, Bash, WebFetch, extra environment
- * (`${VAR}` placeholders filled from the runner environment, never stored
- * here) and an optional prompt suffix.
+ * builds the session from it: MCP config, Bash, WebFetch, a pinned Apify CLI
+ * on PATH, extra environment (`${VAR}` placeholders filled from the runner
+ * environment, never stored here) and an optional prompt suffix.
  */
 export const surfaceSchema = {
     $id: 'surface',
@@ -212,6 +215,20 @@ export const surfaceSchema = {
         mcpUrl: { type: 'string' },
         bash: { type: 'boolean' },
         webFetch: { type: 'boolean' },
+        cli: {
+            type: 'object',
+            properties: { package: { type: 'string' }, version: { type: 'string' } },
+            required: ['version'],
+            additionalProperties: false,
+        },
+        // mcpc (MCP CLI client) on PATH, connected to the Apify MCP server as a
+        // session before the agent starts; part of the CLI tools.
+        mcpc: {
+            type: 'object',
+            properties: { package: { type: 'string' }, version: { type: 'string' } },
+            required: ['version'],
+            additionalProperties: false,
+        },
         env: { type: 'object', additionalProperties: { type: 'string' } },
         promptSuffix: { type: 'string' },
     },

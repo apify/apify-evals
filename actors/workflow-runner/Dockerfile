@@ -34,6 +34,18 @@ RUN npm install --global @anthropic-ai/claude-code@2.1.300 --audit=false \
 RUN npm install --global @openai/codex@0.162.1 --audit=false \
     && codex --version
 
+# Apify CLI for the cli surface, in its own prefix and NOT on PATH: only
+# sessions of a surface that names this version get it (see src/surfaces.ts).
+# Keep the version equal to surfaces/cli.yaml; other versions (cliVersion
+# input) are installed at run time.
+ENV CLI_ROOT=/opt/apify-cli
+RUN npm install --prefix /opt/apify-cli/apify-cli@1.10.0 --no-save --audit=false --fund=false apify-cli@1.10.0 \
+    && /opt/apify-cli/apify-cli@1.10.0/node_modules/.bin/apify --version
+# mcpc for the cli surface, the same way; no optional dependencies, so its
+# credentials stay in a file (no keychain module). Keep equal to surfaces/cli.yaml.
+RUN npm install --prefix /opt/apify-cli/@apify_mcpc@0.7.0 --no-save --audit=false --fund=false --omit=optional @apify/mcpc@0.7.0 \
+    && /opt/apify-cli/@apify_mcpc@0.7.0/node_modules/.bin/mcpc --version
+
 COPY package*.json ./
 COPY shared/package*.json ./shared/
 COPY contract/package*.json ./contract/
