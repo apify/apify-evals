@@ -6,7 +6,7 @@ import { infraStatus, type Evidence } from '@apify-evals/contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { codexSkillsRead, parseCodexEvents } from '../src/adapters/codex-events.js';
-import { runCodex } from '../src/adapters/codex.js';
+import { probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
 import { extractFromTools } from '../src/evidence.js';
 
 const mcp = vi.hoisted(() => ({ listTools: vi.fn(), connect: vi.fn(), close: vi.fn() }));
@@ -532,5 +532,40 @@ process.stdin.on('end', () => {
         expect(result.rawStdout).not.toContain(ctx.apifyToken);
         expect(result.stderr).not.toContain(ctx.apifyToken);
         expect(sessionInfra(result).ok).toBe(false);
+    });
+});
+
+describe('Codex sandbox probe (stub executable)', () => {
+    let dir: string;
+    beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), 'codex-probe-test-'));
+        vi.stubEnv('PATH', dir);
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        rmSync(dir, { recursive: true, force: true });
+    });
+    const stub = (body: string) => {
+        writeFileSync(join(dir, 'codex'), `#!${process.execPath}\n${body}\n`);
+        chmodSync(join(dir, 'codex'), 0o755);
+    };
+
+    it('passes when the sandboxed command prints the probe file', async () => {
+        // `codex sandbox -- cat <file>` with a read-only config in an isolated CODEX_HOME.
+        stub(`const fs = require('node:fs');
+const args = process.argv.slice(2);
+const config = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
+if (args[0] !== 'sandbox' || args[1] !== '--' || args[2] !== 'cat' || !config.includes('read-only')) process.exit(2);
+process.stdout.write(fs.readFileSync(args[3], 'utf8'));`);
+        expect(await probeCodexSandbox()).toBeNull();
+    });
+
+    it('reports the reason when the sandbox cannot start', async () => {
+        stub(`process.stderr.write('bwrap: No permissions to create a new namespace\\n'); process.exit(1);`);
+        expect(await probeCodexSandbox()).toContain('No permissions to create a new namespace');
+    });
+
+    it('reports a missing executable', async () => {
+        expect(await probeCodexSandbox()).toMatch(/ENOENT/);
     });
 });

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +23,41 @@ export const CODEX_PROVIDER = {
     wire_api: 'responses',
     requires_openai_auth: false,
 } as const;
+
+const SANDBOX_PROBE_MARKER = 'codex-sandbox-probe-ok';
+
+/**
+ * Run one command in the Codex read-only sandbox, the way a session's shell
+ * runs it. On Linux the sandbox is bubblewrap, which needs unprivileged user
+ * namespaces; a container that forbids them fails every shell command, so a
+ * session could not read a skill and the shell would only burn turns. Returns
+ * null when the command ran, else the reason.
+ */
+export function probeCodexSandbox(timeoutMs = 30_000): Promise<string | null> {
+    const root = mkdtempSync(join(tmpdir(), 'codex-sandbox-probe-'));
+    const home = join(root, 'home');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), 'sandbox_mode = "read-only"\n');
+    const probe = join(root, 'probe.txt');
+    writeFileSync(probe, SANDBOX_PROBE_MARKER);
+    return new Promise((resolve) => {
+        execFile(
+            'codex',
+            ['sandbox', '--', 'cat', probe],
+            {
+                cwd: root,
+                env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: home, CODEX_HOME: home },
+                timeout: timeoutMs,
+            },
+            (error, stdout, stderr) => {
+                rmSync(root, { recursive: true, force: true });
+                if (stdout.includes(SANDBOX_PROBE_MARKER)) return resolve(null);
+                const detail = `${stderr}\n${error?.message ?? ''}`.trim().split('\n').filter(Boolean).at(-1);
+                resolve(detail?.slice(0, 300) ?? 'no output');
+            },
+        );
+    });
+}
 
 type CodexContext = Pick<
     SessionContext,
