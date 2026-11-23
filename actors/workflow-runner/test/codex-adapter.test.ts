@@ -318,6 +318,12 @@ process.stdin.on('end', () => {
         expect(captured.config).toContain('wire_api = "responses"');
         expect(captured.config).toContain('shell_tool = true');
         expect(captured.config).toContain('inherit = "none"');
+        // The shell gets the session HOME and a system PATH, never a login shell.
+        expect(captured.config).toContain('allow_login_shell = false');
+        expect(captured.config).toContain(
+            `set = { HOME = ${JSON.stringify(captured.home)}, PATH = "/usr/local/bin:/usr/bin:/bin" }`,
+        );
+        expect(captured.config.indexOf('allow_login_shell')).toBeLessThan(captured.config.indexOf('['));
         expect(captured.config).toContain('web_search = "disabled"');
         expect(captured.config).toContain('approval_policy = "never"');
         expect(captured.config).toContain('sandbox_mode = "read-only"');
@@ -360,7 +366,10 @@ process.stdin.on('end', () => {
             expect(withSkills.skillBody).toContain('body');
             expect(withSkills.workEntries).toEqual([]);
             // Only the skill files differ between the variants, never the Codex config.
-            expect(withSkills.config).toBe(plain.config);
+            // The session HOME is a fresh temporary path in every session.
+            expect(withSkills.config.replaceAll(withSkills.home, '<home>')).toBe(
+                plain.config.replaceAll(plain.home, '<home>'),
+            );
             expect(result.metrics).toMatchObject({ skillsLoaded: ['alpha'], skillsRead: ['alpha'] });
             expect(result.harnessBroke).toBe(false);
         } finally {

@@ -89,7 +89,10 @@ async function listMcpTools(ctx: CodexContext, signal: AbortSignal): Promise<num
     }
 }
 
-function buildConfig(ctx: CodexContext): string {
+/** The shell's PATH: the system tools (cat, ls, grep, find, curl) and node, nothing from the developer. */
+export const CODEX_SHELL_PATH = '/usr/local/bin:/usr/bin:/bin';
+
+function buildConfig(ctx: CodexContext, home: string): string {
     // JSON strings are valid TOML basic strings, including quoted URLs and ids.
     const q = JSON.stringify;
     const lines = [
@@ -98,6 +101,10 @@ function buildConfig(ctx: CodexContext): string {
         'sandbox_mode = "read-only"',
         'web_search = "disabled"',
         'project_doc_max_bytes = 0',
+        // A login shell (`zsh -lc`) sources the developer's profile and, on
+        // macOS, resets HOME to the real home: the agent would see the
+        // developer's ~/.agents/skills and environment instead of the session.
+        'allow_login_shell = false',
         '[features]',
         // The shell is the only tool that reads a file in Codex: a skill's
         // SKILL.md and references are listed in the prompt by path, not
@@ -119,6 +126,9 @@ function buildConfig(ctx: CodexContext): string {
         ].map((feature) => `${feature} = false`),
         '[shell_environment_policy]',
         'inherit = "none"',
+        // With nothing inherited the shell has no HOME (`~` does not expand)
+        // and only Codex's own PATH entry; set both to the session's.
+        `set = { HOME = ${q(home)}, PATH = ${q(CODEX_SHELL_PATH)} }`,
     ];
     if (ctx.useOpenRouterProxy) {
         lines.unshift('model_provider = "apify"');
@@ -240,7 +250,7 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         // Skills change only the files in HOME, never config.toml: the
         // no-skills variant stays the exact setup of the daily baseline.
         installSkills(home, skillSet, ctx.skillsRoot ?? '', CODEX_SKILLS_DIR);
-        writeFileSync(join(home, 'config.toml'), buildConfig(ctx), { mode: 0o600 });
+        writeFileSync(join(home, 'config.toml'), buildConfig(ctx, home), { mode: 0o600 });
         if (!ctx.useOpenRouterProxy) {
             // Reuse only local login, never the developer's MCP servers, skills,
             // or config. No credentials are copied into the temporary directory.
