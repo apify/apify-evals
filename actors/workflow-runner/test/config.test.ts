@@ -104,6 +104,21 @@ describe('resolveModelEntries', () => {
         expect(resolveModelEntries(['a', 'a', { model: 'a' }], base)).toEqual([{ model: 'a', kind: 'claude-code' }]);
     });
 
+    it('runs any OpenRouter model on OpenCode, OpenAI ones included', () => {
+        expect(
+            resolveModelEntries(
+                [
+                    { model: 'openai/gpt-6-luna', harness: 'opencode' },
+                    { model: 'z-ai/glm-5.3', harness: 'opencode' },
+                ],
+                base,
+            ),
+        ).toEqual([
+            { model: 'openai/gpt-6-luna', kind: 'opencode' },
+            { model: 'z-ai/glm-5.3', kind: 'opencode' },
+        ]);
+    });
+
     it('refuses an OpenAI model on Claude Code and an unknown harness', () => {
         expect(() => resolveModelEntries(['~openai/gpt-luna-latest'], base)).toThrow(
             /cannot run on the claude-code harness/,
@@ -146,6 +161,16 @@ describe('assertHarnessSupport', () => {
                 skillSets: [[], ['apify-ultimate-scraper']],
             }),
         ).not.toThrow();
+    });
+
+    it('runs OpenCode with skill sets and the API surface, but only the Apify MCP server', () => {
+        const entries = [{ model: 'google/gemini-3.8-flash', kind: 'opencode' }];
+        expect(() =>
+            assertHarnessSupport(entries, { skillSets: [[], ['x']], foreignMcp: false, surfaceKinds: ['mcp', 'api'] }),
+        ).not.toThrow();
+        expect(() => assertHarnessSupport(entries, { ...plan, foreignMcp: true })).toThrow(
+            /opencode harness supports only the Apify MCP server/,
+        );
     });
 
     it('names every unsupported feature', () => {

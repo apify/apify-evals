@@ -45,7 +45,7 @@ export interface ModelEntry {
     kind: string;
 }
 
-export const HARNESS_KINDS = ['claude-code', 'codex'] as const;
+export const HARNESS_KINDS = ['claude-code', 'codex', 'opencode'] as const;
 export type HarnessKind = (typeof HARNESS_KINDS)[number];
 
 /**
@@ -65,6 +65,7 @@ export interface HarnessSupport {
 export const HARNESS_SUPPORT: Record<HarnessKind, HarnessSupport> = {
     'claude-code': { skills: true, foreignMcp: true, nonMcpSurfaces: true },
     codex: { skills: true, foreignMcp: false, nonMcpSurfaces: false },
+    opencode: { skills: true, foreignMcp: false, nonMcpSurfaces: true },
 };
 
 /**
@@ -127,7 +128,7 @@ export function resolveModelEntries(
         }
         if (kind === 'claude-code' && isOpenAiModel(model)) {
             throw new Error(
-                `models: ${model} cannot run on the claude-code harness: OpenAI models send empty tool inputs through the Anthropic-format proxy (apify/apify-evals#44). Use {"model": "${model}", "harness": "codex"}.`,
+                `models: ${model} cannot run on the claude-code harness: OpenAI models send empty tool inputs through the Anthropic-format proxy (apify/apify-evals#44). Use {"model": "${model}", "harness": "codex"} or "harness": "opencode".`,
             );
         }
         if (!out.some((o) => o.model === model && o.kind === kind)) out.push({ model, kind });

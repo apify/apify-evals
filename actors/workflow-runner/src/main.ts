@@ -152,6 +152,7 @@ const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
 const { CODEX_PROVIDER, probeCodexSandbox } = await import('./adapters/codex.js');
+const { OPENCODE_PROVIDER } = await import('./adapters/opencode.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
 const { preflightModels } = await import('./preflight.js');
@@ -402,8 +403,15 @@ if (!skipPreflight) {
         // Each entry pings through its own harness's endpoint.
         for (const entry of entries) {
             const codex = entry.kind === 'codex';
+            // OpenCode calls the proxy's chat completions endpoint itself, so the ping
+            // takes the path its sessions take; Claude Code shares that endpoint here.
+            const url = codex
+                ? `${CODEX_PROVIDER.base_url}/responses`
+                : entry.kind === 'opencode'
+                  ? `${OPENCODE_PROVIDER.baseURL}/chat/completions`
+                  : `${OPENROUTER_PROXY_URL}/v1/chat/completions`;
             const pre = await preflightModels([entry.model], {
-                url: codex ? `${CODEX_PROVIDER.base_url}/responses` : `${OPENROUTER_PROXY_URL}/v1/chat/completions`,
+                url,
                 apifyToken,
                 codex,
             });

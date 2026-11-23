@@ -16,6 +16,20 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Install the pinned OpenCode CLI for the runner's real-CLI tests
+        # The version the runner image pins (actors/workflow-runner/Dockerfile), into a
+        # temp prefix, not globally. The launcher's postinstall is skipped and the
+        # baseline glibc build linked by hand, so the install is the same on every runner.
+        run: |
+          set -eu
+          prefix="$RUNNER_TEMP/opencode"
+          npm install --prefix "$prefix" --no-save --omit=optional --ignore-scripts --audit=false --fund=false \
+            @opencode/cli@2.2.6 @opencode/cli-linux-x64-baseline@2.2.6
+          ln -f "$prefix/node_modules/@opencode/cli-linux-x64-baseline/bin/opencode" \
+            "$prefix/node_modules/@opencode/cli/bin/opencode.exe"
+          echo "$prefix/node_modules/.bin" >> "$GITHUB_PATH"
+          "$prefix/node_modules/.bin/opencode" --version
+          echo "REQUIRE_REAL_OPENCODE=1" >> "$GITHUB_ENV"
       - name: Build and test the eval workspaces
         # npm silently no-ops a `-w` flag that does not resolve, so an explicit
         # list would pass while exercising nothing. Select what is checked out.

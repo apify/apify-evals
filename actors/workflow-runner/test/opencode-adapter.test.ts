@@ -1,0 +1,862 @@
+import { execFileSync } from 'node:child_process';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { infraStatus, surfacesUsed, type Evidence } from '@apify-evals/contract';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { FORCED_STEP_MARK, openCodeToolName, parseOpenCodeEvents } from '../src/adapters/opencode-events.js';
+import {
+    buildOpenCodeConfig,
+    buildOpenCodeEnv,
+    buildOpenCodeRunArgs,
+    configDiagnosticsFromLog,
+    LLM_KEY_ENV,
+    mcpToolCountFromLog,
+    openCodeMcp,
+    openCodePermissions,
+    openCodeSteps,
+    OPENCODE_PROVIDER,
+    providerBaseUrl,
+    runOpenCode,
+} from '../src/adapters/opencode.js';
+import { snapshotWorkspace } from '../src/adapters/shared.js';
+import { extractFromTools } from '../src/evidence.js';
+
+// Captured from opencode 2.2.6 (`opencode run --format json`) against a scripted
+// chat-completions model and the real Apify MCP server / API.
+const fixture = (name: string) => readFileSync(new URL(`./fixtures/opencode-${name}.jsonl`, import.meta.url), 'utf8');
+
+function evidenceOf(parsed: ReturnType<typeof parseOpenCodeEvents>) {
+    const calls = parsed.timeline.flatMap((e) => (e.kind === 'assistant' ? e.toolUses : []));
+    const results = parsed.timeline.flatMap((e) =>
+        e.kind === 'tool_result' ? [{ toolUseId: e.toolUseId, content: e.content, isError: e.isError }] : [],
+    );
+    return extractFromTools(calls, results);
+}
+
+describe('OpenCode event parser', () => {
+    it('reads a captured call-actor session like a Claude Code one', () => {
+        const parsed = parseOpenCodeEvents(fixture('call-actor'), { mcpServers: ['apify'], maxTurns: 6 });
+        expect(parsed.numTurns).toBe(2);
+        expect(parsed.toolRounds).toBe(1);
+        expect(parsed.reachedStepLimit).toBe(false);
+        expect(parsed.errors).toEqual([]);
+        expect(parsed.sessionId).toMatch(/^ses_/);
+        expect(parsed.timeline.map((e) => e.kind)).toEqual(['assistant', 'tool_result', 'assistant']);
+        expect(parsed.timeline[0]).toMatchObject({
+            toolUses: [
+                {
+                    id: expect.stringMatching(/^msg_.+\/call_1$/),
+                    name: 'mcp__apify__call-actor',
+                    input: { actor: 'apify/hello-world', input: {}, waitSecs: 30 },
+                },
+            ],
+            usage: { input_tokens: 96, output_tokens: 10, cache_read_input_tokens: 5 },
+        });
+        expect(parsed.conversation.map((e) => [e.type, e.tool ?? null])).toEqual([
+            ['tool_call', 'mcp__apify__call-actor'],
+            ['tool_result', null],
+            ['text', null],
+        ]);
+        expect(parsed.usage).toMatchObject({ output_tokens: 20, cache_read_input_tokens: 10 });
+        // The tool result keeps the JSON the evidence extractor reads.
+        const evidence = evidenceOf(parsed);
+        expect(evidence.toolCalls).toEqual([
+            { tool: 'mcp__apify__call-actor', input: { actor: 'apify/hello-world', input: {}, waitSecs: 30 } },
+        ]);
+        expect(evidence.actorRuns).toMatchObject([
+            {
+                actor: 'apify/hello-world',
+                runId: 'ejdoj7PO4ev89Hu3I',
+                datasetId: 'aeBR1lPmHt6zrBS6T',
+                status: 'SUCCEEDED',
+                input: {},
+                origin: 'mcp',
+            },
+        ]);
+    });
+
+    it('records the skills the agent loaded', () => {
+        const parsed = parseOpenCodeEvents(fixture('skill'), { mcpServers: ['apify'] });
+        expect(parsed.skillsUsed).toEqual(['project-codeword']);
+        expect(parsed.conversation[0]).toEqual({
+            role: 'assistant',
+            type: 'tool_call',
+            tool: 'Skill',
+            input: { id: 'project-codeword' },
+        });
+        expect(parsed.finalResult).toBe('TANGERINE-PELICAN-7731');
+    });
+
+    it('names shell and web fetch calls as Bash and WebFetch, so the API surface is detected', () => {
+        const parsed = parseOpenCodeEvents(fixture('api-surface'));
+        const tools = parsed.conversation.flatMap((e) => (e.type === 'tool_call' ? [e.tool] : []));
+        expect(tools).toEqual(['Bash', 'WebFetch']);
+        expect(surfacesUsed(evidenceOf(parsed).toolCalls)).toEqual(['api']);
+        expect(parsed.finalResult).toBe('apify-evals/drive-test');
+    });
+
+    it('keeps every call when the provider reuses its call id in each step', () => {
+        // The mock answered `functions.glob:0` three times, as some providers do.
+        const parsed = parseOpenCodeEvents(fixture('reused-call-id'));
+        expect(fixture('reused-call-id').match(/"id":"functions\.glob:0"/g)?.length).toBeGreaterThanOrEqual(3);
+        const calls = parsed.timeline.flatMap((e) => (e.kind === 'assistant' ? e.toolUses : []));
+        expect(calls.map((c) => c.input)).toEqual([{ pattern: '*.md' }, { pattern: '*.txt' }, { pattern: '*.json' }]);
+        expect(new Set(calls.map((c) => c.id)).size).toBe(3);
+        const results = parsed.timeline.filter((e) => e.kind === 'tool_result');
+        expect(results).toHaveLength(3);
+        expect(parsed.toolRounds).toBe(3);
+        expect(parsed.finalResult).toBe('done');
+    });
+
+    it('drops tool calls OpenCode refused on the forced step after the limit', () => {
+        // maxTurns 2 = 3 steps; the mock still called search-actors in the third,
+        // which OpenCode refused ("Tools are disabled after the maximum agent steps").
+        expect(fixture('max-steps')).toContain('Tools are disabled after the maximum agent steps');
+        const parsed = parseOpenCodeEvents(fixture('max-steps'), { mcpServers: ['apify'], maxTurns: 2 });
+        expect(parsed.numTurns).toBe(3);
+        expect(parsed.reachedStepLimit).toBe(true);
+        expect(parsed.toolRounds).toBe(2);
+        const evidence = evidenceOf(parsed);
+        expect(evidence.toolCalls.map((c) => c.tool)).toEqual(['Glob', 'Glob']);
+        expect(JSON.stringify(parsed.conversation)).not.toContain('maximum agent steps');
+        expect(JSON.stringify(parsed.timeline)).not.toContain('search-actors');
+    });
+
+    it('scores what Claude Code would at the limit: the forced summary is trace only', () => {
+        const parsed = parseOpenCodeEvents(fixture('forced-answer'), { maxTurns: 2 });
+        expect(parsed.reachedStepLimit).toBe(true);
+        expect(parsed.finalResult).toBe('');
+        expect(parsed.conversation.some((e) => e.type === 'text')).toBe(false);
+        const last = parsed.timeline.at(-1);
+        expect(last?.kind === 'assistant' && last.text).toEqual([`${FORCED_STEP_MARK} FORCED SUMMARY`]);
+        // Without a limit the same text is the answer.
+        expect(parseOpenCodeEvents(fixture('forced-answer')).finalResult).toBe('FORCED SUMMARY');
+    });
+
+    it('reports provider errors and the retries at the end of the output', () => {
+        expect(parseOpenCodeEvents(fixture('provider-error')).errors).toEqual(['Invalid model id']);
+        const retry = parseOpenCodeEvents(fixture('retry'));
+        expect(retry.errors).toEqual([]);
+        expect(retry.retries.length).toBeGreaterThan(0);
+        expect(retry.retryTail).toBe(retry.retries.length);
+        expect(retry.retries[0]).toContain('ECONNREFUSED');
+        const recovered = `${fixture('retry')}${JSON.stringify({ type: 'step_finish', timestamp: 9, part: {} })}\n`;
+        expect(parseOpenCodeEvents(recovered).retryTail).toBe(0);
+    });
+
+    it('ignores partial lines and repeated tool events', () => {
+        const tool = {
+            type: 'tool_use',
+            timestamp: 5,
+            sessionID: 'ses_x',
+            part: {
+                id: 't1',
+                messageID: 'msg_1',
+                tool: 'apify_search-actors',
+                state: { status: 'error', input: { q: 1 }, error: 'boom' },
+            },
+        };
+        const parsed = parseOpenCodeEvents(
+            [
+                JSON.stringify({ type: 'step_start', timestamp: 1, sessionID: 'ses_x', part: {} }),
+                JSON.stringify(tool),
+                JSON.stringify({ ...tool, part: { ...tool.part, partID: 'prt_other' } }),
+                '{"type":"text","part":{"text":"cut',
+            ].join('\n'),
+            { mcpServers: ['apify'] },
+        );
+        expect(parsed.timeline).toEqual([
+            {
+                kind: 'assistant',
+                t: 5,
+                text: [],
+                toolUses: [{ id: 'msg_1/t1', name: 'mcp__apify__search-actors', input: { q: 1 } }],
+                usage: null,
+            },
+            { kind: 'tool_result', t: 5, toolUseId: 'msg_1/t1', content: 'boom', isError: true },
+        ]);
+        expect(parsed.finalResult).toBe('');
+    });
+
+    it('maps OpenCode tool names to Claude Code names', () => {
+        expect(openCodeToolName('apify_call-actor', ['apify'])).toBe('mcp__apify__call-actor');
+        expect(openCodeToolName('my_srv_tool', ['my', 'my_srv'])).toBe('mcp__my_srv__tool');
+        expect(openCodeToolName('notion_x', ['notion.v2'])).toBe('notion_x');
+        expect(openCodeToolName('notion_v2_x', ['notion.v2'])).toBe('mcp__notion.v2__x');
+        expect(openCodeToolName('shell', [])).toBe('Bash');
+        expect(openCodeToolName('webfetch', [])).toBe('WebFetch');
+        expect(openCodeToolName('question', [])).toBe('question');
+    });
+});
+
+describe('OpenCode session config', () => {
+    const harness = { kind: 'opencode', model: 'z-ai/glm-5.3', maxTurns: 6 };
+
+    it('gives maxTurns tool rounds plus one text-only step', () => {
+        expect(openCodeSteps({}, harness)).toBe(7);
+        expect(openCodeSteps({ maxTurns: 2 }, harness)).toBe(3);
+    });
+
+    it('connects the Apify MCP server directly, with the tool filter and no token in the file', () => {
+        const mcp = openCodeMcp({ tools: ['search-actors', 'call-actor'] }, 'https://mcp.apify.com?x=1');
+        expect(mcp).toEqual({
+            name: 'apify',
+            config: {
+                type: 'remote',
+                url: 'https://mcp.apify.com/?x=1&tools=search-actors%2Ccall-actor',
+                headers: { Authorization: 'Bearer {env:OPENCODE_EVAL_MCP_APIFY_TOKEN}' },
+                oauth: false,
+                codemode: false,
+                timeout: { startup: 20000 },
+            },
+            actions: ['apify_*'],
+            envVars: ['APIFY_TOKEN'],
+        });
+        expect(openCodeMcp({ tools: [] }, 'https://mcp.apify.com')).toBeNull();
+    });
+
+    it('allows only the listed tools of a server without the tools filter', () => {
+        const mcp = openCodeMcp(
+            {
+                tools: ['notion-search', 'notion-fetch'],
+                mcp: {
+                    name: 'notion',
+                    transport: 'stdio',
+                    command: 'npx',
+                    args: ['-y', 'notion-mcp'],
+                    env: { NOTION_TOKEN: '${NOTION_TOKEN}' },
+                },
+            },
+            'https://mcp.apify.com',
+        );
+        expect(mcp?.config).toMatchObject({
+            type: 'local',
+            command: ['npx', '-y', 'notion-mcp'],
+            environment: { NOTION_TOKEN: '{env:OPENCODE_EVAL_MCP_NOTION_TOKEN}' },
+        });
+        expect(mcp?.actions).toEqual(['notion_notion-search', 'notion_notion-fetch']);
+        expect(mcp?.envVars).toEqual(['NOTION_TOKEN']);
+    });
+
+    it('denies every tool first, then allows the same base tools in every arm', () => {
+        const base = openCodePermissions({ mcpActions: ['apify_*'], bash: false, webFetch: false, skillsDir: '/s/sk' });
+        expect(base[0]).toEqual({ action: '*', resource: '*', effect: 'deny' });
+        expect(base.slice(1).map((r) => [r.action, r.resource, r.effect])).toEqual([
+            ['read', '*', 'allow'],
+            ['glob', '*', 'allow'],
+            ['grep', '*', 'allow'],
+            ['skill', '*', 'allow'],
+            ['external_directory', '/s/sk/*', 'allow'],
+            ['apify_*', '*', 'allow'],
+        ]);
+        const api = openCodePermissions({ mcpActions: [], bash: true, webFetch: true }).map((r) => r.action);
+        expect(api).toEqual(['*', 'read', 'glob', 'grep', 'skill', 'shell', 'external_directory', 'webfetch']);
+        expect(api).not.toContain('websearch');
+    });
+
+    it('builds the provider for the proxy and the step limit', () => {
+        const mcp = openCodeMcp({ tools: ['search-actors'] }, 'https://mcp.apify.com');
+        const config = buildOpenCodeConfig({
+            model: '~anthropic/claude-haiku-latest',
+            baseURL: OPENCODE_PROVIDER.baseURL,
+            steps: 7,
+            mcp,
+            bash: false,
+            webFetch: false,
+        });
+        expect(config).toMatchObject({
+            autoupdate: false,
+            share: 'disabled',
+            provider: {
+                apify: {
+                    npm: '@ai-sdk/openai-compatible',
+                    options: {
+                        baseURL: 'https://openrouter.apify.actor/api/v1',
+                        apiKey: '{env:OPENCODE_EVAL_LLM_KEY}',
+                    },
+                    models: { '~anthropic/claude-haiku-latest': { name: '~anthropic/claude-haiku-latest' } },
+                },
+            },
+            mcp: { servers: { apify: { type: 'remote', codemode: false } } },
+            agents: { build: { steps: 7 } },
+        });
+        expect(buildOpenCodeRunArgs('http://127.0.0.1:1', '~anthropic/claude-haiku-latest')).toEqual([
+            'run',
+            '--server',
+            'http://127.0.0.1:1',
+            '--format',
+            'json',
+            '--title',
+            'eval',
+            '--model',
+            'apify/~anthropic/claude-haiku-latest',
+        ]);
+    });
+
+    it('accepts a local base URL override only off the Apify platform', () => {
+        expect(providerBaseUrl({})).toBe(OPENCODE_PROVIDER.baseURL);
+        expect(providerBaseUrl({ OPENCODE_EVAL_BASE_URL: 'http://127.0.0.1:9/v1' })).toBe('http://127.0.0.1:9/v1');
+        expect(providerBaseUrl({ OPENCODE_EVAL_BASE_URL: 'http://127.0.0.1:9/v1', APIFY_IS_AT_HOME: '1' })).toBe(
+            OPENCODE_PROVIDER.baseURL,
+        );
+    });
+
+    it('points every config, data and temp location into the session and keeps the token out of APIFY_TOKEN', () => {
+        vi.stubEnv('UNRELATED_SECRET', 'must-not-inherit');
+        const env = buildOpenCodeEnv({ home: '/s/home', tmp: '/s/tmp', apifyToken: 'tok', password: 'pw' });
+        expect(env).toMatchObject({
+            HOME: '/s/home',
+            TMPDIR: '/s/tmp',
+            XDG_CONFIG_HOME: '/s/home/.config',
+            XDG_DATA_HOME: '/s/home/.local/share',
+            XDG_CACHE_HOME: '/s/home/.cache',
+            XDG_STATE_HOME: '/s/home/.local/state',
+            OPENCODE_CONFIG: '/s/home/opencode.json',
+            OPENCODE_CONFIG_DIR: '/s/home/.config/opencode',
+            OPENCODE_DISABLE_AUTOUPDATE: '1',
+            OPENCODE_DISABLE_MODELS_FETCH: '1',
+            OPENCODE_DISABLE_CLAUDE_CODE: '1',
+            OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+            [LLM_KEY_ENV]: 'tok',
+        });
+        expect(env).not.toHaveProperty('UNRELATED_SECRET');
+        expect(env).not.toHaveProperty('APIFY_TOKEN');
+        // The api surface sets APIFY_TOKEN; a surface cannot override the isolation.
+        const surface = {
+            name: 'api',
+            kind: 'api',
+            spec: {},
+            env: { HOME: '/elsewhere', APIFY_TOKEN: 'tok' },
+            secrets: [],
+        };
+        expect(
+            buildOpenCodeEnv({ home: '/s/home', tmp: '/s/tmp', apifyToken: 'tok', password: 'pw', surface } as never),
+        ).toMatchObject({ HOME: '/s/home', APIFY_TOKEN: 'tok' });
+        vi.unstubAllEnvs();
+    });
+
+    it('reads the MCP tool count and dropped config entries from the server log', () => {
+        const log = [
+            'level=WARN message="configuration normalization diagnostic" source=/x/opencode.json path=$.mcp.apify kind=invalid action="skipped malformed recognized value" role=server',
+            'level=INFO message="mcp connected" server=apify tools=5 http.span=846 role=server server=apify',
+            'level=INFO message="mcp connected" server=apify2 tools=9 http.span=1',
+        ].join('\n');
+        expect(mcpToolCountFromLog(log, 'apify')).toBe(5);
+        expect(mcpToolCountFromLog(log, 'other')).toBeNull();
+        expect(configDiagnosticsFromLog(log)).toEqual(['$.mcp.apify: skipped malformed recognized value']);
+    });
+
+    it('leaves the harness state out of the workspace snapshot', () => {
+        const work = mkdtempSync(join(tmpdir(), 'opencode-ws-'));
+        mkdirSync(join(work, '.opencode', 'skills'), { recursive: true });
+        writeFileSync(join(work, '.opencode', 'skills', 'SKILL.md'), 'x');
+        writeFileSync(join(work, 'out.json'), '{}');
+        expect(snapshotWorkspace(work).map((f) => f.path)).toEqual(['out.json']);
+        rmSync(work, { recursive: true, force: true });
+    });
+});
+
+describe('runOpenCode process handling', () => {
+    let dir: string;
+    let ctx: Parameters<typeof runOpenCode>[0];
+    beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), 'opencode-adapter-test-'));
+        vi.stubEnv('PATH', `${dir}:${process.env.PATH}`);
+        vi.stubEnv('UNRELATED_SECRET', 'must-not-inherit');
+        ctx = {
+            prompt: 'Find a crawler. Unicode: žluťoučký.',
+            item: { metadata: { tools: ['call-actor'] } },
+            harness: { kind: 'opencode', model: 'z-ai/glm-5.3', maxTurns: 6 },
+            mcpUrl: 'https://mcp.invalid',
+            apifyToken: 'test-token-not-a-secret',
+            mcpEnv: { APIFY_TOKEN: 'test-token-not-a-secret' },
+            skillSet: [],
+            skillsRoot: '/nonexistent',
+            runMarker: 'apify-evals/test',
+            perItemTimeoutSecs: 20,
+        };
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    /**
+     * A fake `opencode`: `serve` answers /api/mcp and /api/skill and writes the
+     * server log; `run` records what it got and prints `runOutput`.
+     */
+    function stub(
+        opts: {
+            mcpStatus?: string;
+            runOutput?: string;
+            runBody?: string;
+            logLines?: string[];
+            lateLog?: string;
+            /** What GET /api/session/<id>/context answers; 404 without it. */
+            context?: unknown;
+            /** OpenCode never lists the injected skills. */
+            hideSkills?: boolean;
+        } = {},
+    ): void {
+        const script = `#!${process.execPath}
+const fs = require('node:fs');
+const http = require('node:http');
+const path = require('node:path');
+const dir = ${JSON.stringify(dir)};
+const [cmd] = process.argv.slice(2);
+const logFile = path.join(process.env.XDG_DATA_HOME, 'opencode', 'log', 'opencode.log');
+const skillsDir = path.join(process.env.OPENCODE_CONFIG_DIR, 'skills');
+const listSkills = () => (fs.existsSync(skillsDir) ? fs.readdirSync(skillsDir) : []);
+if (cmd === 'serve') {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.writeFileSync(logFile, ${JSON.stringify(
+        (opts.logLines ?? ['level=INFO message="mcp connected" server=apify tools=5 http.span=1']).join('\n') + '\n',
+    )});
+    const auth = 'Basic ' + Buffer.from('opencode:' + process.env.OPENCODE_PASSWORD).toString('base64');
+    const server = http.createServer((req, res) => {
+        if (req.headers.authorization !== auth) { res.writeHead(401).end(); return; }
+        res.setHeader('content-type', 'application/json');
+        if (req.url === '/api/mcp') res.end(JSON.stringify({ data: [{ name: 'apify', status: { status: ${JSON.stringify(opts.mcpStatus ?? 'connected')}, error: 'down "retryAfter":0' } }] }));
+        else if (req.url === '/api/skill') res.end(JSON.stringify({ data: [{ id: 'opencode' }, ...(${Boolean(opts.hideSkills)} ? [] : listSkills()).map((id) => ({ id }))] }));
+        else if (/^\\/api\\/session\\/[^/]+\\/context$/.test(req.url) && ${JSON.stringify(opts.context ?? null)} !== null) res.end(JSON.stringify(${JSON.stringify(opts.context ?? null)}));
+        else res.writeHead(404).end('{}');
+    });
+    server.listen(0, '127.0.0.1', () => process.stdout.write(JSON.stringify({ url: 'http://127.0.0.1:' + server.address().port }) + '\\n'));
+    process.stdin.on('end', () => process.exit(0));
+    process.stdin.resume();
+} else {
+    let prompt = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c) => (prompt += c));
+    process.stdin.on('end', () => {
+        fs.writeFileSync(path.join(dir, 'capture.json'), JSON.stringify({
+            args: process.argv.slice(2), prompt, cwd: process.cwd(), env: process.env,
+            config: fs.readFileSync(process.env.OPENCODE_CONFIG, 'utf8'),
+            skills: listSkills(),
+        }));
+        ${opts.lateLog ? `fs.appendFileSync(logFile, ${JSON.stringify(opts.lateLog + '\n')});` : ''}
+        ${opts.runBody ?? `process.stdout.write(${JSON.stringify(opts.runOutput ?? fixture('call-actor'))});`}
+    });
+}
+`;
+        writeFileSync(join(dir, 'opencode'), script);
+        chmodSync(join(dir, 'opencode'), 0o755);
+    }
+
+    it('starts the server, waits for MCP, sends the prompt on stdin and cleans up', async () => {
+        stub();
+        const result = await runOpenCode(ctx);
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({
+            exitCode: 0,
+            subtype: 'success',
+            numTurns: 2,
+            mcpToolCount: 5,
+            mcpServers: [{ name: 'apify', status: 'connected' }],
+            mcpExpected: true,
+            mcpRestarts: 0,
+            skillsLoaded: [],
+        });
+        expect(result.output).toContain('runId');
+        const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+        expect(captured.prompt).toBe(ctx.prompt);
+        expect(captured.args.slice(0, 2)).toEqual(['run', '--server']);
+        expect(captured.args.slice(3)).toEqual([
+            '--format',
+            'json',
+            '--title',
+            'eval',
+            '--model',
+            'apify/z-ai/glm-5.3',
+        ]);
+        expect(captured.env.UNRELATED_SECRET).toBeUndefined();
+        expect(captured.env.HOME).not.toBe(process.env.HOME);
+        expect(captured.env.PWD).toBe(captured.cwd);
+        // Each session has its own temp directory inside the session root.
+        expect(captured.env.TMPDIR).toBe(join(captured.cwd, '..', 'tmp'));
+        expect(captured.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('1');
+        expect(captured.config).not.toContain(ctx.apifyToken);
+        expect(captured.config).toContain('tools=call-actor');
+        expect(existsSync(captured.env.HOME)).toBe(false);
+        expect(existsSync(captured.cwd)).toBe(false);
+    });
+
+    it('does not expose the token as APIFY_TOKEN on the mcp surface, also with Bash', async () => {
+        stub();
+        await runOpenCode({ ...ctx, item: { metadata: { tools: ['call-actor'], allowBash: true } } });
+        const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+        expect(captured.env.APIFY_TOKEN).toBeUndefined();
+        // The secrets the config needs are there under names no Apify tool reads.
+        expect(captured.env[LLM_KEY_ENV]).toBe(ctx.apifyToken);
+        expect(captured.env.OPENCODE_EVAL_MCP_APIFY_TOKEN).toBe(ctx.apifyToken);
+        expect(JSON.parse(captured.config).permissions.map((r: { action: string }) => r.action)).toContain('shell');
+    });
+
+    it('passes APIFY_TOKEN when the surface sets it, as on Claude Code', async () => {
+        stub({ runOutput: fixture('api-surface') });
+        const surface = {
+            name: 'api',
+            kind: 'api' as const,
+            spec: { name: 'api', kind: 'api' as const, mcp: false, bash: true, webFetch: true },
+            env: { APIFY_TOKEN: ctx.apifyToken },
+            secrets: [ctx.apifyToken],
+        };
+        await runOpenCode({ ...ctx, surface, item: { metadata: { allowBash: true } } } as never);
+        const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+        expect(captured.env.APIFY_TOKEN).toBe(ctx.apifyToken);
+    });
+
+    it('installs the skill set into the config directory and reports which loaded', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'opencode-skills-'));
+        mkdirSync(join(root, 'apify-ultimate-scraper'));
+        writeFileSync(join(root, 'apify-ultimate-scraper', 'SKILL.md'), '---\nname: x\ndescription: y\n---\n');
+        stub({ runOutput: fixture('skill') });
+        const result = await runOpenCode({ ...ctx, skillSet: ['apify-ultimate-scraper'], skillsRoot: root });
+        const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+        expect(captured.skills).toEqual(['apify-ultimate-scraper']);
+        // Reference files are readable outside the working directory.
+        expect(JSON.parse(captured.config).permissions).toContainEqual({
+            action: 'external_directory',
+            resource: `${join(captured.env.OPENCODE_CONFIG_DIR, 'skills')}/*`,
+            effect: 'allow',
+        });
+        expect(result.metrics).toMatchObject({
+            skillsLoaded: ['apify-ultimate-scraper'],
+            skillsUsed: ['project-codeword'],
+        });
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it('restarts a session whose MCP server failed and then reports it inconclusive', async () => {
+        stub({ mcpStatus: 'failed' });
+        const result = await runOpenCode(ctx);
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({
+            subtype: 'error_mcp_startup',
+            mcpRestarts: 3,
+            mcpToolCount: 0,
+            mcpToolsMissing: true,
+            mcpServers: [{ name: 'apify', status: 'failed' }],
+        });
+        expect(existsSync(join(dir, 'capture.json'))).toBe(false);
+        const infra = infraStatus({
+            prompt: '',
+            finalResult: '',
+            actorRuns: [],
+            datasets: {},
+            toolCalls: [],
+            session: { ...result.metrics, harnessBroke: result.harnessBroke },
+        } as Evidence);
+        expect(infra.ok).toBe(false);
+    });
+
+    it('refuses to run when OpenCode dropped part of the config', async () => {
+        stub({
+            logLines: [
+                'level=WARN message="configuration normalization diagnostic" path=$.mcp.servers.apify kind=invalid action="skipped malformed recognized value"',
+            ],
+        });
+        const result = await runOpenCode(ctx);
+        expect(result.harnessBroke).toBe(true);
+        expect(result.stderr).toContain('$.mcp.servers.apify');
+        expect(existsSync(join(dir, 'capture.json'))).toBe(false);
+    });
+
+    it('marks the session broken when a dropped config entry shows up in the log only later', async () => {
+        stub({
+            lateLog:
+                'level=WARN message="configuration normalization diagnostic" path=$.agents.build kind=invalid action="skipped malformed recognized value"',
+        });
+        const result = await runOpenCode(ctx);
+        expect(result.harnessBroke).toBe(true);
+        expect(result.stderr).toContain('$.agents.build');
+        expect(result.metrics).toMatchObject({
+            subtype: 'success',
+            configDiagnostics: ['$.agents.build: skipped malformed recognized value'],
+        });
+    });
+
+    it('keeps the timeout subtype when the late config check also fires', async () => {
+        stub({
+            lateLog:
+                'level=WARN message="configuration normalization diagnostic" path=$.agents.build kind=invalid action="skipped malformed recognized value"',
+            runBody: `process.stdout.write(${JSON.stringify(fixture('call-actor'))}); setInterval(() => {}, 1000);`,
+        });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.metrics).toMatchObject({ subtype: 'error_timeout', timedOut: true });
+        expect(result.metrics.configDiagnostics).toEqual(['$.agents.build: skipped malformed recognized value']);
+        expect(result.harnessBroke).toBe(true);
+    });
+
+    it('never runs a skills arm without its skills', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'opencode-skills-'));
+        mkdirSync(join(root, 'apify-ultimate-scraper'));
+        writeFileSync(join(root, 'apify-ultimate-scraper', 'SKILL.md'), '---\nname: x\ndescription: y\n---\n');
+        stub({ hideSkills: true });
+        const result = await runOpenCode({ ...ctx, skillSet: ['apify-ultimate-scraper'], skillsRoot: root });
+        expect(result.harnessBroke).toBe(true);
+        expect(result.metrics).toMatchObject({ subtype: 'error_skills' });
+        expect(result.stderr).toContain('apify-ultimate-scraper');
+        // Refused before the prompt was sent.
+        expect(existsSync(join(dir, 'capture.json'))).toBe(false);
+        rmSync(root, { recursive: true, force: true });
+    }, 30_000);
+
+    it('scores a step-limit session as max turns, not as broken', async () => {
+        stub({ runOutput: fixture('max-steps') });
+        const result = await runOpenCode({ ...ctx, item: { metadata: { tools: ['call-actor'], maxTurns: 2 } } });
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({ subtype: 'error_max_turns', numTurns: 3, toolRounds: 2, toolCalls: 2 });
+        const captured = JSON.parse(readFileSync(join(dir, 'capture.json'), 'utf8'));
+        expect(JSON.parse(captured.config).agents.build.steps).toBe(3);
+    });
+
+    it('treats a provider error as a broken session', async () => {
+        stub({ runBody: `process.stdout.write(${JSON.stringify(fixture('provider-error'))}); process.exitCode = 1;` });
+        const result = await runOpenCode({ ...ctx, item: { metadata: {} } });
+        expect(result.harnessBroke).toBe(true);
+        expect(result.stderr).toContain('Invalid model id');
+        expect(result.metrics).toMatchObject({ subtype: 'error_session', exitCode: 1, mcpServers: [] });
+    });
+
+    it('treats a timeout while the provider keeps failing as broken, not as an agent result', async () => {
+        stub({
+            runBody: `process.stdout.write(${JSON.stringify(fixture('retry'))}); setInterval(() => {}, 1000);`,
+            // The session context of 2.2.6 while it waits for the next attempt.
+            context: { data: [{ type: 'user' }, { type: 'assistant', content: [], retry: { attempt: 4 } }] },
+        });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.harnessBroke).toBe(true);
+        expect(result.metrics).toMatchObject({
+            timedOut: true,
+            subtype: 'error_provider',
+            providerRetryingAtKill: true,
+        });
+        expect(result.stderr).toContain('retrying: ECONNREFUSED');
+    });
+
+    it('scores an early retry followed by a long tool as a timeout', async () => {
+        // A retry at the start of the step, then the provider answered and a tool ran
+        // past the timeout: OpenCode prints the tool only when it finishes.
+        stub({
+            runBody: `process.stdout.write(${JSON.stringify(fixture('retry').split('\n').slice(0, 2).join('\n') + '\n')}); setInterval(() => {}, 1000);`,
+            context: {
+                data: [
+                    { type: 'user' },
+                    { type: 'assistant', content: [{ type: 'tool', name: 'shell', state: { status: 'running' } }] },
+                ],
+            },
+        });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({
+            timedOut: true,
+            subtype: 'error_timeout',
+            providerRetries: 1,
+            providerRetryingAtKill: false,
+        });
+    });
+
+    it('scores a timeout as a timeout when the server cannot say whether it is retrying', async () => {
+        stub({ runBody: `process.stdout.write(${JSON.stringify(fixture('retry'))}); setInterval(() => {}, 1000);` });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({ subtype: 'error_timeout', providerRetryingAtKill: null });
+    });
+
+    it('scores a plain timeout as a timeout and keeps the partial session', async () => {
+        stub({
+            runBody: `process.stdout.write(${JSON.stringify(fixture('call-actor'))}); setInterval(() => {}, 1000);`,
+        });
+        const result = await runOpenCode({ ...ctx, perItemTimeoutSecs: 3 });
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({ timedOut: true, subtype: 'error_timeout' });
+        expect(result.output).toContain('runId');
+    });
+
+    it('never puts the token into the stored log', async () => {
+        stub({
+            runOutput: [
+                JSON.stringify({ type: 'step_start', timestamp: 1, sessionID: 'ses_x', part: {} }),
+                JSON.stringify({
+                    type: 'text',
+                    timestamp: 1,
+                    sessionID: 'ses_x',
+                    part: { text: `token ${ctx.apifyToken}` },
+                }),
+            ].join('\n'),
+        });
+        const result = await runOpenCode({ ...ctx, item: { metadata: {} } });
+        expect(result.rawStdout).not.toContain(ctx.apifyToken);
+        expect(result.output).toBe('token [REDACTED]');
+    });
+});
+
+/**
+ * Against the real CLI, with a scripted chat-completions model. They run when
+ * the pinned `opencode` is on PATH; with REQUIRE_REAL_OPENCODE=1 (CI) a missing
+ * or different CLI fails instead of skipping.
+ */
+const PINNED_OPENCODE = '2.2.6';
+const realVersion = (() => {
+    try {
+        return execFileSync('opencode', ['--version'], { encoding: 'utf8', timeout: 20_000 }).trim();
+    } catch {
+        return '';
+    }
+})();
+const haveRealCli = realVersion.includes(PINNED_OPENCODE);
+
+describe.runIf(process.env.REQUIRE_REAL_OPENCODE === '1' && !haveRealCli)('OpenCode real CLI (required)', () => {
+    it(`has opencode ${PINNED_OPENCODE} on PATH`, () => {
+        expect.fail(`REQUIRE_REAL_OPENCODE=1 but \`opencode --version\` printed "${realVersion}"`);
+    });
+});
+
+type Step = { text: string } | { tool: string; args: (body: string) => unknown };
+
+describe.skipIf(!haveRealCli)('OpenCode isolation and skills (real CLI)', () => {
+    let parent: string;
+    let model: Server;
+    let script: Step[] = [];
+    let requests: { tools: string[]; body: string }[] = [];
+    beforeEach(async () => {
+        parent = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-parent-')));
+        requests = [];
+        model = createServer((req, res) => {
+            let body = '';
+            req.on('data', (c) => (body += c));
+            req.on('end', () => {
+                const parsed = JSON.parse(body) as { tools?: { function: { name: string } }[] };
+                if (!parsed.tools?.length) {
+                    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+                    return;
+                }
+                requests.push({ tools: parsed.tools.map((t) => t.function.name), body });
+                const step = script[Math.min(requests.length - 1, script.length - 1)];
+                res.writeHead(200, { 'content-type': 'text/event-stream' });
+                const chunk = (delta: unknown, finish: string | null) =>
+                    res.write(
+                        `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
+                    );
+                if ('tool' in step) {
+                    const args = JSON.stringify(step.args(body));
+                    chunk(
+                        {
+                            role: 'assistant',
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    id: `call_${requests.length}`,
+                                    type: 'function',
+                                    function: { name: step.tool, arguments: args },
+                                },
+                            ],
+                        },
+                        null,
+                    );
+                    chunk({}, 'tool_calls');
+                } else {
+                    chunk({ role: 'assistant', content: step.text }, null);
+                    chunk({}, 'stop');
+                }
+                res.end('data: [DONE]\n\n');
+            });
+        });
+        await new Promise<void>((resolve) => model.listen(0, '127.0.0.1', resolve));
+        const port = (model.address() as { port: number }).port;
+        vi.stubEnv('OPENCODE_EVAL_BASE_URL', `http://127.0.0.1:${port}/v1`);
+        vi.stubEnv('APIFY_IS_AT_HOME', '');
+        // The session directory is created under `parent`.
+        vi.stubEnv('TMPDIR', parent);
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        model.close();
+        rmSync(parent, { recursive: true, force: true });
+    });
+
+    const session = (skillSet: string[], skillsRoot: string) =>
+        runOpenCode({
+            prompt: 'hello',
+            item: { metadata: { maxTurns: 4 } },
+            harness: { kind: 'opencode', model: 'x/y', maxTurns: 4 },
+            mcpUrl: 'https://mcp.invalid',
+            apifyToken: 'test-token-not-a-secret',
+            mcpEnv: {},
+            skillSet,
+            skillsRoot,
+            perItemTimeoutSecs: 60,
+        });
+
+    it('ignores config, skills and instructions in the directories above the session', async () => {
+        const skill = (base: string, name: string) => {
+            mkdirSync(join(parent, base, name), { recursive: true });
+            writeFileSync(
+                join(parent, base, name, 'SKILL.md'),
+                `---\nname: ${name}\ndescription: planted ${name}\n---\nx\n`,
+            );
+        };
+        skill('.opencode/skills', 'planted-opencode');
+        skill('.agents/skills', 'planted-agents');
+        skill('.claude/skills', 'planted-claude');
+        writeFileSync(join(parent, 'AGENTS.md'), 'PLANTED-INSTRUCTION\n');
+        writeFileSync(
+            join(parent, 'opencode.json'),
+            JSON.stringify({
+                agents: { build: { steps: 999 } },
+                permissions: [{ action: 'websearch', resource: '*', effect: 'allow' }],
+            }),
+        );
+        script = [{ text: 'ok' }];
+        const result = await session([], '/nonexistent');
+        expect(result.harnessBroke).toBe(false);
+        expect(result.output).toBe('ok');
+        expect(requests).toHaveLength(1);
+        expect(requests[0].tools.sort()).toEqual(['glob', 'grep', 'read', 'skill']);
+        expect(requests[0].body).not.toContain('planted');
+        expect(requests[0].body).not.toContain('PLANTED-INSTRUCTION');
+    }, 90_000);
+
+    it('discovers an injected skill and lets the agent read its reference file', async () => {
+        const skillsRoot = join(parent, 'skills-source');
+        mkdirSync(join(skillsRoot, 'project-codeword'), { recursive: true });
+        writeFileSync(
+            join(skillsRoot, 'project-codeword', 'SKILL.md'),
+            '---\nname: project-codeword\ndescription: Use for the secret project codeword.\n---\nThe codeword is TANGERINE-PELICAN-7731.\n',
+        );
+        writeFileSync(join(skillsRoot, 'project-codeword', 'reference.md'), 'Second codeword: MANGO-OTTER-4410\n');
+        script = [
+            { tool: 'skill', args: () => ({ id: 'project-codeword' }) },
+            {
+                tool: 'read',
+                args: (body) => ({ path: /<file>([^<]+reference\.md)<\/file>/.exec(body.replaceAll('\\/', '/'))?.[1] }),
+            },
+            { text: 'done' },
+        ];
+        const result = await session(['project-codeword'], skillsRoot);
+        expect(result.harnessBroke).toBe(false);
+        expect(result.metrics).toMatchObject({ skillsLoaded: ['project-codeword'], skillsUsed: ['project-codeword'] });
+        // Listed in the system prompt from the first request on.
+        expect(requests[0].body).toContain('project-codeword');
+        const results = result.timeline.filter((e) => e.kind === 'tool_result');
+        expect(results[0]).toMatchObject({ isError: false });
+        expect(results[0].kind === 'tool_result' && results[0].content).toContain('TANGERINE-PELICAN-7731');
+        expect(results[1]).toMatchObject({ isError: false });
+        expect(results[1].kind === 'tool_result' && results[1].content).toContain('MANGO-OTTER-4410');
+        expect(result.output).toBe('done');
+    }, 90_000);
+});
