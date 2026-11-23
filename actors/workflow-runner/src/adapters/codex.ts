@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -23,6 +23,31 @@ export const CODEX_PROVIDER = {
     wire_api: 'responses',
     requires_openai_auth: false,
 } as const;
+
+/**
+ * Secret values in a Codex login file (auth.json): every string long enough
+ * to be a token or key, and each segment of a JWT, longest first so a full
+ * token is replaced before its parts.
+ */
+export function codexAuthSecrets(auth: unknown): string[] {
+    const found = new Set<string>();
+    const walk = (value: unknown): void => {
+        if (typeof value === 'string') {
+            if (value.length < 16 || /^\d{4}-\d{2}-\d{2}T/.test(value)) return; // short ids, timestamps
+            found.add(value);
+            for (const part of value.split('.')) if (part.length >= 16) found.add(part);
+        } else if (Array.isArray(value)) value.forEach(walk);
+        else if (value && typeof value === 'object') Object.values(value).forEach(walk);
+    };
+    walk(auth);
+    return [...found].sort((a, b) => b.length - a.length);
+}
+
+export function redactSecrets(text: string, secrets: string[]): string {
+    let out = text;
+    for (const secret of secrets) if (secret) out = out.replaceAll(secret, '[REDACTED]');
+    return out;
+}
 
 const SANDBOX_PROBE_MARKER = 'codex-sandbox-probe-ok';
 
@@ -251,13 +276,26 @@ async function runCodexOnce(ctx: CodexContext, deadline: number, expected: boole
         // no-skills variant stays the exact setup of the daily baseline.
         installSkills(home, skillSet, ctx.skillsRoot ?? '', CODEX_SKILLS_DIR);
         writeFileSync(join(home, 'config.toml'), buildConfig(ctx, home), { mode: 0o600 });
+        const secrets = [ctx.apifyToken];
         if (!ctx.useOpenRouterProxy) {
             // Reuse only local login, never the developer's MCP servers, skills,
-            // or config. No credentials are copied into the temporary directory.
+            // or config. No credentials are copied into the temporary directory,
+            // but Codex reads the login from CODEX_HOME, which the read-only
+            // sandbox lets the shell read too: its values never leave redacted.
             const auth = join(process.env.CODEX_HOME ?? join(process.env.HOME ?? '', '.codex'), 'auth.json');
-            if (existsSync(auth)) symlinkSync(auth, join(home, 'auth.json'));
+            if (existsSync(auth)) {
+                symlinkSync(auth, join(home, 'auth.json'));
+                try {
+                    secrets.push(...codexAuthSecrets(JSON.parse(readFileSync(auth, 'utf8'))));
+                } catch {
+                    /* unreadable login: Codex fails to authenticate and says so */
+                }
+            }
+            log.warningOnce(
+                'Local Codex sessions (useOpenRouterProxy: false) give the agent a shell that can read any file the developer can, under a read-only sandbox. The Codex login values are redacted from session output; other files are not.',
+            );
         }
-        const result = await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected);
+        const result = await spawnCodex(ctx, home, work, remaining(), mcpToolCount, expected, secrets);
         if (ctx.item.metadata?.allowBash) result.workspaceFiles = snapshotWorkspace(work);
         // Codex has no init event that lists skills (Claude Code's `skills`),
         // so record the injected skills present where Codex discovers them,
@@ -278,6 +316,7 @@ function spawnCodex(
     timeoutMs: number,
     mcpToolCount: number | null,
     expected: boolean,
+    secrets: string[],
 ): Promise<AdapterResult> {
     return new Promise((resolve) => {
         const startedAt = Date.now();
@@ -328,7 +367,8 @@ function spawnCodex(
             timedOut = true;
             killProcessTree(child);
         }, timeoutMs);
-        const redact = (s: string) => (ctx.apifyToken ? s.replaceAll(ctx.apifyToken, '[REDACTED]') : s);
+        const ordered = [...new Set(secrets.filter(Boolean))].sort((a, b) => b.length - a.length);
+        const redact = (s: string) => redactSecrets(s, ordered);
         const settle = (exitCode: number | null, spawnError?: string) => {
             if (settled) return;
             settled = true;

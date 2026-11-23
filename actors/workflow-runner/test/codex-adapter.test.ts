@@ -6,7 +6,7 @@ import { infraStatus, type Evidence } from '@apify-evals/contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { codexSkillsRead, parseCodexEvents } from '../src/adapters/codex-events.js';
-import { probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
+import { codexAuthSecrets, probeCodexSandbox, runCodex } from '../src/adapters/codex.js';
 import { extractFromTools } from '../src/evidence.js';
 
 const mcp = vi.hoisted(() => ({ listTools: vi.fn(), connect: vi.fn(), close: vi.fn() }));
@@ -567,6 +567,73 @@ process.stdin.on('end', () => {
         const result = await runCodex(ctx);
         expect(result.harnessBroke).toBe(true);
         expect(result.stderr).toContain('ENOENT');
+    });
+
+    it('redacts the local Codex login from everything the session returns', async () => {
+        // Local mode links the developer's auth.json into CODEX_HOME; the shell can read it.
+        const codexHome = mkdtempSync(join(tmpdir(), 'codex-login-'));
+        const auth = {
+            auth_mode: 'chatgpt',
+            tokens: {
+                id_token:
+                    'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LXN1YmplY3QtMTIzNDUifQ.c2lnbmF0dXJlLXBhcnQtZm9yLXRlc3Rz',
+                access_token: 'access-token-for-tests-0123456789',
+                refresh_token: 'refresh-token-for-tests-0123456789',
+                account_id: '6a1c2a3e-1111-2222-3333-444455556666',
+            },
+            last_refresh: '2026-11-22T00:00:00Z',
+        };
+        writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(auth));
+        vi.stubEnv('CODEX_HOME', codexHome);
+        try {
+            ctx.useOpenRouterProxy = false;
+            const read = (id: string, done: boolean) => ({
+                type: done ? 'item.completed' : 'item.started',
+                item: {
+                    id,
+                    type: 'command_execution',
+                    command: 'cat ~/auth.json',
+                    aggregated_output: done ? 'AUTH' : '',
+                    exit_code: done ? 0 : null,
+                    status: done ? 'completed' : 'in_progress',
+                },
+            });
+            const events = `${jsonl(read('c1', false), read('c1', true))}\n`;
+            stub(`const login = fs.readFileSync(home + '/auth.json', 'utf8');
+                process.stdout.write(${JSON.stringify(events)}.replace('AUTH', JSON.stringify(login).slice(1, -1)) + fixture);
+                process.stderr.write(login);`);
+            const result = await runCodex(ctx);
+            const everything = JSON.stringify(result);
+            expect(everything).toContain('[REDACTED]');
+            for (const secret of [
+                auth.tokens.id_token,
+                ...auth.tokens.id_token.split('.'),
+                auth.tokens.access_token,
+                auth.tokens.refresh_token,
+                auth.tokens.account_id,
+            ]) {
+                expect(everything).not.toContain(secret);
+            }
+            expect(result.harnessBroke).toBe(false);
+        } finally {
+            rmSync(codexHome, { recursive: true, force: true });
+        }
+    });
+
+    it('finds the secret values of a Codex login', () => {
+        expect(
+            codexAuthSecrets({
+                auth_mode: 'chatgpt',
+                OPENAI_API_KEY: 'sk-test-0123456789abcdef',
+                tokens: { id_token: 'aaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbb.cc', short: 'abc' },
+                last_refresh: '2026-11-22T00:00:00.000000Z',
+            }),
+        ).toEqual([
+            'aaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbb.cc',
+            'sk-test-0123456789abcdef',
+            'aaaaaaaaaaaaaaaaaaaa',
+            'bbbbbbbbbbbbbbbbbbbb',
+        ]);
     });
 
     it('flags a truncated stdout stream without leaking the authentication token', async () => {
