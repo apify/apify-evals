@@ -129,16 +129,23 @@ describe('assertHarnessSupport', () => {
     });
 
     it('checks matrix entries, not only the base harness', () => {
-        // A codex entry inside a Claude Code run must not run its skills arm without skills.
+        // A codex entry inside a Claude Code run must not run its API arm on MCP.
         expect(() =>
             assertHarnessSupport(
                 [
                     { model: 'anthropic/claude-haiku-5.5', kind: 'claude-code' },
                     { model: 'openai/gpt-6-luna', kind: 'codex' },
                 ],
-                { ...plan, skillSets: [[], ['apify-ultimate-scraper']] },
+                { ...plan, surfaceKinds: ['mcp', 'api'] },
             ),
-        ).toThrow(/codex harness does not support skill sets/);
+        ).toThrow(/codex harness supports only MCP surfaces/);
+        // Codex runs skill sets: its shell reads SKILL.md (adapters/codex.ts).
+        expect(() =>
+            assertHarnessSupport([{ model: 'openai/gpt-6-luna', kind: 'codex' }], {
+                ...plan,
+                skillSets: [[], ['apify-ultimate-scraper']],
+            }),
+        ).not.toThrow();
     });
 
     it('names every unsupported feature', () => {
@@ -148,6 +155,6 @@ describe('assertHarnessSupport', () => {
                 foreignMcp: true,
                 surfaceKinds: ['mcp', 'api'],
             }),
-        ).toThrow(/skill sets.*Apify MCP server.*MCP surfaces/);
+        ).toThrow(/^codex harness supports only the Apify MCP server; codex harness supports only MCP surfaces$/);
     });
 });

@@ -64,7 +64,7 @@ export interface HarnessSupport {
 
 export const HARNESS_SUPPORT: Record<HarnessKind, HarnessSupport> = {
     'claude-code': { skills: true, foreignMcp: true, nonMcpSurfaces: true },
-    codex: { skills: false, foreignMcp: false, nonMcpSurfaces: false },
+    codex: { skills: true, foreignMcp: false, nonMcpSurfaces: false },
 };
 
 /**
