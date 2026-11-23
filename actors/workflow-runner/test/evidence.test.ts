@@ -249,3 +249,21 @@ describe('runsInText', () => {
         ]);
     });
 });
+
+describe('extractFromTools: JSON followed by text in one result', () => {
+    it('reads the run when the MCP hint after the JSON holds braces (OpenCode joins content blocks)', () => {
+        const run = {
+            runId: 'mXEDeCFcAuOQe8Ptj',
+            actorName: 'streamers/youtube-scraper',
+            status: 'SUCCEEDED',
+            storages: { datasets: { default: { id: 'U0bJSZSHrZ8I5flMp', itemCount: 4 } } },
+        };
+        const content = `${JSON.stringify(run)}\nSUCCEEDED. Use get-dataset-items with fields and limit. For items shaped { a, b: [{ c }] }, fields="b" returns every element of b.`;
+        const { actorRuns } = extractFromTools(
+            [{ id: 't1', name: 'mcp__apify__call-actor', input: { actor: 'streamers/youtube-scraper', input: {} } }],
+            [{ toolUseId: 't1', content, isError: false }],
+        );
+        expect(actorRuns).toHaveLength(1);
+        expect(actorRuns[0]).toMatchObject({ runId: 'mXEDeCFcAuOQe8Ptj', datasetId: 'U0bJSZSHrZ8I5flMp' });
+    });
+});

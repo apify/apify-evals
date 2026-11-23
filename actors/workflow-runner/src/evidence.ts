@@ -221,16 +221,35 @@ function parseJson(text: string): Record<string, unknown> | null {
         const v = JSON.parse(text);
         return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
     } catch {
-        // Some MCP results wrap JSON in text; take the first {...} block.
+        // Some MCP results wrap JSON in text, and OpenCode joins an MCP
+        // result's content blocks into one string (the JSON, then a hint that
+        // can hold braces of its own). Take the first balanced {...} block.
         const start = text.indexOf('{');
-        const end = text.lastIndexOf('}');
-        if (start === -1 || end <= start) return null;
+        if (start === -1) return null;
+        const end = balancedObjectEnd(text, start);
+        if (end === -1) return null;
         try {
             return JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
         } catch {
             return null;
         }
     }
+}
+
+/** Index of the `}` that closes the object opened at `start`, skipping braces in strings; -1 if none. */
+function balancedObjectEnd(text: string, start: number): number {
+    let depth = 0;
+    let inString = false;
+    for (let i = start; i < text.length; i++) {
+        const c = text[i];
+        if (inString) {
+            if (c === '\\') i++;
+            else if (c === '"') inString = false;
+        } else if (c === '"') inString = true;
+        else if (c === '{') depth++;
+        else if (c === '}' && --depth === 0) return i;
+    }
+    return -1;
 }
 
 function str(v: unknown): string | undefined {
