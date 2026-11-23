@@ -12,6 +12,7 @@ import {
     codexAuthSecrets,
     codexShellPath,
     probeCodexSandbox,
+    codexSandboxMode,
     runCodex,
     skillLoadFailures,
     trimPartialSecret,
@@ -974,5 +975,19 @@ process.stdout.write(fs.readFileSync(args[3], 'utf8'));`);
 
     it('reports a missing executable', async () => {
         expect(await probeCodexSandbox()).toMatch(/ENOENT/);
+    });
+});
+
+describe('codexSandboxMode', () => {
+    it('runs without the Codex sandbox on Apify, where bubblewrap cannot start', () => {
+        expect(codexSandboxMode({ APIFY_IS_AT_HOME: '1' })).toBe('danger-full-access');
+    });
+    it('keeps the read-only sandbox elsewhere (a developer machine)', () => {
+        expect(codexSandboxMode({})).toBe('read-only');
+    });
+    it('takes CODEX_SANDBOX_MODE first, and refuses an unknown value', () => {
+        expect(codexSandboxMode({ APIFY_IS_AT_HOME: '1', CODEX_SANDBOX_MODE: 'read-only' })).toBe('read-only');
+        expect(codexSandboxMode({ CODEX_SANDBOX_MODE: 'danger-full-access' })).toBe('danger-full-access');
+        expect(() => codexSandboxMode({ CODEX_SANDBOX_MODE: 'workspace-write' })).toThrow(/CODEX_SANDBOX_MODE/);
     });
 });

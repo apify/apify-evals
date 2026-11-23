@@ -151,7 +151,7 @@ const { LangfuseClient } = await import('@langfuse/client');
 const { LangfuseSpanProcessor } = await import('@langfuse/otel');
 const { NodeSDK } = await import('@opentelemetry/sdk-node');
 const { runSession, validateHarness, DEFAULT_MAX_TURNS } = await import('./harness.js');
-const { CODEX_PROVIDER, probeCodexSandbox } = await import('./adapters/codex.js');
+const { CODEX_PROVIDER, codexSandboxMode, probeCodexSandbox } = await import('./adapters/codex.js');
 const { OPENCODE_PROVIDER } = await import('./adapters/opencode.js');
 const { ArtifactStore, SnapshotCache, fetchToolSchemas } = await import('./artifacts.js');
 const { ReferenceRunner } = await import('./evidence.js');
@@ -390,9 +390,10 @@ if (!skipPreflight) {
             );
         }
     }
-    // Codex sessions read skills (and run any command) through the shell in a
-    // read-only sandbox. Where the sandbox cannot start, every command fails.
-    if (entries.some((e) => e.kind === 'codex')) {
+    // Codex sessions read skills (and run any command) through the shell. In
+    // the read-only sandbox (off Apify) a sandbox that cannot start fails
+    // every command; on Apify the shell runs unsandboxed (codexSandboxMode).
+    if (entries.some((e) => e.kind === 'codex') && codexSandboxMode() === 'read-only') {
         const failure = await probeCodexSandbox();
         if (failure) problems.push(`Codex sandbox cannot run a shell command: ${failure}`);
         else log.info('preflight: Codex read-only sandbox runs shell commands');

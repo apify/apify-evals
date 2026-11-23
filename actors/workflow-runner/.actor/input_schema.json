@@ -192,7 +192,7 @@
         "harness": {
             "title": "Harness override (JSON)",
             "type": "object",
-            "description": "{kind, model, maxTurns}. kind selects claude-code (default), codex or opencode. Example: {\"kind\":\"codex\",\"model\":\"openai/gpt-5-mini\",\"maxTurns\":12}. On Codex every variant has the shell tool in a read-only sandbox (no writes, no network, so MCP surfaces only), and a session makes at most maxTurns model calls, as Claude Code's --max-turns (context compaction is not counted). OpenCode runs any OpenRouter model with the read, glob, grep and skill tools plus the scenario's MCP tools, and stops after maxTurns tool rounds. Scenario metadata.maxTurns takes precedence.",
+            "description": "{kind, model, maxTurns}. kind selects claude-code (default), codex or opencode. Example: {\"kind\":\"codex\",\"model\":\"openai/gpt-5-mini\",\"maxTurns\":12}. On Codex every variant has the shell tool (MCP surfaces only; on Apify the shell runs without the Codex sandbox, so it can write files and use the network without an Apify token, see the README), and a session makes at most maxTurns model calls, as Claude Code's --max-turns (context compaction is not counted). OpenCode runs any OpenRouter model with the read, glob, grep and skill tools plus the scenario's MCP tools, and stops after maxTurns tool rounds. Scenario metadata.maxTurns takes precedence.",
             "editor": "json",
             "nullable": true
         },

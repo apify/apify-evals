@@ -63,6 +63,26 @@ export function skillLoadFailures(stderr: string): string[] {
     return [...stderr.matchAll(/failed to load skill (.+?)\/SKILL\.md:/g)].map((m) => m[1].split('/').at(-1) as string);
 }
 
+export type CodexSandboxMode = 'read-only' | 'danger-full-access';
+
+/**
+ * The Codex sandbox for session shells. On Linux it is bubblewrap, which
+ * needs unprivileged user namespaces; the Apify platform forbids them, and
+ * the Landlock fallback refuses a read-only filesystem without bubblewrap.
+ * So on Apify the shell runs unsandboxed: the throwaway container is the
+ * sandbox, and the shell env is still stripped to HOME and PATH. Elsewhere
+ * (a developer machine) the read-only sandbox stays. CODEX_SANDBOX_MODE
+ * overrides both.
+ */
+export function codexSandboxMode(env: Record<string, string | undefined> = process.env): CodexSandboxMode {
+    const override = env.CODEX_SANDBOX_MODE?.trim();
+    if (override) {
+        if (override === 'read-only' || override === 'danger-full-access') return override;
+        throw new Error(`CODEX_SANDBOX_MODE must be read-only or danger-full-access, not "${override}"`);
+    }
+    return env.APIFY_IS_AT_HOME === '1' ? 'danger-full-access' : 'read-only';
+}
+
 const SANDBOX_PROBE_MARKER = 'codex-sandbox-probe-ok';
 
 /**
@@ -164,7 +184,7 @@ function buildConfig(ctx: CodexContext, home: string, modelBaseUrl: string | nul
     const lines = [
         `model = ${q(ctx.harness.model)}`,
         'approval_policy = "never"',
-        'sandbox_mode = "read-only"',
+        `sandbox_mode = ${q(codexSandboxMode())}`,
         'web_search = "disabled"',
         'project_doc_max_bytes = 0',
         // A login shell (`zsh -lc`) sources the developer's profile and, on
@@ -175,7 +195,7 @@ function buildConfig(ctx: CodexContext, home: string, modelBaseUrl: string | nul
         // The shell is the only tool that reads a file in Codex: a skill's
         // SKILL.md and references are listed in the prompt by path, not
         // inlined. On in every variant, so the variants differ only in the
-        // skill files; the read-only sandbox blocks writes and network.
+        // skill files. See codexSandboxMode for what the shell may touch.
         // The shell is unified exec (`exec_command` + `write_stdin`): Codex
         // 0.162 ignores `unified_exec = false` outside managed requirements.
         'shell_tool = true',
